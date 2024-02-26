@@ -1,9 +1,11 @@
 use std::error::Error;
 
 
+/// An error occured responding to an inbound handshake.
 #[derive(Debug)]
 pub enum ResponderHandshakeError {
     ECC(secp256k1::Error),
+    /// The message was too short, too long, or was a V1 query.
     IncorrectMessage(String),
     EncryptionError(String),
 }
@@ -28,6 +30,7 @@ impl Error for ResponderHandshakeError {
     }
 }
 
+/// The handshake could not be authenticated or completed properly.
 #[derive(Debug)]
 pub enum HandshakeCompletionError {
     MessageTooShort(String),

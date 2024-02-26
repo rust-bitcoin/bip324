@@ -21,9 +21,11 @@ const HEADER_LEN: u32 = 1;
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const NETWORK_MAGIC: [u8; 4] = [0xf9, 0xbe, 0xb4, 0xd9];
 
+/// Encrypt and decrypt messages with a peer.
 #[derive(Debug)]
 pub struct PacketHandler {
     session_keys: SessionKeyMaterial,
+    /// Your role in the handshake.
     pub role: HandshakeRole,
     length_encoding_cipher: FSChaCha20,
     length_decoding_cipher: FSChaCha20,
@@ -51,11 +53,12 @@ impl PacketHandler {
         }
     }
 
+    /// Prepare a vector of bytes to be encrypted and sent over the wire.
     pub fn prepare_v2_packet(&mut self, contents: Vec<u8>, aad: Option<Vec<u8>>, decoy: bool) -> Result<Vec<u8>, CipherError> {
         let mut packet: Vec<u8> = Vec::new();
         let mut header: u8 = 0;
         if decoy {
-            header = 128
+            header = 128;
         }
         let content_len = (contents.len() as u32).to_le_bytes()[0..3].to_vec();
         let mut plaintext = vec![header];
@@ -68,6 +71,7 @@ impl PacketHandler {
         Ok(packet)
     }
 
+    /// Decrypt the bytes received from a V2 peer.
     pub fn receive_v2_packet(&mut self, ciphertext: Vec<u8>, aad: Option<Vec<u8>>) -> Result<Vec<u8>, CipherError> {
         let auth = aad.unwrap_or(Vec::new());
         let enc_content_len = ciphertext[0..3].to_vec();
@@ -83,7 +87,7 @@ impl PacketHandler {
         let plaintext = self.packet_decoding_cipher.decrypt(auth, aead)?;
         let header = *plaintext.first().expect("Contents should include a header.");
         if header.eq(&128) {
-            
+            // ignore the message, make Vec optional?
         }
         let message = plaintext[1..].to_vec();
         Ok(message)
@@ -245,7 +249,7 @@ fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
 }
 
 /// Initialize a V2 transport handshake with a peer. The `InitiatorHandshake` contains a message ready to be sent over the wire,
-/// and the information necessary for completing ECDH when the peer responds. This is step 1/3 in the V2 handshake.
+/// and the information necessary for completing ECDH when the peer responds.
 /// 
 pub fn initialize_v2_handshake(garbage_len: Option<u32>) -> Result<InitiatorHandshake, secp256k1::Error> {
     let sk = gen_key()?;
@@ -260,7 +264,7 @@ pub fn initialize_v2_handshake(garbage_len: Option<u32>) -> Result<InitiatorHand
 
 /// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire, 
 /// and the `SessionKeyMaterial`, which is used to encrypt and decrypt messages over the wire, derive the session ID, and parse garbage in messages.
-/// This is step 2/3 in the V2 handshake. Note that this function will throw when encountering a V1 message.
+///
 pub fn receive_v2_handshake(message: Vec<u8>) -> Result<ResponderHandshake, ResponderHandshakeError> {
     let mut network_magic = NETWORK_MAGIC.clone().to_vec();
     let mut version_bytes = "version".as_bytes().to_vec();
@@ -294,8 +298,7 @@ pub fn receive_v2_handshake(message: Vec<u8>) -> Result<ResponderHandshake, Resp
     }
 }
 
-/// Receive a message from the responder and complete the V2 handshake. This function derives the necessary
-/// `SessionKeyMaterial` for all subsequent communication.
+/// Receive a message from the responder and complete the V2 handshake.
 ///
 pub fn initiator_complete_v2_handshake(message: Vec<u8>, init_handshake: InitiatorHandshake) -> Result<CompleteHandshake, HandshakeCompletionError> {
     let elliswift_message = &message[..64];
@@ -325,6 +328,8 @@ pub fn initiator_complete_v2_handshake(message: Vec<u8>, init_handshake: Initiat
     }
 }
 
+/// Receive a message from the initiator and complete the handshake or disconnect.
+///
 pub fn responder_complete_v2_handshake(message: Vec<u8>, responder_handshake: &mut ResponderHandshake) -> Result<(), HandshakeCompletionError> {
     let garbage_term = message[..16].to_vec();
     if garbage_term.ne(&responder_handshake.session_keys.initiator_garbage_terminator.to_vec()) {
