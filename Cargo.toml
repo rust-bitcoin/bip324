@@ -1,0 +1,24 @@
+[package]
+name = "bip324"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+secp256k1 = { version="0.28.2" }
+rand = "0.8.4"
+hkdf = "0.12.4"
+sha2 = "0.10.8"
+chacha20poly1305 = "0.10.1"
+chacha20 = "0.9.1"
+
+
+[dev-dependencies]
+hex = "0.4.3"
+
+[lib]
+name = "bip324"
+path = "src/lib.rs"
+
+
