@@ -1,7 +1,42 @@
+//! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
+//!
+//! # Use case
+//!
+//! 1. Client-server applications that transmit and receive Bitcoin P2P messages and would like increased privacy.
+//! 
+//! # Example
+//! ```rust
+//! use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, receive_v2_handshake, responder_complete_v2_handshake};
+//!
+//! fn main() {
+//!     // Alice starts a connection with Bob by making a pub/priv keypair and sending a message to Bob.
+//!     let handshake_init = initialize_v2_handshake(None).unwrap();
+//!     // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
+//!     let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+//!     // Alice finishes her handshake by using her keys from earlier, and sending a final message to Bob.
+//!     let alice_handshake = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init).unwrap();
+//!     // Bob checks Alice derived the correct keys for the session by authenticating her first message with her second message.
+//!     responder_complete_v2_handshake(alice_handshake.message.clone(), &mut bob_handshake).unwrap();
+//!     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
+//!     let mut alice = alice_handshake.packet_handler;
+//!     let mut bob = bob_handshake.packet_handler;
+//!     let message = b"Hello world".to_vec();
+//!     let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
+//!     let secret_message = alice.receive_v2_packet(encrypted_message_to_alice, None).unwrap();
+//!     assert_eq!(message, secret_message);
+//!     let message = b"Goodbye!".to_vec();
+//!     let encrypted_message_to_bob = alice.prepare_v2_packet(message.clone(), None, false).unwrap();
+//!     let secret_message = bob.receive_v2_packet(encrypted_message_to_bob, None).unwrap();
+//!     assert_eq!(message, secret_message);
+//! }
+//! ```
+
 mod error;
 mod types;
 use error::CipherError;
 pub use error::{HandshakeCompletionError, ResponderHandshakeError};
+pub use types::{CompleteHandshake, EcdhPoint, HandshakeRole, InitiatorHandshake, ResponderHandshake};
+pub use types::SessionKeyMaterial;
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce};
 use secp256k1::{ellswift::{ElligatorSwift,ElligatorSwiftParty}, PublicKey, Secp256k1, SecretKey};
 use rand::Rng;
@@ -9,9 +44,6 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use types::{CompleteHandshake, EcdhPoint, HandshakeRole, InitiatorHandshake, ResponderHandshake};
-pub use types::SessionKeyMaterial;
-
 
 const MAX_GARBAGE_LEN: u32 = 4095;
 const REKEY_INTERVAL: u32 = 224;
@@ -262,8 +294,7 @@ pub fn initialize_v2_handshake(garbage_len: Option<u32>) -> Result<InitiatorHand
     Ok(InitiatorHandshake { message, point, garbage })
 }
 
-/// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire, 
-/// and the `SessionKeyMaterial`, which is used to encrypt and decrypt messages over the wire, derive the session ID, and parse garbage in messages.
+/// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire and a struct for parsing packets.
 ///
 pub fn receive_v2_handshake(message: Vec<u8>) -> Result<ResponderHandshake, ResponderHandshakeError> {
     let mut network_magic = NETWORK_MAGIC.clone().to_vec();

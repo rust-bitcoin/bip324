@@ -39,15 +39,17 @@ pub struct CompleteHandshake {
     pub packet_handler: PacketHandler
 }
 
+/// All keys derived from the ECDH.
 #[derive(Debug, Clone)]
 pub struct SessionKeyMaterial {
+    /// A unique ID to identify a connection.
     pub session_id: [u8; 32],
-    pub initiator_length_key: [u8; 32],
-    pub initiator_packet_key: [u8; 32],
-    pub responder_length_key: [u8; 32],
-    pub responder_packet_key: [u8; 32],
-    pub initiator_garbage_terminator: [u8; 16],
-    pub responder_garbage_terminator: [u8; 16],
+    pub(crate) initiator_length_key: [u8; 32],
+    pub(crate) initiator_packet_key: [u8; 32],
+    pub(crate) responder_length_key: [u8; 32],
+    pub(crate) responder_packet_key: [u8; 32],
+    pub(crate) initiator_garbage_terminator: [u8; 16],
+    pub(crate) responder_garbage_terminator: [u8; 16],
 }
 
 /// Your role in the handshake.
