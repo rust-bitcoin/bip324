@@ -13,10 +13,12 @@ fn main() {
     let mut bob = handshake_response.packet_handler;
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
-    let secret_message = alice.receive_v2_packet(encrypted_message_to_alice, None).unwrap();
+    let messages = alice.receive_v2_packets(encrypted_message_to_alice, None).unwrap();
+    let secret_message = messages.first().unwrap().message.clone().unwrap();
     assert_eq!(message, secret_message);
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice.prepare_v2_packet(message.clone(), None, false).unwrap();
-    let secret_message = bob.receive_v2_packet(encrypted_message_to_bob, None).unwrap();
+    let messages = bob.receive_v2_packets(encrypted_message_to_bob, None).unwrap();
+    let secret_message = messages.first().unwrap().message.clone().unwrap();
     assert_eq!(message, secret_message);
 }

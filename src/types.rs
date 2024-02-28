@@ -61,3 +61,10 @@ pub enum HandshakeRole {
     Responder,
 }
 
+/// A message or decoy packet from a connected peer.
+#[derive(Debug)]
+pub struct ReceivedMessage {
+    /// A message to handle or `None` if the peer sent a decoy and the message may be safely ignored.
+    pub message: Option<Vec<u8>>, 
+}
+

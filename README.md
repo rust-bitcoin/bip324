@@ -18,26 +18,27 @@ The crate exposes 4 functions, of which each party need to call only two for a c
 
 ```rust
 use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, receive_v2_handshake, responder_complete_v2_handshake};
-
 fn main() {
     // Alice starts a connection with Bob by making a pub/priv keypair and sending a message to Bob.
     let handshake_init = initialize_v2_handshake(None).unwrap();
     // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
-    let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+    let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
     // Alice finishes her handshake by using her keys from earlier, and sending a final message to Bob.
-    let alice_handshake = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init).unwrap();
-    // Bob checks Alice derived the correct keys for the session by authenticating her first message with her second message.
-    responder_complete_v2_handshake(alice_handshake.message.clone(), &mut bob_handshake).unwrap();
+    let alice_completion = initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init).unwrap();
+    // Bob checks Alice derived the correct keys for the session by authenticating her first message.
+    let _bob_completion = responder_complete_v2_handshake(alice_completion.message.clone(), &mut handshake_response).unwrap();
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
-    let mut alice = alice_handshake.packet_handler;
-    let mut bob = bob_handshake.packet_handler;
+    let mut alice = alice_completion.packet_handler;
+    let mut bob = handshake_response.packet_handler;
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
-    let secret_message = alice.receive_v2_packet(encrypted_message_to_alice, None).unwrap();
+    let messages = alice.receive_v2_packets(encrypted_message_to_alice, None).unwrap();
+    let secret_message = messages.first().unwrap().message.clone().unwrap();
     assert_eq!(message, secret_message);
-    let message = b"Goodbyte!".to_vec();
+    let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice.prepare_v2_packet(message.clone(), None, false).unwrap();
-    let secret_message = bob.receive_v2_packet(encrypted_message_to_bob, None).unwrap();
+    let messages = bob.receive_v2_packets(encrypted_message_to_bob, None).unwrap();
+    let secret_message = messages.first().unwrap().message.clone().unwrap();
     assert_eq!(message, secret_message);
 }
 ```
