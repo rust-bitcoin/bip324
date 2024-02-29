@@ -6,7 +6,7 @@
 
 #### License
 
-BSD 3-Clause
+MIT
 
 #### Protocol Brief
 
@@ -14,7 +14,7 @@ Alice and Bob initiate a connection by sending three messages to each other to d
 
 #### Implementation
 
-The crate exposes 4 functions, of which each party need to call only two for a complete handshake. For encrypting and decrypting messages, a `PacketHandler` struct is exposed with two methods. All messages are expected to be a `Vec<u8>` arrays of bytes, as this structure works well with `TcpStream` from the standard library and Bitcoin P2P messages. To initiate a handshake Alice calls `initialize_v2_handshake` and `initiator_complete_v2_handshake`. Similarly, to respond to a V2 handshake, Bob calls `receive_v2_handshake` and `responder_complete_v2_handshake`. Each function creates the appropriate message as well as additional data or structures to complete the handshake. . Errors thrown by each of these functions should result in disconnection from the peer.
+The crate exposes 4 functions, of which each party need to call only two for a complete handshake. For encrypting and decrypting messages, a `PacketHandler` struct is exposed with two methods. All messages are expected to be a `Vec<u8>` arrays of bytes, as this structure works well with `TcpStream` from the standard library and Bitcoin P2P messages. To initiate a handshake Alice calls `initialize_v2_handshake` and `initiator_complete_v2_handshake`. Similarly, to respond to a V2 handshake, Bob calls `receive_v2_handshake` and `responder_complete_v2_handshake`. Each function creates the appropriate message as well as additional data or structures to complete the handshake. Errors thrown by each of these functions should result in disconnection from the peer.
 
 ```rust
 use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, receive_v2_handshake, responder_complete_v2_handshake};
@@ -22,14 +22,14 @@ fn main() {
     // Alice starts a connection with Bob by making a pub/priv keypair and sending a message to Bob.
     let handshake_init = initialize_v2_handshake(None).unwrap();
     // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
-    let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+    let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone()).unwrap();
     // Alice finishes her handshake by using her keys from earlier, and sending a final message to Bob.
-    let alice_completion = initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init).unwrap();
+    let alice_completion = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init).unwrap();
     // Bob checks Alice derived the correct keys for the session by authenticating her first message.
-    let _bob_completion = responder_complete_v2_handshake(alice_completion.message.clone(), &mut handshake_response).unwrap();
+    let _bob_completion = responder_complete_v2_handshake(alice_completion.message.clone(), &mut bob_handshake).unwrap();
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let mut alice = alice_completion.packet_handler;
-    let mut bob = handshake_response.packet_handler;
+    let mut bob = bob_handshake.packet_handler;
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
     let messages = alice.receive_v2_packets(encrypted_message_to_alice, None).unwrap();
