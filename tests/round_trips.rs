@@ -2,7 +2,9 @@ use bip324::{
     initialize_v2_handshake, initiator_complete_v2_handshake, receive_v2_handshake,
     responder_complete_v2_handshake,
 };
-fn main() {
+
+#[test]
+fn hello_world_happy_path() {
     // Alice starts a connection with Bob by making a pub/priv keypair and sending a message to Bob.
     let handshake_init = initialize_v2_handshake(None).unwrap();
     // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
