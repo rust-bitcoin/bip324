@@ -1,5 +1,5 @@
-use secp256k1::{ellswift::ElligatorSwift, SecretKey};
 use crate::PacketHandler;
+use secp256k1::{ellswift::ElligatorSwift, SecretKey};
 
 /// A point on the curve used to complete the handshake.
 #[derive(Debug)]
@@ -16,7 +16,6 @@ pub struct InitiatorHandshake {
     /// The derived point on the curve used for ECDH.
     pub point: EcdhPoint,
     pub(crate) garbage: Vec<u8>,
-    
 }
 
 /// The result of responding to a handshake.
@@ -31,12 +30,13 @@ pub struct ResponderHandshake {
 }
 
 /// The result after completing a handshake.
+#[allow(dead_code)]
 pub struct CompleteHandshake {
     /// The final message to send to the responder.
     pub message: Vec<u8>,
     pub(crate) session_keys: SessionKeyMaterial,
     /// The struct used to encode and decode subsequent packets.
-    pub packet_handler: PacketHandler
+    pub packet_handler: PacketHandler,
 }
 
 /// All keys derived from the ECDH.
@@ -65,6 +65,5 @@ pub enum HandshakeRole {
 #[derive(Debug)]
 pub struct ReceivedMessage {
     /// A message to handle or `None` if the peer sent a decoy and the message may be safely ignored.
-    pub message: Option<Vec<u8>>, 
+    pub message: Option<Vec<u8>>,
 }
-

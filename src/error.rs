@@ -1,6 +1,5 @@
 use std::error::Error;
 
-
 /// An error occured responding to an inbound handshake.
 #[derive(Debug)]
 pub enum ResponderHandshakeError {
@@ -15,7 +14,7 @@ impl std::fmt::Display for ResponderHandshakeError {
         match self {
             ResponderHandshakeError::ECC(e) => write!(f, "ECC error: {}", e),
             ResponderHandshakeError::IncorrectMessage(s) => write!(f, "Version error: {}", s),
-            ResponderHandshakeError::EncryptionError(s) => write!(f, "Encryption error: {}", s)
+            ResponderHandshakeError::EncryptionError(s) => write!(f, "Encryption error: {}", s),
         }
     }
 }
@@ -46,7 +45,6 @@ impl std::fmt::Display for HandshakeCompletionError {
             HandshakeCompletionError::TooMuchGarbage(s) => write!(f, "Handshake error: {}", s),
             HandshakeCompletionError::NoTerminator(s) => write!(f, "Handshake error: {}", s),
             HandshakeCompletionError::DecryptionError(s) => write!(f, "Handshake error: {}", s),
-            
         }
     }
 }
@@ -63,31 +61,31 @@ impl Error for HandshakeCompletionError {
 }
 
 #[derive(Debug)]
-pub enum CipherError {
-    FSChaCha20Encryption(String),
-    FSChaCha20Decryption(String),
-    FSChaCha20PolyEncryption(String),
-    FSChaCha20PolyDecryption(String),
+pub enum FSChaChaError {
+    StreamEncryption(String),
+    StreamDecryption(String),
+    Poly1305Encryption(String),
+    Poly1305Decryption(String),
 }
 
-impl std::fmt::Display for CipherError {
+impl std::fmt::Display for FSChaChaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CipherError::FSChaCha20Encryption(s) => write!(f, "Cipher error: {}", s),
-            CipherError::FSChaCha20Decryption(s) => write!(f, "Cipher error: {}", s),
-            CipherError::FSChaCha20PolyEncryption(s) => write!(f, "Cipher error: {}", s),
-            CipherError::FSChaCha20PolyDecryption(s) => write!(f, "Cipher error: {}", s),
+            FSChaChaError::StreamEncryption(s) => write!(f, "Cipher error: {}", s),
+            FSChaChaError::StreamDecryption(s) => write!(f, "Cipher error: {}", s),
+            FSChaChaError::Poly1305Encryption(s) => write!(f, "Cipher error: {}", s),
+            FSChaChaError::Poly1305Decryption(s) => write!(f, "Cipher error: {}", s),
         }
     }
 }
 
-impl Error for CipherError {
+impl Error for FSChaChaError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            CipherError::FSChaCha20Encryption(_s) => None,
-            CipherError::FSChaCha20Decryption(_s) => None,
-            CipherError::FSChaCha20PolyEncryption(_s) => None,
-            CipherError::FSChaCha20PolyDecryption(_s) => None,
+            FSChaChaError::StreamEncryption(_s) => None,
+            FSChaChaError::StreamDecryption(_s) => None,
+            FSChaChaError::Poly1305Encryption(_s) => None,
+            FSChaChaError::Poly1305Decryption(_s) => None,
         }
     }
 }
