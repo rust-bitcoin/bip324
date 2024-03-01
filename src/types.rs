@@ -30,11 +30,9 @@ pub struct ResponderHandshake {
 }
 
 /// The result after completing a handshake.
-#[allow(dead_code)]
 pub struct CompleteHandshake {
     /// The final message to send to the responder.
     pub message: Vec<u8>,
-    pub(crate) session_keys: SessionKeyMaterial,
     /// The struct used to encode and decode subsequent packets.
     pub packet_handler: PacketHandler,
 }

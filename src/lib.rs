@@ -554,7 +554,6 @@ pub fn initiator_complete_v2_handshake(
             response.extend(&auth);
             let handshake = CompleteHandshake {
                 message: response,
-                session_keys,
                 packet_handler,
             };
             Ok(handshake)
@@ -696,95 +695,14 @@ mod tests {
     }
 
     #[test]
-    fn test_handshake_matches() {
+    fn test_handshake_session_id() {
         let handshake_init = initialize_v2_handshake(Some(0)).unwrap();
         let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
         let handshake_completion =
             initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
-        let sid = handshake_completion.session_keys.session_id;
-        let sid2 = handshake_response.session_keys.session_id;
+        let sid = handshake_completion.packet_handler.session_id;
+        let sid2 = handshake_response.packet_handler.session_id;
         assert_eq!(sid, sid2);
-    }
-
-    #[test]
-    fn test_auth_cipher() {
-        let handshake_init = initialize_v2_handshake(Some(0)).unwrap();
-        let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
-        let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
-        let mut alice_cipher =
-            FSChaCha20Poly1305::new(handshake_completion.session_keys.initiator_packet_key);
-        let mut bob_cipher =
-            FSChaCha20Poly1305::new(handshake_completion.session_keys.initiator_packet_key);
-        let message = b"Hello, world";
-        let encrypted_message = alice_cipher.encrypt(Vec::new(), message.to_vec()).unwrap();
-        let decrypted_message = bob_cipher.decrypt(Vec::new(), encrypted_message).unwrap();
-        assert_eq!(message.to_vec(), decrypted_message);
-    }
-
-    #[test]
-    fn test_fuzz_auth_cipher() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
-        let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
-        let mut alice_cipher =
-            FSChaCha20Poly1305::new(handshake_completion.session_keys.initiator_packet_key);
-        let mut bob_cipher =
-            FSChaCha20Poly1305::new(handshake_completion.session_keys.initiator_packet_key);
-        for _i in 0..REKEY_INTERVAL + 100 {
-            let mut rnd = rand::thread_rng();
-            let mut buffer: Vec<u8> = vec![0; 32];
-            rnd.fill(&mut buffer[..]);
-            let message = buffer;
-            let encrypted_message = alice_cipher.encrypt(Vec::new(), message.to_vec()).unwrap();
-            let decrypted_message = bob_cipher
-                .decrypt(Vec::new(), encrypted_message.to_vec())
-                .unwrap();
-            assert_eq!(message.to_vec(), decrypted_message.to_vec());
-        }
-    }
-
-    #[test]
-    fn test_stream_cipher() {
-        let handshake_init = initialize_v2_handshake(Some(0)).unwrap();
-        let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
-        let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
-        let mut alice_cipher =
-            FSChaCha20::new(handshake_completion.session_keys.initiator_packet_key);
-        let mut bob_cipher =
-            FSChaCha20::new(handshake_completion.session_keys.initiator_packet_key);
-        let message = b"Rust is cool";
-        let encrypted_message_1 = alice_cipher.crypt(message.to_vec());
-        let decrypted_message = bob_cipher.crypt(encrypted_message_1.to_vec());
-        assert_eq!(message.to_vec(), decrypted_message);
-        let message = b"Rust is cool";
-        let encrypted_message_2 = bob_cipher.crypt(message.to_vec());
-        let decrypted_message = alice_cipher.crypt(encrypted_message_2.to_vec());
-        assert_eq!(message.to_vec(), decrypted_message);
-        assert_ne!(encrypted_message_1, encrypted_message_2);
-    }
-
-    #[test]
-    fn test_fuzz_stream_cipher() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
-        let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
-        let mut alice_cipher =
-            FSChaCha20::new(handshake_completion.session_keys.initiator_packet_key);
-        let mut bob_cipher =
-            FSChaCha20::new(handshake_completion.session_keys.initiator_packet_key);
-        for _ in 0..REKEY_INTERVAL + 100 {
-            let mut rnd = rand::thread_rng();
-            let mut buffer: Vec<u8> = vec![0; 3];
-            rnd.fill(&mut buffer[..]);
-            let message = buffer;
-            let encrypted_message = alice_cipher.crypt(message.to_vec());
-            let decrypted_message = bob_cipher.crypt(encrypted_message);
-            assert_eq!(message.to_vec(), decrypted_message.to_vec());
-        }
     }
 
     #[test]
