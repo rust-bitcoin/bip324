@@ -349,7 +349,6 @@ fn gen_key() -> Result<SecretKey, secp256k1::Error> {
 fn new_elligator_swift(sk: SecretKey) -> ElligatorSwift {
     let curve = Secp256k1::new();
     let pk = PublicKey::from_secret_key(&curve, &sk);
-
     ElligatorSwift::from_pubkey(pk)
 }
 
