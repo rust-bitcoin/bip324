@@ -39,7 +39,7 @@ impl Hkdf {
             prk: Hmac::from_engine(hmac_engine)
                 .to_byte_array()
                 .try_into()
-                .expect("32 bytes hash"),
+                .expect("32 byte hash"),
         }
     }
 
