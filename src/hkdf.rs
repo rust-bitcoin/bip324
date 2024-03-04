@@ -43,7 +43,7 @@ impl Hkdf {
         }
     }
 
-    /// Expand the key to generate an output.
+    /// Expand the key to generate output key material in okm.
     pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), InvalidLength> {
         // Length of output keying material must be less than 255 * hash length.
         if okm.len() > (MAX_OUTPUT_BYTES * HASH_LENGTH_BYTES) {
@@ -92,10 +92,8 @@ mod tests {
     use super::*;
     use hex;
 
-    // Vectors from rfc5869.
-
     #[test]
-    fn test_basic() {
+    fn test_rfc5869_basic() {
         let salt = hex::decode("000102030405060708090a0b0c").unwrap();
         let ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").unwrap();
@@ -111,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn test_longer_inputs_outputs() {
+    fn test_rfc5869_longer_inputs_outputs() {
         let salt = hex::decode(
             "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
         ).unwrap();
@@ -130,5 +128,18 @@ mod tests {
             hex::encode(okm),
             "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c58179ec3e87c14c01d5c1f3434f1d87"
         );
+    }
+
+    #[test]
+    fn test_too_long_okm() {
+        let salt = hex::decode("000102030405060708090a0b0c").unwrap();
+        let ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
+        let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").unwrap();
+
+        let hkdf = Hkdf::extract(&salt, &ikm);
+        let mut okm = [0u8; 256 * 32];
+        let e = hkdf.expand(&info, &mut okm);
+
+        assert!(e.is_err());
     }
 }
