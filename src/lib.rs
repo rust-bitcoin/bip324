@@ -374,7 +374,7 @@ fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
     let magic = NETWORK_MAGIC.as_slice();
     let salt = [ikm_salt, magic].concat();
-    let hk = Hkdf::new(salt.as_slice(), ikm);
+    let hk = Hkdf::extract(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
     let session_info = "session_id".as_bytes();
     hk.expand(session_info, &mut session_id)
