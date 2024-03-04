@@ -52,10 +52,10 @@ impl Hkdf {
 
         // Counter starts at "1" based on RFC5869 spec and is committed to in the hash.
         let mut counter = 1u8;
-        // Ceiling calculation for the total number of hashes required for the expand.
-        let total_hashes = (okm.len() + HASH_LENGTH_BYTES - 1) / HASH_LENGTH_BYTES;
+        // Ceiling calculation for the total number of blocks (iterations) required for the expand.
+        let total_blocks = (okm.len() + HASH_LENGTH_BYTES - 1) / HASH_LENGTH_BYTES;
 
-        while counter <= total_hashes as u8 {
+        while counter <= total_blocks as u8 {
             let mut hmac_engine: HmacEngine<sha256::Hash> = HmacEngine::new(&self.prk);
 
             // First block does not have a previous block,
@@ -71,7 +71,7 @@ impl Hkdf {
             let t = Hmac::from_engine(hmac_engine);
             let start_index = (counter as usize - 1) * HASH_LENGTH_BYTES;
             // Last block might not take full hash length.
-            let end_index = if counter == (total_hashes as u8) {
+            let end_index = if counter == (total_blocks as u8) {
                 okm.len()
             } else {
                 counter as usize * HASH_LENGTH_BYTES
