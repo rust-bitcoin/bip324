@@ -10,7 +10,7 @@ use core::fmt;
 // Hardcoded hash length for SHA256 backed implementation.
 const HASH_LENGTH_BYTES: usize = sha256::Hash::LEN;
 // Output keying material max length multiple.
-const MAX_OUTPUT_BYTES: usize = 255;
+const MAX_OUTPUT_BLOCKS: usize = 255;
 
 #[derive(Copy, Clone, Debug)]
 pub struct InvalidLength;
@@ -46,7 +46,7 @@ impl Hkdf {
     /// Expand the key to generate output key material in okm.
     pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), InvalidLength> {
         // Length of output keying material must be less than 255 * hash length.
-        if okm.len() > (MAX_OUTPUT_BYTES * HASH_LENGTH_BYTES) {
+        if okm.len() > (MAX_OUTPUT_BLOCKS * HASH_LENGTH_BYTES) {
             return Err(InvalidLength);
         }
 
@@ -58,8 +58,8 @@ impl Hkdf {
         while counter <= total_hashes as u8 {
             let mut hmac_engine: HmacEngine<sha256::Hash> = HmacEngine::new(&self.prk);
 
-            // Handle special case for first hash where t is 0 byte,
-            // otherwise include last hash in the HMAC input.
+            // First block does not have a previous block,
+            // all other blocks include last block in the HMAC input.
             if counter != 1u8 {
                 let previous_start_index = (counter as usize - 2) * HASH_LENGTH_BYTES;
                 let previous_end_index = (counter as usize - 1) * HASH_LENGTH_BYTES;
@@ -70,7 +70,7 @@ impl Hkdf {
 
             let t = Hmac::from_engine(hmac_engine);
             let start_index = (counter as usize - 1) * HASH_LENGTH_BYTES;
-            // Handle special case of last hash not taking full hash length.
+            // Last block might not take full hash length.
             let end_index = if counter == (total_hashes as u8) {
                 okm.len()
             } else {
