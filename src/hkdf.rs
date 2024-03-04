@@ -7,7 +7,7 @@
 use bitcoin_hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use core::fmt;
 
-// Hardcoded hash length for SHA256 backed implementatoin.
+// Hardcoded hash length for SHA256 backed implementation.
 const HASH_LENGTH_BYTES: usize = sha256::Hash::LEN;
 // Output keying material max length multiple.
 const MAX_OUTPUT_BYTES: usize = 255;
@@ -17,7 +17,7 @@ pub struct InvalidLength;
 
 impl fmt::Display for InvalidLength {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid number of blocks, too large output")
+        write!(f, "too large output")
     }
 }
 
@@ -76,11 +76,36 @@ impl Hkdf {
                 counter as usize * HASH_LENGTH_BYTES
             };
 
-            okm[start_index..end_index].copy_from_slice(&t.to_byte_array());
+            okm[start_index..end_index]
+                .copy_from_slice(&t.to_byte_array()[0..(end_index - start_index)]);
 
             counter = counter + 1;
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex;
+
+    // Vectors from rfc5869.
+
+    #[test]
+    fn test_basic() {
+        let salt = hex::decode("000102030405060708090a0b0c").unwrap();
+        let ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
+        let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").unwrap();
+
+        let hkdf = Hkdf::extract(&salt, &ikm);
+        let mut okm = [0u8; 42];
+        hkdf.expand(&info, &mut okm).unwrap();
+
+        assert_eq!(
+            hex::encode(okm),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        );
     }
 }
