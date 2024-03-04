@@ -37,7 +37,9 @@
 //! ```
 
 mod error;
+mod hkdf;
 mod types;
+
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use chacha20::ChaCha20;
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce};
@@ -49,7 +51,6 @@ use secp256k1::{
     ellswift::{ElligatorSwift, ElligatorSwiftParty},
     PublicKey, Secp256k1, SecretKey,
 };
-use sha2::Sha256;
 pub use types::SessionKeyMaterial;
 pub use types::{
     CompleteHandshake, EcdhPoint, HandshakeRole, InitiatorHandshake, ReceivedMessage,
@@ -373,7 +374,7 @@ fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
     let magic = NETWORK_MAGIC.as_slice();
     let salt = [ikm_salt, magic].concat();
-    let (_, hk) = Hkdf::<Sha256>::extract(Some(salt.as_slice()), ikm);
+    let hk = Hkdf::extract(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
     let session_info = "session_id".as_bytes();
     hk.expand(session_info, &mut session_id)
