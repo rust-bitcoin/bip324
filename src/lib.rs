@@ -68,7 +68,7 @@ const NETWORK_MAGIC: [u8; 4] = [0xf9, 0xbe, 0xb4, 0xd9];
 /// Encrypt and decrypt messages with a peer.
 #[derive(Debug)]
 pub struct PacketHandler {
-    /// The unique identifier of your communication channel
+    /// The unique identifier of your communication channel.
     pub session_id: [u8; 32],
     /// Your role in the handshake.
     pub role: HandshakeRole,
@@ -120,11 +120,11 @@ impl PacketHandler {
     ///
     /// # Arguments
     ///
-    /// `contents` - The Bitcoin P2P protocol message to send
+    /// `contents` - The Bitcoin P2P protocol message to send.
     ///
     /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
     ///
-    /// `decoy` - Should the peer ignore this message
+    /// `decoy` - Should the peer ignore this message.
     ///
     /// # Returns
     ///
@@ -132,7 +132,7 @@ impl PacketHandler {
     ///
     /// # Errors
     ///
-    /// Fails if the packet was not encrypted properly  
+    /// Fails if the packet was not encrypted properly.
     pub fn prepare_v2_packet(
         &mut self,
         contents: Vec<u8>,
@@ -169,7 +169,7 @@ impl PacketHandler {
     ///
     /// # Errors
     ///
-    /// Fails if the packet was not decrypted or authenticated properly  
+    /// Fails if the packet was not decrypted or authenticated properly.  
     pub fn receive_v2_packets(
         &mut self,
         ciphertext: Vec<u8>,
@@ -228,6 +228,10 @@ enum CryptType {
     Decrypt,
 }
 
+/// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
+/// nonces and re-keying.
+///
+/// FSChaCha20Poly1305 is used for message packets in BIP324.
 #[derive(Debug)]
 struct FSChaCha20Poly1305 {
     key: [u8; 32],
@@ -298,6 +302,11 @@ impl FSChaCha20Poly1305 {
     }
 }
 
+/// A wrapper over ChaCha20 (unauthenticated) stream cipher which handles automatically changing
+/// nonces and re-keying.
+///
+/// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
+/// implicitly authenticated by the message packets.
 #[derive(Debug)]
 struct FSChaCha20 {
     key: [u8; 32],
@@ -427,7 +436,7 @@ fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
 ///
 /// # Errors
 ///
-/// Fails if their was a curve generating the keypair.
+/// Fails if their was an error generating the keypair.
 pub fn initialize_v2_handshake(
     garbage_len: Option<u32>,
 ) -> Result<InitiatorHandshake, secp256k1::Error> {
