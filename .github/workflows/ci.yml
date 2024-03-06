@@ -18,7 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Update Toolchain
-        run: rustup default ${{ matrix.toolchain }} && rustup component add --toolchain ${{ matrix.toolchain }} rustfmt && rustup component add --toolchain ${{ matrix.toolchain }} clippy && rustup update ${{ matrix.toolchain }} 
+        run: |
+          rustup default ${{ matrix.toolchain }}
+          rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
+          rustup component add --toolchain ${{ matrix.toolchain }} clippy
+          rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
+          rustup update ${{ matrix.toolchain }}
       - name: Build
         run: cargo build --verbose
       - name: Lint
