@@ -36,10 +36,7 @@ impl Hkdf {
         let mut hmac_engine: HmacEngine<sha256::Hash> = HmacEngine::new(salt);
         hmac_engine.input(ikm);
         Self {
-            prk: Hmac::from_engine(hmac_engine)
-                .to_byte_array()
-                .try_into()
-                .expect("32 byte hash"),
+            prk: Hmac::from_engine(hmac_engine).to_byte_array(),
         }
     }
 
@@ -80,7 +77,7 @@ impl Hkdf {
             okm[start_index..end_index]
                 .copy_from_slice(&t.to_byte_array()[0..(end_index - start_index)]);
 
-            counter = counter + 1;
+            counter += 1;
         }
 
         Ok(())
@@ -90,7 +87,6 @@ impl Hkdf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex;
 
     #[test]
     fn test_rfc5869_basic() {

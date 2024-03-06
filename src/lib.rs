@@ -36,13 +36,14 @@
 //! assert_eq!(message, secret_message);
 //! ```
 
+mod chacha;
+mod chachapoly;
 mod error;
 mod hkdf;
 mod types;
 
-use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use chacha20::ChaCha20;
-use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Nonce};
+use chacha::ChaCha20;
+use chachapoly::ChaCha20Poly1305;
 use error::FSChaChaError;
 pub use error::{HandshakeCompletionError, ResponderHandshakeError};
 use hkdf::Hkdf;
@@ -63,7 +64,7 @@ const LENGTH_FIELD_LEN: usize = 3;
 const CHACHA_BLOCKS_USED: u32 = 3;
 const DECOY: u8 = 128;
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
-const NETWORK_MAGIC: [u8; 4] = [0xf9, 0xbe, 0xb4, 0xd9];
+const NETWORK_MAGIC: &[u8] = &[0xf9, 0xbe, 0xb4, 0xd9];
 
 /// Encrypt and decrypt messages with a peer.
 #[derive(Debug)]
@@ -249,7 +250,7 @@ impl FSChaCha20Poly1305 {
     fn crypt(
         &mut self,
         aad: Vec<u8>,
-        contents: Vec<u8>,
+        mut contents: Vec<u8>,
         crypt_type: CryptType,
     ) -> Result<Vec<u8>, FSChaChaError> {
         let mut counter_div = (self.message_counter / REKEY_INTERVAL)
@@ -259,33 +260,41 @@ impl FSChaCha20Poly1305 {
         let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
         let mut nonce = counter_mod.to_vec();
         nonce.extend(counter_div); // mod slice then div slice
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key).expect("Key is valid.");
-        let conformed_nonce = Nonce::from_slice(&nonce);
+        let cipher =
+            ChaCha20Poly1305::new(self.key, nonce.try_into().expect("Nonce is malformed."));
         let converted_ciphertext: Vec<u8> = match crypt_type {
             CryptType::Encrypt => {
                 let mut buffer = contents.clone();
-                cipher
-                    .encrypt_in_place(conformed_nonce, &aad, &mut buffer)
-                    .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
-                buffer
+                buffer.extend([0u8; 16]);
+                cipher.encrypt(&mut contents, Some(&aad), &mut buffer);
+                buffer.to_vec()
             }
             CryptType::Decrypt => {
                 let mut ciphertext = contents.clone();
                 cipher
-                    .decrypt_in_place(conformed_nonce, &aad, &mut ciphertext)
+                    .decrypt(&mut ciphertext, Some(&aad))
                     .map_err(|e| FSChaChaError::Poly1305Decryption(e.to_string()))?;
-                ciphertext.to_vec()
+                ciphertext[..ciphertext.len() - 16].to_vec()
             }
         };
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
             let mut rekey_nonce = REKEY_INITIAL_NONCE.to_vec();
+            let mut counter_div = (self.message_counter / REKEY_INTERVAL)
+                .to_le_bytes()
+                .to_vec();
+            counter_div.extend([0u8; 4]);
+            let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
+            let mut nonce = counter_mod.to_vec();
+            nonce.extend(counter_div);
             rekey_nonce.extend(nonce[4..].to_vec());
-            let mut ciphertext = [0u8; 32].to_vec();
-            let conformed_nonce = Nonce::from_slice(&rekey_nonce);
-            cipher
-                .encrypt_in_place(conformed_nonce, b"", &mut ciphertext)
-                .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
-            self.key = ciphertext[0..32]
+            let mut buffer = [0u8; 48];
+            let mut plaintext = [0u8; 32];
+            let cipher = ChaCha20Poly1305::new(
+                self.key,
+                rekey_nonce.try_into().expect("Nonce is malformed."),
+            );
+            cipher.encrypt(&mut plaintext, Some(&aad), &mut buffer);
+            self.key = buffer[0..32]
                 .try_into()
                 .expect("Cipher should be at least 32 bytes.");
         }
@@ -329,12 +338,10 @@ impl FSChaCha20 {
         let mut nonce = zeroes.clone();
         nonce.extend(counter_mod);
         nonce.extend(zeroes);
-        let mut cipher =
-            ChaCha20::new_from_slices(&self.key, &nonce).expect("Valid keys and nonce.");
+        let mut cipher = ChaCha20::new(self.key, nonce.try_into().expect("Nonce is malformed."), 0);
         let mut buffer = chunk.clone();
         cipher.seek(self.block_counter);
         cipher.apply_keystream(&mut buffer);
-        // self.block_counter += cipher.current_pos::<u32>(); // overflows somehow
         self.block_counter += CHACHA_BLOCKS_USED;
         if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
             let mut key_buffer = [0u8; 32];
@@ -381,7 +388,7 @@ fn get_shared_secrets(
 
 fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-    let magic = NETWORK_MAGIC.as_slice();
+    let magic = NETWORK_MAGIC;
     let salt = [ikm_salt, magic].concat();
     let hk = Hkdf::extract(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
@@ -473,7 +480,7 @@ pub fn initialize_v2_handshake(
 pub fn receive_v2_handshake(
     message: Vec<u8>,
 ) -> Result<ResponderHandshake, ResponderHandshakeError> {
-    let mut network_magic = NETWORK_MAGIC.clone().to_vec();
+    let mut network_magic = NETWORK_MAGIC.to_vec();
     let mut version_bytes = "version".as_bytes().to_vec();
     version_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
     network_magic.extend(version_bytes);
