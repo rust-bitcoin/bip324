@@ -21,6 +21,7 @@ impl fmt::Display for InvalidLength {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for InvalidLength {}
 
 /// HMAC-based Extract-and-Expand Key Derivation Function (HKDF).

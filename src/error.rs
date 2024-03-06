@@ -1,7 +1,6 @@
-use std::error::Error;
-extern crate alloc;
 use core::fmt;
-// use alloc::string::String;
+
+use alloc::string::String;
 
 /// An error occured responding to an inbound handshake.
 #[derive(Debug)]
@@ -12,8 +11,8 @@ pub enum ResponderHandshakeError {
     EncryptionError(String),
 }
 
-impl std::fmt::Display for ResponderHandshakeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ResponderHandshakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ResponderHandshakeError::ECC(e) => write!(f, "ECC error: {}", e),
             ResponderHandshakeError::IncorrectMessage(s) => write!(f, "Version error: {}", s),
@@ -22,8 +21,9 @@ impl std::fmt::Display for ResponderHandshakeError {
     }
 }
 
-impl Error for ResponderHandshakeError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+#[cfg(feature = "std")]
+impl std::error::Error for ResponderHandshakeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ResponderHandshakeError::ECC(e) => Some(e),
             ResponderHandshakeError::IncorrectMessage(_) => None,
@@ -41,8 +41,8 @@ pub enum HandshakeCompletionError {
     DecryptionError(String),
 }
 
-impl std::fmt::Display for HandshakeCompletionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for HandshakeCompletionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HandshakeCompletionError::MessageTooShort(s) => write!(f, "Handshake error: {}", s),
             HandshakeCompletionError::TooMuchGarbage(s) => write!(f, "Handshake error: {}", s),
@@ -52,8 +52,9 @@ impl std::fmt::Display for HandshakeCompletionError {
     }
 }
 
-impl Error for HandshakeCompletionError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+#[cfg(feature = "std")]
+impl std::error::Error for HandshakeCompletionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             HandshakeCompletionError::MessageTooShort(_s) => None,
             HandshakeCompletionError::TooMuchGarbage(_s) => None,
@@ -71,8 +72,8 @@ pub enum FSChaChaError {
     Poly1305Decryption(String),
 }
 
-impl std::fmt::Display for FSChaChaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FSChaChaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FSChaChaError::StreamEncryption(s) => write!(f, "Cipher error: {}", s),
             FSChaChaError::StreamDecryption(s) => write!(f, "Cipher error: {}", s),
@@ -82,8 +83,9 @@ impl std::fmt::Display for FSChaChaError {
     }
 }
 
-impl Error for FSChaChaError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+#[cfg(feature = "std")]
+impl std::error::Error for FSChaChaError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             FSChaChaError::StreamEncryption(_s) => None,
             FSChaChaError::StreamDecryption(_s) => None,

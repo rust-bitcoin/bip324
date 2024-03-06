@@ -1,4 +1,5 @@
 use crate::PacketHandler;
+use alloc::vec::Vec;
 use secp256k1::{ellswift::ElligatorSwift, SecretKey};
 
 /// A point on the curve used to complete the handshake.

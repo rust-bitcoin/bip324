@@ -36,6 +36,10 @@
 //! assert_eq!(message, secret_message);
 //! ```
 
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
+extern crate alloc;
+
 mod chacha;
 mod chachapoly;
 mod error;
@@ -45,6 +49,12 @@ mod types;
 
 use chacha::ChaCha20;
 use chachapoly::ChaCha20Poly1305;
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use alloc::string::ToString;
+
 use error::FSChaChaError;
 pub use error::{HandshakeCompletionError, ResponderHandshakeError};
 use hkdf::Hkdf;
