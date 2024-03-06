@@ -1,4 +1,4 @@
-name: Cargo Build & Test
+name: Build & Test
 
 on:
   push:
@@ -7,8 +7,7 @@ on:
   pull_request:
 
 jobs:
-  build:
-    name: Rust - latest
+  build-and-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -28,5 +27,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test
         run: cargo test --verbose
+      - name: Check No Standard Library Support
+        run: cargo build --target thumbv7m-none-eabi --no-default-features
 
         
