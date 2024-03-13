@@ -104,14 +104,14 @@ impl Poly1305 {
         // described well in an article here: https://loup-vaillant.fr/tutorials/poly1305-design
         let mut t = [0; 5];
         for i in 0..5 {
-            for j in 0..5 {
+            for (j, t) in t.iter_mut().enumerate()  {
                 let modulus: u64 = if i > j {
                     5
                 } else {
                     1
                 };
                 let start = (5 - i) % 5;
-                t[j] += modulus * self.r[i] as u64 * self.acc[(start + j) % 5] as u64;
+                *t += modulus * self.r[i] as u64 * self.acc[(start + j) % 5] as u64;
             }
         }
         // carry
