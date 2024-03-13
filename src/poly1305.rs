@@ -15,10 +15,14 @@ impl Poly1305 {
     pub(crate) fn new(key: [u8; 32]) -> Self {
         // taken from donna. assigns R to a 26-bit 5-limb number while simultaneously 'clamping' R
         let r0 = u32::from_le_bytes(key[0..4].try_into().expect("Valid subset of 32.")) & 0x3ffffff;
-        let r1 = u32::from_le_bytes(key[3..7].try_into().expect("Valid subset of 32.")) >> 2 & 0x03ffff03;
-        let r2 = u32::from_le_bytes(key[6..10].try_into().expect("Valid subset of 32.")) >> 4 & 0x03ffc0ff;
-        let r3 = u32::from_le_bytes(key[9..13].try_into().expect("Valid subset of 32.")) >> 6 & 0x03f03fff;
-        let r4 = u32::from_le_bytes(key[12..16].try_into().expect("Valid subset of 32.")) >> 8 & 0x000fffff;
+        let r1 = u32::from_le_bytes(key[3..7].try_into().expect("Valid subset of 32.")) >> 2
+            & 0x03ffff03;
+        let r2 = u32::from_le_bytes(key[6..10].try_into().expect("Valid subset of 32.")) >> 4
+            & 0x03ffc0ff;
+        let r3 = u32::from_le_bytes(key[9..13].try_into().expect("Valid subset of 32.")) >> 6
+            & 0x03f03fff;
+        let r4 = u32::from_le_bytes(key[12..16].try_into().expect("Valid subset of 32.")) >> 8
+            & 0x000fffff;
         let r = [r0, r1, r2, r3, r4];
         let s0 = u32::from_le_bytes(key[16..20].try_into().expect("Valid subset of 32."));
         let s1 = u32::from_le_bytes(key[20..24].try_into().expect("Valid subset of 32."));
@@ -32,7 +36,7 @@ impl Poly1305 {
     pub(crate) fn add(&mut self, message: &[u8]) {
         let mut i = 0;
         while i < message.len() / 16 {
-            let msg_slice = prepare_padded_message_slice(&message[i * 16..(i+1) * 16], false);
+            let msg_slice = prepare_padded_message_slice(&message[i * 16..(i + 1) * 16], false);
             for (i, b) in msg_slice.iter().enumerate() {
                 self.acc[i] += *b;
             }
@@ -51,7 +55,7 @@ impl Poly1305 {
     pub(crate) fn tag(&mut self) -> [u8; 16] {
         // carry and mask
         for i in 1..4 {
-            self.acc[i+1] += self.acc[i] >> CARRY;
+            self.acc[i + 1] += self.acc[i] >> CARRY;
         }
         self.acc[0] += (self.acc[4] >> CARRY) * 5;
         self.acc[1] += self.acc[0] >> CARRY;
@@ -61,11 +65,11 @@ impl Poly1305 {
         // reduce
         let mut t = self.acc;
         t[0] += 5;
-        t[4]  = t[4].wrapping_sub(1 << CARRY);
+        t[4] = t[4].wrapping_sub(1 << CARRY);
         for i in 0..3 {
-            t[i+1] += t[i] >> CARRY;
+            t[i + 1] += t[i] >> CARRY;
         }
-        t[4]  = t[4].wrapping_add(t[3] >> CARRY);
+        t[4] = t[4].wrapping_add(t[3] >> CARRY);
         for t in t.iter_mut().take(4) {
             *t &= BITMASK;
         }
@@ -81,7 +85,7 @@ impl Poly1305 {
         let a3 = self.acc[3] >> 18 | self.acc[4] << 8;
         let a = [a0, a1, a2, a3];
         // a + s
-        let mut tag : [u64; 4] = [0; 4];
+        let mut tag: [u64; 4] = [0; 4];
         for i in 0..4 {
             tag[i] = a[i] as u64 + self.s[i] as u64;
         }
@@ -93,23 +97,19 @@ impl Poly1305 {
         let mut ret: [u8; 16] = [0; 16];
         for i in 0..tag.len() {
             let bytes = (tag[i] as u32).to_le_bytes();
-            ret[i * 4..(i+1) * 4].copy_from_slice(&bytes);
+            ret[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
         }
         ret
     }
 
     fn r_times_a(&mut self) {
         // multiply and reduce
-        // while this looks complicated, it is a variation of schoolbook multiplication, 
+        // while this looks complicated, it is a variation of schoolbook multiplication,
         // described well in an article here: https://loup-vaillant.fr/tutorials/poly1305-design
         let mut t = [0; 5];
         for i in 0..5 {
-            for (j, t) in t.iter_mut().enumerate()  {
-                let modulus: u64 = if i > j {
-                    5
-                } else {
-                    1
-                };
+            for (j, t) in t.iter_mut().enumerate() {
+                let modulus: u64 = if i > j { 5 } else { 1 };
                 let start = (5 - i) % 5;
                 *t += modulus * self.r[i] as u64 * self.acc[(start + j) % 5] as u64;
             }
@@ -130,18 +130,17 @@ impl Poly1305 {
 }
 
 fn prepare_padded_message_slice(msg: &[u8], is_last: bool) -> [u32; 5] {
-    let hi_bit: u32 = if is_last {
-        0
-    } else {
-        1 << 24
-    };
+    let hi_bit: u32 = if is_last { 0 } else { 1 << 24 };
     let mut fmt_msg = [0u8; 17];
     fmt_msg[..msg.len()].clone_from_slice(msg);
     fmt_msg[16] = 0x01;
     let m0 = u32::from_le_bytes(fmt_msg[0..4].try_into().expect("Valid subset of 32.")) & BITMASK;
-    let m1 = u32::from_le_bytes(fmt_msg[3..7].try_into().expect("Valid subset of 32.")) >> 2 & BITMASK;
-    let m2 = u32::from_le_bytes(fmt_msg[6..10].try_into().expect("Valid subset of 32.")) >> 4 & BITMASK;
-    let m3 = u32::from_le_bytes(fmt_msg[9..13].try_into().expect("Valid subset of 32.")) >> 6 & BITMASK;
+    let m1 =
+        u32::from_le_bytes(fmt_msg[3..7].try_into().expect("Valid subset of 32.")) >> 2 & BITMASK;
+    let m2 =
+        u32::from_le_bytes(fmt_msg[6..10].try_into().expect("Valid subset of 32.")) >> 4 & BITMASK;
+    let m3 =
+        u32::from_le_bytes(fmt_msg[9..13].try_into().expect("Valid subset of 32.")) >> 6 & BITMASK;
     let m4: u32 = if is_last {
         u32::from_le_bytes(fmt_msg[13..17].try_into().expect("Valid subset of 32.")) | hi_bit
     } else {
@@ -179,4 +178,4 @@ fn _print_acc(num: &[u32; 5]) {
 //         let tag = poly.tag();
 //         assert_eq!("a8061dc1305136c6c22b8baf0c0127a9",hex::encode(tag));
 //     }
-// }       
+// }

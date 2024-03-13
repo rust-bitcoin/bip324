@@ -40,8 +40,8 @@ mod chacha;
 mod chachapoly;
 mod error;
 mod hkdf;
-mod types;
 mod poly1305;
+mod types;
 
 use chacha::ChaCha20;
 use chachapoly::ChaCha20Poly1305;
@@ -267,8 +267,9 @@ impl FSChaCha20Poly1305 {
             CryptType::Encrypt => {
                 let mut buffer = contents.clone();
                 buffer.extend([0u8; 16]);
-                cipher.encrypt(&mut contents, Some(&aad), &mut buffer)
-                        .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
+                cipher
+                    .encrypt(&mut contents, Some(&aad), &mut buffer)
+                    .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
                 buffer.to_vec()
             }
             CryptType::Decrypt => {
@@ -295,8 +296,9 @@ impl FSChaCha20Poly1305 {
                 self.key,
                 rekey_nonce.try_into().expect("Nonce is malformed."),
             );
-            cipher.encrypt(&mut plaintext, Some(&aad), &mut buffer)
-                    .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
+            cipher
+                .encrypt(&mut plaintext, Some(&aad), &mut buffer)
+                .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
             self.key = buffer[0..32]
                 .try_into()
                 .expect("Cipher should be at least 32 bytes.");
