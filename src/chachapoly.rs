@@ -4,6 +4,8 @@ use crate::poly1305::Poly1305;
 pub use error::ChaCha20Poly1305DecryptionError;
 use error::ChaCha20Poly1305EncryptionError;
 
+use alloc::string::ToString;
+
 #[derive(Debug)]
 pub struct ChaCha20Poly1305 {
     key: [u8; 32],
