@@ -41,7 +41,7 @@ There are also `no_std` compliant versions of these functions which require an R
 
 # ChaCha20Poly1305
 
-BIP324 elects to use the ChaCha20Poly130 Authenticated Encryption with Addition Data (AEAD) algorithm under the hood. This is a combination of the ChaCha20 stream cipher and the Poly1305 message authentication code (MAC). In this context, "authentication" refers to the encrypted message's integrity, not to the identity of either party communicating.
+BIP324 elects to use the ChaCha20Poly1305 Authenticated Encryption with Addition Data (AEAD) algorithm under the hood. This is a combination of the ChaCha20 stream cipher and the Poly1305 message authentication code (MAC). In this context, "authentication" refers to the encrypted message's integrity, not to the identity of either party communicating.
 
 Poly1305 is a purpose-built MAC, as opposed to something like an HMAC using SHA256 which leverages an existing hash scheme to build a message authentication code. Purpose-built introduces new complexity, but also allows for increased performance.
 
