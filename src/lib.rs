@@ -61,6 +61,7 @@ use hkdf::Hkdf;
 use rand::Rng;
 use secp256k1::{
     ellswift::{ElligatorSwift, ElligatorSwiftParty},
+    ffi::types::AlignedType,
     PublicKey, Secp256k1, SecretKey,
 };
 pub use types::SessionKeyMaterial;
@@ -379,7 +380,8 @@ fn gen_key() -> Result<SecretKey, secp256k1::Error> {
 }
 
 fn new_elligator_swift(sk: SecretKey) -> ElligatorSwift {
-    let curve = Secp256k1::new();
+    let mut buf_ful = vec![AlignedType::zeroed(); Secp256k1::preallocate_size()];
+    let curve = Secp256k1::preallocated_new(&mut buf_ful).unwrap();
     let pk = PublicKey::from_secret_key(&curve, &sk);
     ElligatorSwift::from_pubkey(pk)
 }

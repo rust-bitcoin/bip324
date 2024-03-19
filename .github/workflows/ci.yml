@@ -22,7 +22,6 @@ jobs:
           rustup default ${{ matrix.toolchain }}
           rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
-          
           rustup update ${{ matrix.toolchain }}
       - name: Build
         run: cargo build --verbose
