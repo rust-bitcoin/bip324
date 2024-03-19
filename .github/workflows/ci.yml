@@ -22,7 +22,7 @@ jobs:
           rustup default ${{ matrix.toolchain }}
           rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
-          rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
+          
           rustup update ${{ matrix.toolchain }}
       - name: Build
         run: cargo build --verbose
@@ -33,6 +33,8 @@ jobs:
       - name: Test
         run: cargo test --verbose
       - name: Check No Standard Library Support
-        run: cargo build --target thumbv7m-none-eabi --no-default-features
-
+        run: |
+          rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
+          cargo install cross
+          cross build --target thumbv7m-none-eabi --no-default-features
         
