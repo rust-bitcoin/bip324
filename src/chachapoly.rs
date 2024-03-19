@@ -1,9 +1,10 @@
 use crate::chacha::ChaCha20;
 use crate::error;
 use crate::poly1305::Poly1305;
-use error::ChaCha20Poly1305EncryptionError;
-extern crate alloc;
 pub use error::ChaCha20Poly1305DecryptionError;
+use error::ChaCha20Poly1305EncryptionError;
+
+use alloc::string::ToString;
 
 #[derive(Debug)]
 pub struct ChaCha20Poly1305 {
