@@ -1,18 +1,12 @@
-## BIP324 Rust Implementation
+# BIP324 Encrypted Communication
 
-#### Introduction
+[BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki) describes an encrypted communication protocol over the Bitcoin P2P network. Encrypted messages offer a number of benefits over plaintext communication, even though the data exchanged over the Bitcoin P2P network is public to some degree. For instance, plaintext message tampering without detection is trivial for a man in the middle (MitM) attacker. Additionally, a nefarious actor may associate metadata such as IP addresses and transaction origins without explicitly having to connect directly to peers. BIP 324 - "V2" - transport forces nefarious observers to actively connect to peers as opposed to passively observing network traffic, and makes packet tampering detectable. Furthermore, V2 messages over TCP/IP look no different from random noise, making Bitcoin P2P packets indistinguishable from other network packets. 
 
-[BIP 324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki) describes an encrypted communication protocol over the Bitcoin P2P network. Encrypted messages offer a number of benefits over plaintext communcation, even though the data exchanged over the Bitcoin P2P network is public to some degree. For instance, plaintext message tampering without detection is trivial for a man in the middle (MitM) attacker. Additionally, a nefarious actor may associate metadata such as IP addresses and transaction origins without explicitly having to connect directly to peers. BIP 324 - "V2" - transport forces nefarious observers to actively connect to peers as opposed to passively observing network traffic, and makes packet tampering detectable. Furthermore, V2 messages over TCP/IP look no different than random noise, making Bitcoin P2P packets indistinguishable from other network packets. 
-
-#### License
-
-MIT
-
-#### Protocol Brief
+## Protocol Brief
 
 Alice and Bob initiate a connection by sending three messages to each other to derive a number of shared secrets. Alice begins the connection by deriving a public/private keypair over `secp256k1`, the typical Bitcoin curve. Alice is known as the initiator. She encodes the public key in the [Elligator Swift](https://eprint.iacr.org/2022/759.pdf) format (64-bytes), optionally pads it with some random garbage bytes, and sends the message to Bob. Bob, known as the responder, decodes the Elligator Swift public key, and derives an ephemeral public/private keypair himself. Using his public and private keys, as well as Alice's public key, Bob performs a variation of the Elliptic Curve Diffie Hellman algorithm to derive a shared key. From this shared key, Bob derives multiple keys and a session ID using the HKDF algorithm. Next, Bob creates garbage data, and sends his public key, garbage data, an encrypted packet using the garbage data, and a version negotiation to Alice. With Bob's public key, Alice derives the shared secret and ensures the decrypted packet is authenticated with the garbage Bob sent her. Finally, Alice sends a "garbage terminator" and an encrypted packet using her garbage data, so Bob may authenticate she derived the correct secret and he can decode her messages. Alice and Bob may now freely exchange encrypted messages over the Bitcoin P2P protocol.
 
-#### Implementation
+## Implementation
 
 The crate exposes 4 functions, of which each party need to call only two for a complete handshake. For encrypting and decrypting messages, a `PacketHandler` struct is exposed with two methods. All messages are expected to be a `Vec<u8>` arrays of bytes, as this structure works well with `TcpStream` from the standard library and Bitcoin P2P messages. To initiate a handshake Alice calls `initialize_v2_handshake` and `initiator_complete_v2_handshake`. Similarly, to respond to a V2 handshake, Bob calls `receive_v2_handshake` and `responder_complete_v2_handshake`. Each function creates the appropriate message as well as additional data or structures to complete the handshake. Errors thrown by each of these functions should result in disconnection from the peer.
 
@@ -43,8 +37,17 @@ fn main() {
 }
 ```
 
-#### Coverage
+There are also `no_std` compliant versions of these functions which require an RNG to be initialized by the consumer.
 
-The implementation is tested against vectors from the BIP 324 reference and a number of additional library tests.
+# ChaCha20Poly1305
 
+BIP324 elects to use the ChaCha20Poly130 Authenticated Encryption with Addition Data (AEAD) under the hood. This is a combination of the ChaCha20 stream cipher and the Poly1305 message authentication code (MAC). In this context, "authentication" refers to the encrypted message's integrity, not to the identity of either party.
+
+Poly1305 is a purpose-built MAC, as opposed to something like an HMAC using SHA256 which leverages an existing hash scheme to build a message authentication code. Purpose-built introduces new complexity, but also allows for increased performance.
+
+ChaCha20 and Poly1305 are both implemented in this crate to keep dependencies to a minimum.
+
+# Development
+
+The implementation is tested against vectors from the BIP324 reference and a number of additional library tests.
 
