@@ -1,6 +1,6 @@
 //! The ChaCha20 stream cipher based on RFC7539.
 
-/// The first four words (32 bits) of the ChaCha stream cipher state are constants.
+/// The first four words (32-bit) of the ChaCha stream cipher state are constants.
 const WORD_1: u32 = 0x61707865;
 const WORD_2: u32 = 0x3320646e;
 const WORD_3: u32 = 0x79622d32;
@@ -56,13 +56,11 @@ impl ChaCha20 {
 
     /// Make a new instance of ChaCha20 from a block in the keystream.
     pub fn new_from_block(key: [u8; 32], nonce: [u8; 12], block: u32) -> Self {
-        let inner = block;
-        let seek = 0;
         ChaCha20 {
             key,
             nonce,
-            block_count: inner,
-            seek_offset_bytes: seek,
+            block_count: block,
+            seek_offset_bytes: 0,
         }
     }
 
