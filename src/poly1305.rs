@@ -1,4 +1,4 @@
-/// Implementation of Poly1305 function heavily inspired by the following [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
+/// Implementation of Poly1305 function heavily inspired by [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
 /// referred to as "Donna". Further reference to [this](https://loup-vaillant.fr/tutorials/poly1305-design) article was used to formulate the multiplication loop.
 
 const BITMASK: u32 = 0x03ffffff;

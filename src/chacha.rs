@@ -1,50 +1,66 @@
+//! The ChaCha20 stream cipher based on RFC7539.
+
+/// The first four words (32-bit) of the ChaCha stream cipher state are constants.
 const WORD_1: u32 = 0x61707865;
 const WORD_2: u32 = 0x3320646e;
 const WORD_3: u32 = 0x79622d32;
 const WORD_4: u32 = 0x6b206574;
+
+/// Each quarter round of ChaCha scrambles 4 words (32-bit) of the state
+/// using some Addition (mod 2^32), Rotation, and XOR (ARX). 8 quarter
+/// rounds make up a round. A block is broken up into 16 32-bit words
+/// and each quarter round takes 4 words as input.
 const CHACHA_ROUND_INDICIES: [(usize, usize, usize, usize); 8] = [
+    // The first 4 rounds are rows of a 4x4 matrix
+    // of the block broken up into 32-bit words.
     (0, 4, 8, 12),
     (1, 5, 9, 13),
     (2, 6, 10, 14),
     (3, 7, 11, 15),
+    // The first 4 rounds are diagonals of a 4x4 matrix
+    // of the block broken up into 32-bit words.
     (0, 5, 10, 15),
     (1, 6, 11, 12),
     (2, 7, 8, 13),
     (3, 4, 9, 14),
 ];
+
+/// The cipher's block size is 64 bytes.
 const CHACHA_BLOCKSIZE: usize = 64;
 
 /// The ChaCha20 stream cipher.
 #[derive(Debug)]
 pub(crate) struct ChaCha20 {
+    /// A 256 bit secret session key shared by the parties communitcating.
     key: [u8; 32],
+    /// A 96 bit initialization vector (IV), or nonce. A key/nonce pair should only be used once.  
     nonce: [u8; 12],
-    inner: u32,
-    seek: usize,
+    /// Internal block index of keystream.
+    block_count: u32,
+    /// Interal byte offset index of the block_count.
+    seek_offset_bytes: usize,
 }
 
 impl ChaCha20 {
     /// Make a new instance of ChaCha20 from an index in the keystream.
     pub fn new(key: [u8; 32], nonce: [u8; 12], seek: u32) -> Self {
-        let inner = seek / 64;
-        let seek = (seek % 64) as usize;
+        let block_count = seek / 64;
+        let seek_offset_bytes = (seek % 64) as usize;
         ChaCha20 {
             key,
             nonce,
-            inner,
-            seek,
+            block_count,
+            seek_offset_bytes,
         }
     }
 
     /// Make a new instance of ChaCha20 from a block in the keystream.
     pub fn new_from_block(key: [u8; 32], nonce: [u8; 12], block: u32) -> Self {
-        let inner = block;
-        let seek = 0;
         ChaCha20 {
             key,
             nonce,
-            inner,
-            seek,
+            block_count: block,
+            seek_offset_bytes: 0,
         }
     }
 
@@ -53,7 +69,12 @@ impl ChaCha20 {
         let num_full_blocks = to.len() / CHACHA_BLOCKSIZE;
         let mut j = 0;
         while j < num_full_blocks {
-            let kstream = keystream_at_slice(self.key, self.nonce, self.inner, self.seek);
+            let kstream = keystream_at_slice(
+                self.key,
+                self.nonce,
+                self.block_count,
+                self.seek_offset_bytes,
+            );
             for (c, k) in to[j * CHACHA_BLOCKSIZE..(j + 1) * CHACHA_BLOCKSIZE]
                 .iter_mut()
                 .zip(kstream.iter())
@@ -61,14 +82,19 @@ impl ChaCha20 {
                 *c ^= *k
             }
             j += 1;
-            self.inner += 1;
+            self.block_count += 1;
         }
         if to.len() % 64 > 0 {
-            let kstream = keystream_at_slice(self.key, self.nonce, self.inner, self.seek);
+            let kstream = keystream_at_slice(
+                self.key,
+                self.nonce,
+                self.block_count,
+                self.seek_offset_bytes,
+            );
             for (c, k) in to[j * CHACHA_BLOCKSIZE..].iter_mut().zip(kstream.iter()) {
                 *c ^= *k
             }
-            self.inner += 1;
+            self.block_count += 1;
         }
         to
     }
@@ -76,19 +102,24 @@ impl ChaCha20 {
     /// Get the keystream block at a specified block.
     pub(crate) fn get_keystream(&mut self, block: u32) -> [u8; 64] {
         self.block(block);
-        keystream_at_slice(self.key, self.nonce, self.inner, self.seek)
+        keystream_at_slice(
+            self.key,
+            self.nonce,
+            self.block_count,
+            self.seek_offset_bytes,
+        )
     }
 
-    /// Update the index of the keystream to an index in the keystream.
+    /// Update the index of the keystream to the given byte.
     pub(crate) fn seek(&mut self, seek: u32) {
-        self.inner = seek / 64;
-        self.seek = (seek % 64) as usize;
+        self.block_count = seek / 64;
+        self.seek_offset_bytes = (seek % 64) as usize;
     }
 
     /// Update the index of the keystream to a block.
     pub(crate) fn block(&mut self, block: u32) {
-        self.inner = block;
-        self.seek = 0;
+        self.block_count = block;
+        self.seek_offset_bytes = 0;
     }
 }
 
@@ -187,12 +218,12 @@ fn keystream_from_state(state: &mut [u32; 16]) -> [u8; 64] {
     keystream
 }
 
-fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], inner: u32, seek: usize) -> [u8; 64] {
+fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -> [u8; 64] {
     let mut keystream: [u8; 128] = [0; 128];
-    let mut state = prepare_state(key, nonce, inner);
+    let mut state = prepare_state(key, nonce, count);
     chacha_block(&mut state);
     let first_half = keystream_from_state(&mut state);
-    let mut state = prepare_state(key, nonce, inner + 1);
+    let mut state = prepare_state(key, nonce, count + 1);
     chacha_block(&mut state);
     let second_half = keystream_from_state(&mut state);
     keystream[..64].copy_from_slice(&first_half);
