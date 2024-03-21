@@ -1,17 +1,26 @@
-/// Implementation of Poly1305 function heavily inspired by [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
-/// referred to as "Donna". Further reference to [this](https://loup-vaillant.fr/tutorials/poly1305-design) article was used to formulate the multiplication loop.
+//! Poly1305 one-time authenticator from RFC7539.
+//!
+//! Implementation heavily inspired by [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
+//! referred to as "Donna". Further reference to [this](https://loup-vaillant.fr/tutorials/poly1305-design) article was used to formulate the multiplication loop.
 
+///
 const BITMASK: u32 = 0x03ffffff;
+/// Number is encoded in five 26-bit "limbs".
 const CARRY: u32 = 26;
 
+/// Poly1305 authenticator.
 #[derive(Debug)]
 pub(crate) struct Poly1305 {
+    ///
     r: [u32; 5],
+    ///
     s: [u32; 4],
+    ///
     acc: [u32; 5],
 }
 
 impl Poly1305 {
+    /// Initialize
     pub(crate) fn new(key: [u8; 32]) -> Self {
         // taken from donna. assigns R to a 26-bit 5-limb number while simultaneously 'clamping' R
         let r0 = u32::from_le_bytes(key[0..4].try_into().expect("Valid subset of 32.")) & 0x3ffffff;
@@ -33,6 +42,7 @@ impl Poly1305 {
         Poly1305 { r, s, acc }
     }
 
+    /// Add message to be authenticated.
     pub(crate) fn add(&mut self, message: &[u8]) {
         let mut i = 0;
         while i < message.len() / 16 {
@@ -52,8 +62,9 @@ impl Poly1305 {
         }
     }
 
+    /// Generate authentication tag.
     pub(crate) fn tag(&mut self) -> [u8; 16] {
-        // carry and mask
+        // Carry and mask.
         for i in 1..4 {
             self.acc[i + 1] += self.acc[i] >> CARRY;
         }
@@ -62,7 +73,7 @@ impl Poly1305 {
         for i in 0..self.acc.len() {
             self.acc[i] &= BITMASK;
         }
-        // reduce
+        // Reduce
         let mut t = self.acc;
         t[0] += 5;
         t[4] = t[4].wrapping_sub(1 << CARRY);
@@ -73,12 +84,12 @@ impl Poly1305 {
         for t in t.iter_mut().take(4) {
             *t &= BITMASK;
         }
-        // convert acc to a 4 item array
+        // Convert acc to a 4 item array.
         let mask = (t[4] >> 31).wrapping_sub(1);
         for (i, t) in t.iter().enumerate().take(self.acc.len()) {
             self.acc[i] = t & mask | self.acc[i] & !mask;
         }
-        // voodoo from donna to convert to [u32; 4]
+        // Voodoo from donna to convert to [u32; 4].
         let a0 = self.acc[0] | self.acc[1] << 26;
         let a1 = self.acc[1] >> 6 | self.acc[2] << 20;
         let a2 = self.acc[2] >> 12 | self.acc[3] << 14;
@@ -89,10 +100,12 @@ impl Poly1305 {
         for i in 0..4 {
             tag[i] = a[i] as u64 + self.s[i] as u64;
         }
-        //carry
+
+        // Carry
         for i in 0..3 {
             tag[i + 1] += tag[i] >> 32;
         }
+
         // return the 16 least significant bytes
         let mut ret: [u8; 16] = [0; 16];
         for i in 0..tag.len() {
@@ -103,8 +116,8 @@ impl Poly1305 {
     }
 
     fn r_times_a(&mut self) {
-        // multiply and reduce
-        // while this looks complicated, it is a variation of schoolbook multiplication,
+        // Multiply and reduce.
+        // While this looks complicated, it is a variation of schoolbook multiplication,
         // described well in an article here: https://loup-vaillant.fr/tutorials/poly1305-design
         let mut t = [0; 5];
         for i in 0..5 {
@@ -114,15 +127,15 @@ impl Poly1305 {
                 *t += modulus * self.r[i] as u64 * self.acc[(start + j) % 5] as u64;
             }
         }
-        // carry
+        // Carry
         for i in 0..4 {
             t[i + 1] += t[i] >> CARRY;
         }
-        // mask
+        // Mask
         for (i, t) in t.iter().enumerate().take(self.acc.len()) {
             self.acc[i] = *t as u32 & BITMASK;
         }
-        // carry and mask first limb
+        // Carry and mask first limb.
         self.acc[0] += (t[4] >> CARRY) as u32 * 5;
         self.acc[1] += self.acc[0] >> CARRY;
         self.acc[0] &= BITMASK;
@@ -161,21 +174,21 @@ fn _print_acc(num: &[u32; 5]) {
         ret[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
     }
     ret.reverse();
-    // println!("{:?}{}", num[0].to_le_bytes()[3], hex::encode(ret));
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     // fails to shortcut encryption and decryption.
-//     #[test]
-//     fn test_none_message() {
-//         let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b").unwrap();
-//         let key = key.as_slice().try_into().unwrap();
-//         let mut poly = Poly1305::new(key);
-//         let message = b"Cryptographic Forum Research Group";
-//         poly.add(message);
-//         let tag = poly.tag();
-//         assert_eq!("a8061dc1305136c6c22b8baf0c0127a9",hex::encode(tag));
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_none_message() {
+        let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+            .unwrap();
+        let key = key.as_slice().try_into().unwrap();
+        let mut poly = Poly1305::new(key);
+        let message = b"Cryptographic Forum Research Group";
+        poly.add(message);
+        let tag = poly.tag();
+        assert_eq!("a8061dc1305136c6c22b8baf0c0127a9", hex::encode(tag));
+    }
+}

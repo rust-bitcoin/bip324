@@ -40,15 +40,13 @@
 
 extern crate alloc;
 
-mod chacha;
-mod chachapoly;
+mod chacha20poly1305;
 mod error;
 mod hkdf;
-mod poly1305;
 mod types;
 
-use chacha::ChaCha20;
-use chachapoly::ChaCha20Poly1305;
+use chacha20poly1305::ChaCha20;
+use chacha20poly1305::ChaCha20Poly1305;
 
 use alloc::string::ToString;
 use alloc::vec;
