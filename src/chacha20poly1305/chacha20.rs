@@ -30,7 +30,7 @@ const CHACHA_BLOCKSIZE: usize = 64;
 
 /// The ChaCha20 stream cipher.
 #[derive(Debug)]
-pub(crate) struct ChaCha20 {
+pub struct ChaCha20 {
     /// A 256 bit secret session key shared by the parties communitcating.
     key: [u8; 32],
     /// A 96 bit initialization vector (IV), or nonce. A key/nonce pair should only be used once.  
@@ -235,7 +235,6 @@ fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
     use rand::Rng;
 
     #[test]
@@ -444,8 +443,7 @@ mod tests {
                 let mut message2 = message.clone();
                 let msg = message2.as_mut_slice();
                 chacha.apply_keystream(msg);
-                let mut cipher = chacha20::ChaCha20::new_from_slices(&key, &nonce)
-                    .expect("Valid keys and nonce.");
+                let mut cipher = ChaCha20::new(key, nonce, 0);
                 let mut buffer = message;
                 cipher.seek(count);
                 cipher.apply_keystream(&mut buffer);
