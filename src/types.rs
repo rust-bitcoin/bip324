@@ -3,14 +3,14 @@ use alloc::vec::Vec;
 use secp256k1::{ellswift::ElligatorSwift, SecretKey};
 
 /// A point on the curve used to complete the handshake.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EcdhPoint {
     pub(crate) secret_key: SecretKey,
     pub(crate) elligator_swift: ElligatorSwift,
 }
 
 /// The result of initiating a handshake.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InitiatorHandshake {
     /// The message that must be send to the responder.
     pub message: Vec<u8>,
@@ -20,7 +20,7 @@ pub struct InitiatorHandshake {
 }
 
 /// The result of responding to a handshake.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ResponderHandshake {
     /// The message to send to the initializer.
     pub message: Vec<u8>,
@@ -52,7 +52,7 @@ pub struct SessionKeyMaterial {
 }
 
 /// Your role in the handshake.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum HandshakeRole {
     /// You started the handshake with a peer.
     Initiator,
@@ -61,7 +61,7 @@ pub enum HandshakeRole {
 }
 
 /// A message or decoy packet from a connected peer.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ReceivedMessage {
     /// A message to handle or `None` if the peer sent a decoy and the message may be safely ignored.
     pub message: Option<Vec<u8>>,

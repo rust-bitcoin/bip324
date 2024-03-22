@@ -47,14 +47,9 @@ mod hkdf;
 mod poly1305;
 mod types;
 
+use alloc::vec;
 use chacha::ChaCha20;
 use chachapoly::ChaCha20Poly1305;
-
-use alloc::vec;
-use alloc::vec::Vec;
-
-use alloc::string::ToString;
-
 use error::FSChaChaError;
 pub use error::{HandshakeCompletionError, ResponderHandshakeError};
 use hkdf::Hkdf;
@@ -79,7 +74,7 @@ const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const NETWORK_MAGIC: &[u8] = &[0xf9, 0xbe, 0xb4, 0xd9];
 
 /// Encrypt and decrypt messages with a peer.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PacketHandler {
     /// The unique identifier of your communication channel.
     pub session_id: [u8; 32],
@@ -200,6 +195,35 @@ impl PacketHandler {
         Ok(messages)
     }
 
+    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> Result<usize, FSChaChaError> {
+        let mut enc_content_len = self.length_decoding_cipher.crypt(len_slice.to_vec());
+        enc_content_len.push(0u8);
+        let content_slice: [u8; 4] = enc_content_len
+            .try_into()
+            .expect("Length of slice should be 4.");
+        let content_len = u32::from_le_bytes(content_slice);
+        Ok(content_len as usize + 17)
+    }
+
+    pub fn decrypt_contents(
+        &mut self,
+        contents: Vec<u8>,
+        aad: Option<Vec<u8>>,
+    ) -> Result<ReceivedMessage, FSChaChaError> {
+        let auth = aad.unwrap_or_default();
+        let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
+        let header = *plaintext
+            .first()
+            .expect("All contents should include a header.");
+        if header.eq(&DECOY) {
+            return Ok(ReceivedMessage { message: None });
+        }
+        let message = plaintext[1..].to_vec();
+        Ok(ReceivedMessage {
+            message: Some(message),
+        })
+    }
+
     fn decode_packet_from_len(
         &mut self,
         ciphertext: &[u8],
@@ -245,7 +269,7 @@ enum CryptType {
 /// nonces and re-keying.
 ///
 /// FSChaCha20Poly1305 is used for message packets in BIP324.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FSChaCha20Poly1305 {
     key: [u8; 32],
     message_counter: u32,
@@ -332,7 +356,7 @@ impl FSChaCha20Poly1305 {
 ///
 /// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
 /// implicitly authenticated by the message packets.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FSChaCha20 {
     key: [u8; 32],
     block_counter: u32,
@@ -967,6 +991,36 @@ mod tests {
             message_to_bob.extend(enc_packet);
         }
         bob.receive_v2_packets(message_to_bob, None).unwrap();
+    }
+
+    #[test]
+    fn test_partial_decodings() {
+        let mut rng = rand::thread_rng();
+        let handshake_init = initialize_v2_handshake(None).unwrap();
+        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let alice_completion =
+            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init)
+                .unwrap();
+        let _bob_completion = responder_complete_v2_handshake(
+            alice_completion.message.clone(),
+            &mut handshake_response,
+        )
+        .unwrap();
+        let mut alice = alice_completion.packet_handler;
+        let mut bob = handshake_response.packet_handler;
+        let mut message_to_bob = Vec::new();
+        let message = gen_garbage(420, &mut rng);
+        let enc_packet = alice
+            .prepare_v2_packet(message.clone(), None, false)
+            .unwrap();
+        message_to_bob.extend(enc_packet);
+        let alice_message_len = bob
+            .decypt_len(message_to_bob[..3].try_into().unwrap())
+            .unwrap();
+        let contents = bob
+            .decrypt_contents(message_to_bob[3..3 + alice_message_len].to_vec(), None)
+            .unwrap();
+        assert_eq!(contents.message.unwrap(), message);
     }
 
     // The rest are sourced from: https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv
