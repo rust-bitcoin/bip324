@@ -19,6 +19,8 @@ bitcoin_hashes = { version = "0.13.0", default-features = false }
 
 [dev-dependencies]
 hex = "0.4.3"
+bitcoin = "0.31.1"
+tokio = { version = "1.36.0", features = ["full"] }
 
 [lib]
 name = "bip324"
