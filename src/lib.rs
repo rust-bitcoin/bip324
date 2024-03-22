@@ -167,6 +167,61 @@ impl PacketHandler {
         Ok(packet)
     }
 
+    /// Decode the length, in bytes, of the of the rest imbound message. Intended for use with `TcpStream` and `read_exact`.
+    /// Note that this does not decode to the length of contents described in BIP324, and is meant to represent the entire imbound message.
+    ///
+    /// # Arguments
+    ///
+    /// `len_slice` - The first three bytes of the message.
+    ///
+    /// # Returns
+    ///
+    /// The length to be read into the buffer next to receive the full message from the peer.
+    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> usize {
+        let mut enc_content_len = self.length_decoding_cipher.crypt(len_slice.to_vec());
+        enc_content_len.push(0u8);
+        let content_slice: [u8; 4] = enc_content_len
+            .try_into()
+            .expect("Length of slice should be 4.");
+        let content_len = u32::from_le_bytes(content_slice);
+        content_len as usize + 17
+    }
+
+    /// Decrypt the rest of the message from the peer, excluding the 3 length bytes. This method should only be called after
+    /// calling `decrypt_len` on the first three bytes of the buffer.
+    ///
+    /// # Arguments
+    ///
+    /// `contents` - The message from the peer.
+    ///
+    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    ///
+    /// # Returns
+    ///
+    /// The message from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet was not decrypted or authenticated properly.  
+    pub fn decrypt_contents(
+        &mut self,
+        contents: Vec<u8>,
+        aad: Option<Vec<u8>>,
+    ) -> Result<ReceivedMessage, FSChaChaError> {
+        let auth = aad.unwrap_or_default();
+        let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
+        let header = *plaintext
+            .first()
+            .expect("All contents should include a header.");
+        if header.eq(&DECOY) {
+            return Ok(ReceivedMessage { message: None });
+        }
+        let message = plaintext[1..].to_vec();
+        Ok(ReceivedMessage {
+            message: Some(message),
+        })
+    }
+
     /// Decrypt the one or more messages from bytes received by a V2 peer.
     ///
     /// # Arguments
@@ -197,37 +252,6 @@ impl PacketHandler {
             messages.push(ReceivedMessage { message })
         }
         Ok(messages)
-    }
-
-    ///
-    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> Result<usize, FSChaChaError> {
-        let mut enc_content_len = self.length_decoding_cipher.crypt(len_slice.to_vec());
-        enc_content_len.push(0u8);
-        let content_slice: [u8; 4] = enc_content_len
-            .try_into()
-            .expect("Length of slice should be 4.");
-        let content_len = u32::from_le_bytes(content_slice);
-        Ok(content_len as usize + 17)
-    }
-
-    ///
-    pub fn decrypt_contents(
-        &mut self,
-        contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
-    ) -> Result<ReceivedMessage, FSChaChaError> {
-        let auth = aad.unwrap_or_default();
-        let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
-        let header = *plaintext
-            .first()
-            .expect("All contents should include a header.");
-        if header.eq(&DECOY) {
-            return Ok(ReceivedMessage { message: None });
-        }
-        let message = plaintext[1..].to_vec();
-        Ok(ReceivedMessage {
-            message: Some(message),
-        })
     }
 
     fn decode_packet_from_len(
@@ -1020,9 +1044,7 @@ mod tests {
             .prepare_v2_packet(message.clone(), None, false)
             .unwrap();
         message_to_bob.extend(enc_packet);
-        let alice_message_len = bob
-            .decypt_len(message_to_bob[..3].try_into().unwrap())
-            .unwrap();
+        let alice_message_len = bob.decypt_len(message_to_bob[..3].try_into().unwrap());
         let contents = bob
             .decrypt_contents(message_to_bob[3..3 + alice_message_len].to_vec(), None)
             .unwrap();
