@@ -134,116 +134,29 @@ impl ChaCha20Poly1305 {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // #[test]
-    // fn test_encrypt_other_with_aad() {
-    //     let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
-    //         .unwrap();
-    //     let key: [u8; 32] = key.as_slice().try_into().unwrap();
-    //     let nonce = [0u8; 12];
-    //     let mut message = b"Cryptographic Forum Research Group".to_vec();
-    //     let aad = b"Some 17 bytes!!!!".to_vec();
-    //     let conformed_nonce = Nonce::from_slice(&nonce);
-    //     let other = ChaCha20Poly1305::new_from_slice(&key).expect("Key is valid.");
-    //     other
-    //         .encrypt_in_place(conformed_nonce, &aad, &mut message)
-    //         .unwrap();
-    //     let mut message2 = *b"Cryptographic Forum Research Group";
-    //     let mut aad = *b"Some 17 bytes!!!!";
-    //     let us = ChaCha20Poly1305::new(key.try_into().unwrap(), nonce);
-    //     let mut buffer = [0u8; 50];
-    //     us.encrypt(
-    //         message2.as_mut_slice(),
-    //         Some(aad.as_mut_slice()),
-    //         buffer.as_mut_slice(),
-    //     )
-    //     .unwrap();
-    //     assert_eq!(hex::encode(message), hex::encode(buffer));
-    // }
+    #[test]
+    fn test_rfc7539() {
+        let mut message = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        let aad = hex::decode("50515253c0c1c2c3c4c5c6c7").unwrap();
+        let key: [u8; 32] =
+            hex::decode("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
+                .unwrap()
+                .as_slice()
+                .try_into()
+                .unwrap();
+        let nonce: [u8; 12] = hex::decode("070000004041424344454647")
+            .unwrap()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        let mut buffer = [0u8; 130];
+        let cipher = ChaCha20Poly1305::new(key, nonce);
+        cipher
+            .encrypt(message.as_mut_slice(), Some(&aad), buffer.as_mut_slice())
+            .unwrap();
 
-    // #[test]
-    // fn test_encrypt_other_no_aad() {
-    //     let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
-    //         .unwrap();
-    //     let key = key.as_slice().try_into().unwrap();
-    //     let nonce = [0u8; 12];
-    //     let mut message = b"Cryptographic Forum Research Group".to_vec();
-    //     let aad = b"".to_vec();
-    //     let conformed_nonce = Nonce::from_slice(&nonce);
-    //     let other = ChaCha20Poly1305::new_from_slice(key).expect("Key is valid.");
-    //     other
-    //         .encrypt_in_place(conformed_nonce, &aad, &mut message)
-    //         .unwrap();
-    //     let mut message2 = *b"Cryptographic Forum Research Group";
-    //     let us = ChaCha20Poly1305::new(key.try_into().unwrap(), nonce);
-    //     let mut buffer = [0u8; 50];
-    //     us.encrypt(message2.as_mut_slice(), None, buffer.as_mut_slice())
-    //         .unwrap();
-    //     assert_eq!(hex::encode(message), hex::encode(buffer));
-    // }
-
-    // #[test]
-    // fn test_encrypt_other_no_content() {
-    //     let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
-    //         .unwrap();
-    //     let key = key.as_slice().try_into().unwrap();
-    //     let nonce = [0u8; 12];
-    //     let mut message = b"".to_vec();
-    //     let aad = b"Some secret".to_vec();
-    //     let conformed_nonce = Nonce::from_slice(&nonce);
-    //     let other = ChaCha20Poly1305::new_from_slice(key).expect("Key is valid.");
-    //     other
-    //         .encrypt_in_place(conformed_nonce, &aad, &mut message)
-    //         .unwrap();
-    //     let mut message2 = *b"";
-    //     let mut aad = *b"Some secret";
-    //     let us = ChaCha20Poly1305::new(key.try_into().unwrap(), nonce);
-    //     let mut buffer = [0u8; 16];
-    //     us.encrypt(
-    //         message2.as_mut_slice(),
-    //         Some(aad.as_mut_slice()),
-    //         buffer.as_mut_slice(),
-    //     )
-    //     .unwrap();
-    //     assert_eq!(hex::encode(message), hex::encode(buffer));
-    // }
-
-    // #[test]
-    // fn test_decrypt_other_no_aad() {
-    //     let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
-    //         .unwrap();
-    //     let key = key.as_slice().try_into().unwrap();
-    //     let nonce = [0u8; 12];
-    //     let mut message = b"Cryptographic Forum Research Group".to_vec();
-    //     let aad = b"".to_vec();
-    //     let conformed_nonce = Nonce::from_slice(&nonce);
-    //     let other = ChaCha20Poly1305::new_from_slice(key).expect("Key is valid.");
-    //     other
-    //         .encrypt_in_place(conformed_nonce, &aad, &mut message)
-    //         .unwrap();
-    //     let us = ChaCha20Poly1305::new(key.try_into().unwrap(), nonce);
-    //     let plaintext = us.decrypt(message.as_mut_slice(), None).unwrap();
-    //     let message = b"Cryptographic Forum Research Group".to_vec();
-    //     assert_eq!(hex::encode(message), hex::encode(plaintext))
-    // }
-
-    // #[test]
-    // fn test_decrypt_other_no_content() {
-    //     let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
-    //         .unwrap();
-    //     let key = key.as_slice().try_into().unwrap();
-    //     let nonce = [0u8; 12];
-    //     let mut message = b"".to_vec();
-    //     let aad = b"Cryptographic Forum Research Group".to_vec();
-    //     let conformed_nonce = Nonce::from_slice(&nonce);
-    //     let other = ChaCha20Poly1305::new_from_slice(key).expect("Key is valid.");
-    //     other
-    //         .encrypt_in_place(conformed_nonce, &aad, &mut message)
-    //         .unwrap();
-    //     let us = ChaCha20Poly1305::new(key.try_into().unwrap(), nonce);
-    //     let aad = *b"Cryptographic Forum Research Group";
-    //     let plaintext = us.decrypt(message.as_mut_slice(), Some(&aad)).unwrap();
-    //     assert!(plaintext.len() == 0);
-    // }
+        assert_eq!(hex::encode(&buffer), "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691");
+    }
 }
