@@ -47,9 +47,13 @@ mod hkdf;
 mod poly1305;
 mod types;
 
-use alloc::vec;
 use chacha::ChaCha20;
 use chachapoly::ChaCha20Poly1305;
+
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::string::ToString;
+
 use error::FSChaChaError;
 pub use error::{HandshakeCompletionError, ResponderHandshakeError};
 use hkdf::Hkdf;
@@ -205,11 +209,7 @@ impl PacketHandler {
         Ok(content_len as usize + 17)
     }
 
-    pub fn decrypt_contents(
-        &mut self,
-        contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
-    ) -> Result<ReceivedMessage, FSChaChaError> {
+    pub fn decrypt_contents(&mut self, contents: Vec<u8>, aad: Option<Vec<u8>>) -> Result<ReceivedMessage, FSChaChaError> {
         let auth = aad.unwrap_or_default();
         let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
         let header = *plaintext
@@ -219,9 +219,7 @@ impl PacketHandler {
             return Ok(ReceivedMessage { message: None });
         }
         let message = plaintext[1..].to_vec();
-        Ok(ReceivedMessage {
-            message: Some(message),
-        })
+        Ok(ReceivedMessage { message: Some(message) })
     }
 
     fn decode_packet_from_len(
@@ -993,6 +991,7 @@ mod tests {
         bob.receive_v2_packets(message_to_bob, None).unwrap();
     }
 
+
     #[test]
     fn test_partial_decodings() {
         let mut rng = rand::thread_rng();
@@ -1014,12 +1013,8 @@ mod tests {
             .prepare_v2_packet(message.clone(), None, false)
             .unwrap();
         message_to_bob.extend(enc_packet);
-        let alice_message_len = bob
-            .decypt_len(message_to_bob[..3].try_into().unwrap())
-            .unwrap();
-        let contents = bob
-            .decrypt_contents(message_to_bob[3..3 + alice_message_len].to_vec(), None)
-            .unwrap();
+        let alice_message_len = bob.decypt_len(message_to_bob[..3].try_into().unwrap()).unwrap();
+        let contents = bob.decrypt_contents(message_to_bob[3..3 + alice_message_len].to_vec(), None).unwrap();
         assert_eq!(contents.message.unwrap(), message);
     }
 
