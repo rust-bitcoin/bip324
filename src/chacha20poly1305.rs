@@ -2,13 +2,16 @@ mod chacha20;
 mod poly1305;
 
 use crate::error;
-use chacha20::ChaCha20;
+pub use chacha20::ChaCha20;
 use poly1305::Poly1305;
 
 use error::ChaCha20Poly1305DecryptionError;
 use error::ChaCha20Poly1305EncryptionError;
 
 use alloc::string::ToString;
+
+// Zero array for padding slices.
+const ZEROES: [u8; 16] = [0u8; 16];
 
 #[derive(Debug)]
 pub struct ChaCha20Poly1305 {
@@ -39,8 +42,19 @@ impl ChaCha20Poly1305 {
                 .expect("32 is a valid subset of 64."),
         );
         let aad = aad.unwrap_or(&[]);
+        // AAD and ciphertext are padded if not 16-byte aligned.
         poly.add(aad);
+        let aad_overflow = aad.len() % 16;
+        if aad_overflow > 0 {
+            poly.add(&ZEROES[0..(16 - aad_overflow)]);
+        }
+
         poly.add(plaintext);
+        let text_overflow = plaintext.len() % 16;
+        if text_overflow > 0 {
+            poly.add(&ZEROES[0..(16 - text_overflow)]);
+        }
+
         let aad_len = aad.len().to_le_bytes();
         let msg_len = plaintext.len().to_le_bytes();
         let mut len_buffer = [0u8; 16];
@@ -79,7 +93,17 @@ impl ChaCha20Poly1305 {
         if ciphertext.len() >= 16 {
             let (received_msg, received_tag) = ciphertext.split_at_mut(ciphertext.len() - 16);
             poly.add(aad);
+            // AAD and ciphertext are padded if not 16-byte aligned.
+            let aad_overflow = aad.len() % 16;
+            if aad_overflow > 0 {
+                poly.add(&ZEROES[0..(16 - aad_overflow)]);
+            }
             poly.add(received_msg);
+            let msg_overflow = received_msg.len() % 16;
+            if msg_overflow > 0 {
+                poly.add(&ZEROES[0..(16 - msg_overflow)]);
+            }
+
             let aad_len = aad.len().to_le_bytes();
             let msg_len = received_msg.len().to_le_bytes();
             let mut len_buffer = [0u8; 16];

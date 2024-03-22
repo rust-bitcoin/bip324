@@ -30,7 +30,7 @@ const CHACHA_BLOCKSIZE: usize = 64;
 
 /// The ChaCha20 stream cipher.
 #[derive(Debug)]
-pub(crate) struct ChaCha20 {
+pub struct ChaCha20 {
     /// A 256 bit secret session key shared by the parties communitcating.
     key: [u8; 32],
     /// A 96 bit initialization vector (IV), or nonce. A key/nonce pair should only be used once.  
@@ -423,11 +423,11 @@ mod tests {
         assert_eq!(binding, to);
     }
 
-    fn gen_garbage(garbage_len: u32) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
-        let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
-        buffer
-    }
+    // fn gen_garbage(garbage_len: u32) -> Vec<u8> {
+    //     let mut rng = rand::thread_rng();
+    //     let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
+    //     buffer
+    // }
 
     // #[test]
     // fn test_fuzz_other() {
