@@ -423,33 +423,32 @@ mod tests {
         assert_eq!(binding, to);
     }
 
-    // fn gen_garbage(garbage_len: u32) -> Vec<u8> {
-    //     let mut rng = rand::thread_rng();
-    //     let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
-    //     buffer
-    // }
+    fn gen_garbage(garbage_len: u32) -> Vec<u8> {
+        let mut rng = rand::thread_rng();
+        let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
+        buffer
+    }
 
-    // #[test]
-    // fn test_fuzz_other() {
-    //     for _ in 0..100 {
-    //         let garbage_key = gen_garbage(32);
-    //         let key = garbage_key.as_slice().try_into().unwrap();
-    //         let garbage_nonce = gen_garbage(12);
-    //         let nonce = garbage_nonce.as_slice().try_into().unwrap();
-    //         for i in 0..10 {
-    //             let count: u32 = i * 11;
-    //             let mut chacha = ChaCha20::new(key, nonce, count);
-    //             let message = gen_garbage(129);
-    //             let mut message2 = message.clone();
-    //             let msg = message2.as_mut_slice();
-    //             chacha.apply_keystream(msg);
-    //             let mut cipher =
-    //                 ChaCha20::new_from_slices(&key, &nonce).expect("Valid keys and nonce.");
-    //             let mut buffer = message;
-    //             cipher.seek(count);
-    //             cipher.apply_keystream(&mut buffer);
-    //             assert_eq!(buffer.as_slice(), msg);
-    //         }
-    //     }
-    // }
+    #[test]
+    fn test_fuzz_other() {
+        for _ in 0..100 {
+            let garbage_key = gen_garbage(32);
+            let key = garbage_key.as_slice().try_into().unwrap();
+            let garbage_nonce = gen_garbage(12);
+            let nonce = garbage_nonce.as_slice().try_into().unwrap();
+            for i in 0..10 {
+                let count: u32 = i * 11;
+                let mut chacha = ChaCha20::new(key, nonce, count);
+                let message = gen_garbage(129);
+                let mut message2 = message.clone();
+                let msg = message2.as_mut_slice();
+                chacha.apply_keystream(msg);
+                let mut cipher = ChaCha20::new(key, nonce, 0);
+                let mut buffer = message;
+                cipher.seek(count);
+                cipher.apply_keystream(&mut buffer);
+                assert_eq!(buffer.as_slice(), msg);
+            }
+        }
+    }
 }
