@@ -231,16 +231,20 @@ fn _print_acc(num: &[u32; 5]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex::prelude::*;
 
     #[test]
     fn test_rfc7539_none_message() {
-        let key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+        let key = Vec::from_hex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
             .unwrap();
         let key = key.as_slice().try_into().unwrap();
         let mut poly = Poly1305::new(key);
         let message = b"Cryptographic Forum Research Group";
         poly.add(message);
         let tag = poly.tag();
-        assert_eq!("a8061dc1305136c6c22b8baf0c0127a9", hex::encode(tag));
+        assert_eq!(
+            "a8061dc1305136c6c22b8baf0c0127a9",
+            tag.to_lower_hex_string()
+        );
     }
 }

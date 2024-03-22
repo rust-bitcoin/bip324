@@ -235,6 +235,7 @@ fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex::prelude::*;
     use rand::Rng;
 
     #[test]
@@ -245,10 +246,10 @@ mod tests {
         let d: u32 = 0x01234567;
         let mut state = [a, b, c, d, a, b, c, d, a, b, c, d, a, b, c, d];
         quarter_round(&mut state, 0, 1, 2, 3);
-        assert_eq!(hex::encode(state[0].to_be_bytes()), "ea2a92f4");
-        assert_eq!(hex::encode(state[1].to_be_bytes()), "cb1cf8ce");
-        assert_eq!(hex::encode(state[2].to_be_bytes()), "4581472e");
-        assert_eq!(hex::encode(state[3].to_be_bytes()), "5881c4bb");
+        assert_eq!(state[0].to_be_bytes().to_lower_hex_string(), "ea2a92f4");
+        assert_eq!(state[1].to_be_bytes().to_lower_hex_string(), "cb1cf8ce");
+        assert_eq!(state[2].to_be_bytes().to_lower_hex_string(), "4581472e");
+        assert_eq!(state[3].to_be_bytes().to_lower_hex_string(), "5881c4bb");
     }
 
     #[test]
@@ -271,7 +272,7 @@ mod tests {
         let p: u32 = 0x91dbd320;
         let mut state = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p];
         quarter_round(&mut state, 2, 7, 8, 13);
-        assert_eq!(hex::encode(state[2].to_be_bytes()), "bdb886dc");
+        assert_eq!(state[2].to_be_bytes().to_lower_hex_string(), "bdb886dc");
     }
 
     #[test]
@@ -294,22 +295,22 @@ mod tests {
         let p: u32 = 0x00000000;
         let mut state = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p];
         chacha_block(&mut state);
-        assert_eq!(hex::encode(state[0].to_be_bytes()), "e4e7f110");
-        assert_eq!(hex::encode(state[1].to_be_bytes()), "15593bd1");
-        assert_eq!(hex::encode(state[2].to_be_bytes()), "1fdd0f50");
-        assert_eq!(hex::encode(state[3].to_be_bytes()), "c47120a3");
-        assert_eq!(hex::encode(state[4].to_be_bytes()), "c7f4d1c7");
-        assert_eq!(hex::encode(state[5].to_be_bytes()), "0368c033");
-        assert_eq!(hex::encode(state[6].to_be_bytes()), "9aaa2204");
-        assert_eq!(hex::encode(state[7].to_be_bytes()), "4e6cd4c3");
-        assert_eq!(hex::encode(state[8].to_be_bytes()), "466482d2");
-        assert_eq!(hex::encode(state[9].to_be_bytes()), "09aa9f07");
-        assert_eq!(hex::encode(state[10].to_be_bytes()), "05d7c214");
-        assert_eq!(hex::encode(state[11].to_be_bytes()), "a2028bd9");
-        assert_eq!(hex::encode(state[12].to_be_bytes()), "d19c12b5");
-        assert_eq!(hex::encode(state[13].to_be_bytes()), "b94e16de");
-        assert_eq!(hex::encode(state[14].to_be_bytes()), "e883d0cb");
-        assert_eq!(hex::encode(state[15].to_be_bytes()), "4e3c50a2");
+        assert_eq!(state[0].to_be_bytes().to_lower_hex_string(), "e4e7f110");
+        assert_eq!(state[1].to_be_bytes().to_lower_hex_string(), "15593bd1");
+        assert_eq!(state[2].to_be_bytes().to_lower_hex_string(), "1fdd0f50");
+        assert_eq!(state[3].to_be_bytes().to_lower_hex_string(), "c47120a3");
+        assert_eq!(state[4].to_be_bytes().to_lower_hex_string(), "c7f4d1c7");
+        assert_eq!(state[5].to_be_bytes().to_lower_hex_string(), "0368c033");
+        assert_eq!(state[6].to_be_bytes().to_lower_hex_string(), "9aaa2204");
+        assert_eq!(state[7].to_be_bytes().to_lower_hex_string(), "4e6cd4c3");
+        assert_eq!(state[8].to_be_bytes().to_lower_hex_string(), "466482d2");
+        assert_eq!(state[9].to_be_bytes().to_lower_hex_string(), "09aa9f07");
+        assert_eq!(state[10].to_be_bytes().to_lower_hex_string(), "05d7c214");
+        assert_eq!(state[11].to_be_bytes().to_lower_hex_string(), "a2028bd9");
+        assert_eq!(state[12].to_be_bytes().to_lower_hex_string(), "d19c12b5");
+        assert_eq!(state[13].to_be_bytes().to_lower_hex_string(), "b94e16de");
+        assert_eq!(state[14].to_be_bytes().to_lower_hex_string(), "e883d0cb");
+        assert_eq!(state[15].to_be_bytes().to_lower_hex_string(), "4e3c50a2");
     }
 
     #[test]
@@ -332,31 +333,31 @@ mod tests {
         let p: u32 = 0x00000000;
         let mut state = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p];
         chacha_block(&mut state);
-        assert_eq!(hex::encode(state[7].to_le_bytes()), "c3d46c4e");
+        assert_eq!(state[7].to_le_bytes().to_lower_hex_string(), "c3d46c4e");
     }
 
     #[test]
     fn test_prepare_state() {
-        let key = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+        let key = Vec::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let key: [u8; 32] = key.try_into().unwrap();
-        let nonce = hex::decode("000000090000004a00000000").unwrap();
+        let nonce = Vec::from_hex("000000090000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let count = 1;
         let state = prepare_state(key, nonce, count);
-        assert_eq!(hex::encode(state[4].to_be_bytes()), "03020100");
-        assert_eq!(hex::encode(state[10].to_be_bytes()), "1b1a1918");
-        assert_eq!(hex::encode(state[14].to_be_bytes()), "4a000000");
-        assert_eq!(hex::encode(state[15].to_be_bytes()), "00000000");
-        assert_eq!(hex::encode(state[12].to_be_bytes()), "00000001")
+        assert_eq!(state[4].to_be_bytes().to_lower_hex_string(), "03020100");
+        assert_eq!(state[10].to_be_bytes().to_lower_hex_string(), "1b1a1918");
+        assert_eq!(state[14].to_be_bytes().to_lower_hex_string(), "4a000000");
+        assert_eq!(state[15].to_be_bytes().to_lower_hex_string(), "00000000");
+        assert_eq!(state[12].to_be_bytes().to_lower_hex_string(), "00000001")
     }
 
     #[test]
     fn test_small_plaintext() {
-        let key = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+        let key = Vec::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let key: [u8; 32] = key.try_into().unwrap();
-        let nonce = hex::decode("000000090000004a00000000").unwrap();
+        let nonce = Vec::from_hex("000000090000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
@@ -370,10 +371,10 @@ mod tests {
 
     #[test]
     fn test_modulo_64() {
-        let key = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+        let key = Vec::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let key: [u8; 32] = key.try_into().unwrap();
-        let nonce = hex::decode("000000000000004a00000000").unwrap();
+        let nonce = Vec::from_hex("000000000000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
@@ -387,17 +388,17 @@ mod tests {
 
     #[test]
     fn test_rfc_standard() {
-        let key = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+        let key = Vec::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let key: [u8; 32] = key.try_into().unwrap();
-        let nonce = hex::decode("000000000000004a00000000").unwrap();
+        let nonce = Vec::from_hex("000000000000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let count = 64;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         let to = binding.as_mut_slice();
         chacha.apply_keystream(to);
-        assert_eq!(to, hex::decode("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
+        assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         let mut chacha = ChaCha20::new(key, nonce, count);
         chacha.apply_keystream(to);
         let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
@@ -406,17 +407,17 @@ mod tests {
 
     #[test]
     fn test_new_from_block() {
-        let key = hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+        let key = Vec::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
             .unwrap();
         let key: [u8; 32] = key.try_into().unwrap();
-        let nonce = hex::decode("000000000000004a00000000").unwrap();
+        let nonce = Vec::from_hex("000000000000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let block: u32 = 1;
         let mut chacha = ChaCha20::new_from_block(key, nonce, block);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         let to = binding.as_mut_slice();
         chacha.apply_keystream(to);
-        assert_eq!(to, hex::decode("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
+        assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         chacha.block(block);
         chacha.apply_keystream(to);
         let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
