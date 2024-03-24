@@ -2,6 +2,12 @@ use crate::PacketHandler;
 use alloc::vec::Vec;
 use secp256k1::{ellswift::ElligatorSwift, SecretKey};
 
+#[derive(Debug)]
+pub enum NetworkMagic {
+    Mainnet,
+    Signet,
+}
+
 /// A point on the curve used to complete the handshake.
 #[derive(Clone, Debug)]
 pub struct EcdhPoint {

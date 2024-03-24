@@ -2,24 +2,21 @@ use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, PacketHan
 use bitcoin::p2p::Magic;
 use bitcoin::{
     consensus::Decodable,
-    p2p::{
-        message::RawNetworkMessage,
-        message_network::VersionMessage,
-    },
+    p2p::{message::RawNetworkMessage, message_network::VersionMessage},
 };
-use tokio::select;
-use tokio::sync::mpsc;
+use core::fmt;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use core::fmt;
+use tokio::select;
+use tokio::sync::mpsc;
 
 const PROXY: &str = "127.0.0.1:1324";
 const M: Magic = Magic::SIGNET;
 type ChannelMessage = Result<(Vec<u8>, SendTo), PeerError>;
 
 enum SendTo {
-    Remote, 
+    Remote,
     Local,
 }
 
@@ -38,7 +35,6 @@ impl fmt::Display for PeerError {
         }
     }
 }
-
 
 async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     println!("Initialing outbound connection.");
@@ -106,32 +102,25 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
         match communicate_outbound(tx, outbound, decrypt).await {
             Ok(()) => {
                 println!("Remote disconnected.");
-            },
+            }
             Err(_) => {
                 println!("Error decrypting package from remote and writing to local.");
-            },
+            }
         }
     });
     loop {
         while let Some(message) = rx.recv().await {
             match message {
-                Ok((message, destination)) => {
-                    match destination {
-                        SendTo::Remote => {
-                            
-                        },
-                        SendTo::Local => {
-                            println!("Passing message to local node.");
-                            proxy_writer.write_all(&message).await?;
-                        },
+                Ok((message, destination)) => match destination {
+                    SendTo::Remote => {}
+                    SendTo::Local => {
+                        println!("Passing message to local node.");
+                        proxy_writer.write_all(&message).await?;
                     }
                 },
                 Err(e) => {
-                    return Err(Box::new(io::Error::new(
-                        io::ErrorKind::Other,
-                        "",
-                    )));
-                },
+                    return Err(Box::new(io::Error::new(io::ErrorKind::Other, "")));
+                }
             }
         }
         // let mut buffer = Vec::new();
@@ -146,40 +135,68 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     }
 }
 
-async fn communicate_outbound(channel: tokio::sync::mpsc::Sender<ChannelMessage>, mut remote: TcpStream, mut packet_handler: PacketHandler) -> Result<(), PeerError> {
+async fn communicate_outbound(
+    channel: tokio::sync::mpsc::Sender<ChannelMessage>,
+    mut remote: TcpStream,
+    mut packet_handler: PacketHandler,
+) -> Result<(), PeerError> {
     loop {
         let mut buffer = Vec::new();
-        let n = remote.read_to_end(&mut buffer).await.map_err(|e| { PeerError::BytesReadError })?;
+        let n = remote
+            .read_to_end(&mut buffer)
+            .await
+            .map_err(|e| PeerError::BytesReadError)?;
         println!("Got a message from remote.");
         if n == 0 {
             println!("Remote node disconnected.");
             return Ok(());
         }
         println!("Decrypting messages.");
-        let messages = packet_handler.receive_v2_packets(buffer, None).map_err(|e| { PeerError::DecryptionFailure })?;
+        let messages = packet_handler
+            .receive_v2_packets(buffer, None)
+            .map_err(|e| PeerError::DecryptionFailure)?;
         for message in messages {
             if let Some(message) = message.message {
                 let mut cursor = std::io::Cursor::new(message.clone());
-                let msg = RawNetworkMessage::consensus_decode(&mut cursor).map_err(|e| { PeerError::UnknownMessage })?;
+                let msg = RawNetworkMessage::consensus_decode(&mut cursor)
+                    .map_err(|e| PeerError::UnknownMessage)?;
                 let command = msg.payload().command();
-                println!("Received a message from remote with command: {}.", command.to_string());
-                channel.send(Ok((message, SendTo::Local))).await.map_err(|e| { PeerError::BytesReadError })?;
+                println!(
+                    "Received a message from remote with command: {}.",
+                    command.to_string()
+                );
+                channel
+                    .send(Ok((message, SendTo::Local)))
+                    .await
+                    .map_err(|e| PeerError::BytesReadError)?;
             }
         }
     }
 }
 
-async fn communicate_local(channel: tokio::sync::mpsc::Sender<ChannelMessage>, mut local: TcpStream, mut packet_handler: PacketHandler) -> Result<(), PeerError> {
+async fn communicate_local(
+    channel: tokio::sync::mpsc::Sender<ChannelMessage>,
+    mut local: TcpStream,
+    mut packet_handler: PacketHandler,
+) -> Result<(), PeerError> {
     loop {
         let mut buffer = Vec::new();
-        let n = local.read_to_end(&mut buffer).await.map_err(|e| { PeerError::BytesReadError })?;
+        let n = local
+            .read_to_end(&mut buffer)
+            .await
+            .map_err(|e| PeerError::BytesReadError)?;
         println!("Got a message from local.");
         if n == 0 {
             println!("Local node disconnected.");
             return Ok(());
         }
-        let message = packet_handler.prepare_v2_packet(buffer, None, false).map_err(|e| { PeerError::BytesReadError })?;
-        channel.send(Ok((message, SendTo::Remote))).await.map_err(|e| { PeerError::BytesReadError })?;
+        let message = packet_handler
+            .prepare_v2_packet(buffer, None, false)
+            .map_err(|e| PeerError::BytesReadError)?;
+        channel
+            .send(Ok((message, SendTo::Remote)))
+            .await
+            .map_err(|e| PeerError::BytesReadError)?;
     }
 }
 
