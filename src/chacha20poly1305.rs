@@ -2,7 +2,7 @@ mod chacha20;
 mod poly1305;
 
 use crate::error;
-pub use chacha20::ChaCha20;
+pub(crate) use chacha20::ChaCha20;
 use poly1305::Poly1305;
 
 use error::ChaCha20Poly1305DecryptionError;

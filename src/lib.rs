@@ -11,10 +11,10 @@
 //! let handshake_init = initialize_v2_handshake(None).unwrap();
 //!
 //! // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
-//! let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+//! let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
 //!
 //! // Alice finishes her handshake by using her keys from earlier, and sending a final message to Bob.
-//! let alice_completion = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init).unwrap();
+//! let alice_completion = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init, true).unwrap();
 //!
 //! // Bob checks Alice derived the correct keys for the session by authenticating her first message.
 //! let _bob_completion = responder_complete_v2_handshake(alice_completion.message.clone(), &mut bob_handshake).unwrap();
@@ -73,7 +73,14 @@ const LENGTH_FIELD_LEN: usize = 3;
 const CHACHA_BLOCKS_USED: u32 = 3;
 const DECOY: u8 = 128;
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
-const NETWORK_MAGIC: &[u8] = &[0xf9, 0xbe, 0xb4, 0xd9];
+const NETWORK_MAGIC: &[u8] = &[0xF9, 0xBE, 0xB4, 0xD9];
+const SIGNET_NETWORK_MAGIC: &[u8] = &[0x0A, 0x03, 0xCF, 0x40];
+
+pub enum Network {
+    Mainnet,
+    Signet,
+}
+
 
 /// Encrypt and decrypt messages with a peer.
 #[derive(Clone, Debug)]
@@ -447,15 +454,20 @@ fn get_shared_secrets(
     b: ElligatorSwift,
     secret: SecretKey,
     party: ElligatorSwiftParty,
+    mainnet: bool,
 ) -> SessionKeyMaterial {
     let data = "bip324_ellswift_xonly_ecdh".as_bytes();
     let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
-    initialize_session_key_material(ecdh_sk.as_secret_bytes())
+    initialize_session_key_material(ecdh_sk.as_secret_bytes(), mainnet)
 }
 
-fn initialize_session_key_material(ikm: &[u8]) -> SessionKeyMaterial {
+fn initialize_session_key_material(ikm: &[u8], mainnet: bool) -> SessionKeyMaterial {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-    let magic = NETWORK_MAGIC;
+    let magic = if mainnet {
+        NETWORK_MAGIC
+    } else {
+        SIGNET_NETWORK_MAGIC
+    };
     let salt = [ikm_salt, magic].concat();
     let hk = Hkdf::extract(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
@@ -571,9 +583,10 @@ pub fn initialize_v2_handshake_with_rng(
 #[cfg(feature = "std")]
 pub fn receive_v2_handshake(
     message: Vec<u8>,
+    mainnet: bool,
 ) -> Result<ResponderHandshake, ResponderHandshakeError> {
     let mut rng = rand::thread_rng();
-    receive_v2_handshake_with_rng(message, &mut rng)
+    receive_v2_handshake_with_rng(message, &mut rng, mainnet)
 }
 
 /// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire and a struct for parsing packets.
@@ -593,8 +606,13 @@ pub fn receive_v2_handshake(
 pub fn receive_v2_handshake_with_rng(
     message: Vec<u8>,
     rng: &mut impl Rng,
+    mainnet: bool,
 ) -> Result<ResponderHandshake, ResponderHandshakeError> {
-    let mut network_magic = NETWORK_MAGIC.to_vec();
+    let mut network_magic = if mainnet {
+        NETWORK_MAGIC.to_vec()
+    } else {
+        SIGNET_NETWORK_MAGIC.to_vec()
+    };
     let mut version_bytes = "version".as_bytes().to_vec();
     version_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
     network_magic.extend(version_bytes);
@@ -613,7 +631,7 @@ pub fn receive_v2_handshake_with_rng(
         let their_elliswift = elliswift_slice
             .map_err(|e| ResponderHandshakeError::IncorrectMessage(e.to_string()))?;
         let theirs = ElligatorSwift::from_array(their_elliswift);
-        let session_keys = get_shared_secrets(theirs, es, sk, ElligatorSwiftParty::B);
+        let session_keys = get_shared_secrets(theirs, es, sk, ElligatorSwiftParty::B, mainnet);
         let initiator_garbage = message[64..].to_vec();
         let initiator_garbage_len = initiator_garbage.len() as u32;
         let response_garbage = gen_garbage(initiator_garbage_len, rng);
@@ -656,6 +674,7 @@ pub fn receive_v2_handshake_with_rng(
 pub fn initiator_complete_v2_handshake(
     message: Vec<u8>,
     init_handshake: InitiatorHandshake,
+    mainnet: bool,
 ) -> Result<CompleteHandshake, HandshakeCompletionError> {
     let elliswift_message = &message[..64];
     let elliswift_slice: Result<[u8; 64], _> = elliswift_message.try_into();
@@ -667,6 +686,7 @@ pub fn initiator_complete_v2_handshake(
         theirs,
         init_handshake.point.secret_key,
         ElligatorSwiftParty::A,
+        mainnet,
     );
     let mut packet_handler = PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
     let their_garbge_term = session_keys.responder_garbage_terminator;
@@ -773,14 +793,14 @@ mod tests {
     #[test]
     fn test_message_response() {
         let handshake_init = initialize_v2_handshake(None).unwrap();
-        receive_v2_handshake(handshake_init.message).unwrap();
+        receive_v2_handshake(handshake_init.message, true).unwrap();
     }
 
     #[test]
     fn test_expand_extract() {
         let ikm = hex::decode("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
             .unwrap();
-        let session_keys = initialize_session_key_material(&ikm);
+        let session_keys = initialize_session_key_material(&ikm, true);
         assert_eq!(
             hex::encode(session_keys.session_id),
             "ce72dffb015da62b0d0f5474cab8bc72605225b0cee3f62312ec680ec5f41ba5"
@@ -799,6 +819,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         assert_eq!(
             "9a6478b5fbab1f4dd2f78994b774c03211c78312786e602da75a0d1767fb55cf",
@@ -829,9 +850,9 @@ mod tests {
     #[test]
     fn test_handshake_session_id() {
         let handshake_init = initialize_v2_handshake(Some(0)).unwrap();
-        let handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let handshake_response = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
         let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init).unwrap();
+            initiator_complete_v2_handshake(handshake_response.message, handshake_init, true).unwrap();
         let sid = handshake_completion.packet_handler.session_id;
         let sid2 = handshake_response.packet_handler.session_id;
         assert_eq!(sid, sid2);
@@ -849,6 +870,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -886,6 +908,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -925,6 +948,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -941,9 +965,9 @@ mod tests {
     #[test]
     fn test_full_handshake() {
         let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
         let alice_completion =
-            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init)
+            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init, true)
                 .unwrap();
         let _bob_completion = responder_complete_v2_handshake(
             alice_completion.message.clone(),
@@ -974,9 +998,9 @@ mod tests {
     #[test]
     fn test_decode_multiple_messages() {
         let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
         let alice_completion =
-            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init)
+            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init, true)
                 .unwrap();
         let _bob_completion = responder_complete_v2_handshake(
             alice_completion.message.clone(),
@@ -999,9 +1023,9 @@ mod tests {
     fn test_fuzz_decode_multiple_messages() {
         let mut rng = rand::thread_rng();
         let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
         let alice_completion =
-            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init)
+            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init, true)
                 .unwrap();
         let _bob_completion = responder_complete_v2_handshake(
             alice_completion.message.clone(),
@@ -1025,9 +1049,9 @@ mod tests {
     fn test_partial_decodings() {
         let mut rng = rand::thread_rng();
         let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone()).unwrap();
+        let mut handshake_response = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
         let alice_completion =
-            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init)
+            initiator_complete_v2_handshake(handshake_response.message.clone(), handshake_init, true)
                 .unwrap();
         let _bob_completion = responder_complete_v2_handshake(
             alice_completion.message.clone(),
@@ -1064,6 +1088,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -1097,6 +1122,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
+            true
         );
         let id = session_keys.session_id;
         assert_eq!(
@@ -1134,6 +1160,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -1159,6 +1186,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
+            true
         );
         let id = session_keys.session_id;
         assert_eq!(
@@ -1194,6 +1222,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
+            true
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);

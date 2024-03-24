@@ -30,7 +30,7 @@ const CHACHA_BLOCKSIZE: usize = 64;
 
 /// The ChaCha20 stream cipher.
 #[derive(Debug)]
-pub struct ChaCha20 {
+pub(crate) struct ChaCha20 {
     /// A 256 bit secret session key shared by the parties communitcating.
     key: [u8; 32],
     /// A 96 bit initialization vector (IV), or nonce. A key/nonce pair should only be used once.  
