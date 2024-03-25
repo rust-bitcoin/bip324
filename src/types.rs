@@ -53,8 +53,8 @@ pub struct SessionKeyMaterial {
     pub(crate) initiator_packet_key: [u8; 32],
     pub(crate) responder_length_key: [u8; 32],
     pub(crate) responder_packet_key: [u8; 32],
-    pub(crate) initiator_garbage_terminator: [u8; 16],
-    pub(crate) responder_garbage_terminator: [u8; 16],
+    pub initiator_garbage_terminator: [u8; 16],
+    pub responder_garbage_terminator: [u8; 16],
 }
 
 /// Your role in the handshake.

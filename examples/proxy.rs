@@ -41,12 +41,10 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     let (mut proxy_reader, mut proxy_writer) = sock.split();
     let mut buf_reader = BufReader::new(&mut proxy_reader);
     let mut buffer = Vec::new();
-    // only reads 4 bytes
     let n = buf_reader.read_to_end(&mut buffer).await?;
     println!("Bytes read from local connection: {n}");
     let recv_magic: [u8; 4] = buffer[..4].try_into()?;
     println!("Got magic: {}", hex::encode(recv_magic));
-    // not working
     if M.to_bytes().ne(&recv_magic) {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
@@ -64,9 +62,7 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
             "Connections must open with Version message.",
         )));
     }
-    // let decoding = VersionMessage::consensus_decode(&mut cursor)?;
-    // println!("{:?}", decoding);
-    // let remote_addr = decoding.receiver.socket_addr()?;
+    let version = buffer.clone();
     let payload = buffer[24..].to_vec();
     let mut cursor = std::io::Cursor::new(payload);
     let ver = VersionMessage::consensus_decode_from_finite_reader(&mut cursor)?;
@@ -76,63 +72,63 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     let handshake = initialize_v2_handshake(None)?;
     println!("Initiating handshake.");
     outbound
-        .write_all(handshake.message.clone().as_slice())
+        .write_all(&version)
         .await?;
+    println!("Sent handshake to remote.");
     let (mut remote_reader, mut remote_writer) = outbound.split();
     let mut buf_reader = BufReader::new(&mut remote_reader);
     let mut buffer = Vec::new();
+    println!("Reading handshake response from remote.");
     let n = buf_reader.read_to_end(&mut buffer).await?;
     println!("Bytes read from remote host: {n}");
-    println!("Completing handshake");
+    println!("{}", hex::encode(&buffer));
     if n < 64 {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
             "Remote cannot perform V2 handshake. Disconnecting.",
         )));
     }
-    let finish_handshake = initiator_complete_v2_handshake(buffer, handshake, false)?;
-    println!("Remote handshake accepted. Sending garbage terminator.");
-    remote_writer.write_all(&finish_handshake.message).await?;
-    let mut packet_handler = finish_handshake.packet_handler;
-    let decrypt = packet_handler.clone();
-    let (tx, mut rx) = mpsc::channel::<ChannelMessage>(10);
-    let mut tx2 = tx.clone();
-    // then communicate as usual
-    tokio::spawn(async move {
-        match communicate_outbound(tx, outbound, decrypt).await {
-            Ok(()) => {
-                println!("Remote disconnected.");
-            }
-            Err(_) => {
-                println!("Error decrypting package from remote and writing to local.");
-            }
-        }
-    });
-    loop {
-        while let Some(message) = rx.recv().await {
-            match message {
-                Ok((message, destination)) => match destination {
-                    SendTo::Remote => {}
-                    SendTo::Local => {
-                        println!("Passing message to local node.");
-                        proxy_writer.write_all(&message).await?;
-                    }
-                },
-                Err(e) => {
-                    return Err(Box::new(io::Error::new(io::ErrorKind::Other, "")));
-                }
-            }
-        }
-        // let mut buffer = Vec::new();
-        // let n = proxy_reader.read_to_end(&mut buffer).await?;
-        // println!("Got a message from local.");
-        // if n == 0 {
-        //     println!("Local node disconnected.");
-        //     return Ok(());
-        // }
-        // let message = packet_handler.prepare_v2_packet(buffer, None, false)?;
-        // remote_writer.write_all(&message).await?;
-    }
+    // println!("Completing handshake.");
+    // let finish_handshake = initiator_complete_v2_handshake(buffer, handshake, false)?;
+    // remote_writer.write_all(&finish_handshake.message).await?;
+    // println!("Remote handshake accepted. Sending garbage terminator.");
+    // let mut packet_handler = finish_handshake.packet_handler;
+    // println!("Session ID: {:?}", hex::encode(packet_handler.session_id));
+    // println!("Their garbage terminator: {:?}", hex::encode(packet_handler.other_garbage_terminator));
+    // let mut buffer = Vec::new();
+    // remote_reader.read_to_end(&mut buffer).await?;
+    // println!("Received: {:?}", hex::encode(buffer));
+    Ok(())
+    // let decrypt = packet_handler.clone();
+    // let (tx, mut rx) = mpsc::channel::<ChannelMessage>(10);
+    // let mut tx2 = tx.clone();
+    // // then communicate as usual
+    // tokio::spawn(async move {
+    //     match communicate_outbound(tx, outbound, decrypt).await {
+    //         Ok(()) => {
+    //             println!("Remote disconnected.");
+    //         }
+    //         Err(_) => {
+    //             println!("Error decrypting package from remote and writing to local.");
+    //         }
+    //     }
+    // });
+    // loop {
+    //     while let Some(message) = rx.recv().await {
+    //         match message {
+    //             Ok((message, destination)) => match destination {
+    //                 SendTo::Remote => {}
+    //                 SendTo::Local => {
+    //                     println!("Passing message to local node.");
+    //                     proxy_writer.write_all(&message).await?;
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 return Err(Box::new(io::Error::new(io::ErrorKind::Other, "")));
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 async fn communicate_outbound(

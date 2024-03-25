@@ -88,6 +88,7 @@ pub struct PacketHandler {
     pub session_id: [u8; 32],
     /// Your role in the handshake.
     pub role: HandshakeRole,
+    pub other_garbage_terminator: [u8; 16],
     length_encoding_cipher: FSChaCha20,
     length_decoding_cipher: FSChaCha20,
     packet_encoding_cipher: FSChaCha20Poly1305,
@@ -98,6 +99,7 @@ impl PacketHandler {
     fn new(session_keys: SessionKeyMaterial, role: HandshakeRole) -> Self {
         match role {
             HandshakeRole::Initiator => {
+                let other_garbage_terminator = session_keys.responder_garbage_terminator;
                 let length_encoding_cipher = FSChaCha20::new(session_keys.initiator_length_key);
                 let length_decoding_cipher = FSChaCha20::new(session_keys.responder_length_key);
                 let packet_encoding_cipher =
@@ -107,6 +109,7 @@ impl PacketHandler {
                 PacketHandler {
                     session_id: session_keys.session_id,
                     role,
+                    other_garbage_terminator,
                     length_encoding_cipher,
                     length_decoding_cipher,
                     packet_encoding_cipher,
@@ -114,6 +117,7 @@ impl PacketHandler {
                 }
             }
             HandshakeRole::Responder => {
+                let other_garbage_terminator = session_keys.initiator_garbage_terminator;
                 let length_encoding_cipher = FSChaCha20::new(session_keys.responder_length_key);
                 let length_decoding_cipher = FSChaCha20::new(session_keys.initiator_length_key);
                 let packet_encoding_cipher =
@@ -123,6 +127,7 @@ impl PacketHandler {
                 PacketHandler {
                     session_id: session_keys.session_id,
                     role,
+                    other_garbage_terminator,
                     length_encoding_cipher,
                     length_decoding_cipher,
                     packet_encoding_cipher,
