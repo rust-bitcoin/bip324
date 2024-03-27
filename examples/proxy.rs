@@ -71,9 +71,7 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     let mut outbound = TcpStream::connect(remote_addr).await?;
     let handshake = initialize_v2_handshake(None)?;
     println!("Initiating handshake.");
-    outbound
-        .write_all(&version)
-        .await?;
+    outbound.write_all(&version).await?;
     println!("Sent handshake to remote.");
     let (mut remote_reader, mut remote_writer) = outbound.split();
     let mut buf_reader = BufReader::new(&mut remote_reader);
