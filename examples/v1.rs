@@ -1,42 +1,11 @@
-use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, PacketHandler};
+use bitcoin::consensus::Decodable;
 use bitcoin::p2p::{Address, Magic};
-use bitcoin::{
-    consensus::Decodable,
-    p2p::{message::RawNetworkMessage, message_network::VersionMessage},
-};
-use core::fmt;
 use std::io;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
-use tokio::sync::{broadcast, mpsc};
 
 const PROXY: &str = "127.0.0.1:1324";
 const M: Magic = Magic::SIGNET;
-// type ChannelMessage = Result<(Vec<u8>, SendTo), PeerError>;
-
-// #[derive(Clone, Copy, Debug)]
-// enum SendTo {
-//     Remote,
-//     Local,
-// }
-
-// #[derive(Clone, Copy, Debug)]
-// enum PeerError {
-//     DecryptionFailure,
-//     BytesReadError,
-//     UnknownMessage,
-// }
-
-// impl fmt::Display for PeerError {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         match *self {
-//             PeerError::DecryptionFailure => write!(f, "Decryption failed"),
-//             PeerError::BytesReadError => write!(f, "Error occurred while reading bytes"),
-//             PeerError::UnknownMessage => write!(f, "Received unknown message"),
-//         }
-//     }
-// }
 
 async fn init_outbound_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     println!("Validating client connection.");
@@ -103,78 +72,6 @@ async fn init_outbound_conn(mut client: TcpStream) -> Result<(), Box<dyn std::er
         }
     }
 }
-
-// async fn communicate_outbound(
-//     sender: tokio::sync::mpsc::Sender<ChannelMessage>,
-//     mut channel: tokio::sync::mpsc::Receiver<ChannelMessage>,
-//     mut sock: TcpStream,
-// ) -> Result<(), PeerError> {
-//     loop {
-//         let messages = channel.recv().await;
-//         match messages {
-//             Some(message) => {
-//                 match message {
-//                     Ok((message, _)) => {
-//                         let mut cursor = std::io::Cursor::new(message.clone());
-//                         let msg = RawNetworkMessage::consensus_decode(&mut cursor).map_err(|e| PeerError::UnknownMessage)?;
-//                         let command = msg.payload().command();
-//                         println!("Sending a message to remote. Command: {}.", command.to_string());
-//                         sock.write_all(&message).await.map_err(|_e| PeerError::BytesReadError)?;
-//                     },
-//                     Err(_) => {
-//                         return Err(PeerError::UnknownMessage)
-//                     },
-//                 }
-//             },
-//             None => {},
-//         }
-//         let mut buffer = Vec::new();
-//         let mut cursor = std::io::Cursor::new(buffer.clone());
-//         let n = sock.read_to_end(&mut buffer).await.map_err(|e| PeerError::BytesReadError)?;
-//         if n > 0 {
-//             let msg = RawNetworkMessage::consensus_decode(&mut cursor).map_err(|_e| PeerError::UnknownMessage)?;
-//             let command = msg.payload().command();
-//             println!("Message sent over channel to local thread: {}.", command.to_string());
-//             sender.send(Ok((buffer, SendTo::Local))).await.map_err(|_e| PeerError::UnknownMessage)?;
-//         }
-//     }
-// }
-
-// async fn communicate_local(
-//     sender: tokio::sync::mpsc::Sender<ChannelMessage>,
-//     mut channel: tokio::sync::mpsc::Receiver<ChannelMessage>,
-//     mut local: TcpStream,
-// ) -> Result<(), PeerError> {
-//     loop {
-//         let messages = channel.recv().await;
-//         match messages {
-//             Some(message) => {
-//                 match message {
-//                     Ok((message, _)) => {
-//                         let mut cursor = std::io::Cursor::new(message.clone());
-//                         let msg = RawNetworkMessage::consensus_decode(&mut cursor).map_err(|e| PeerError::UnknownMessage)?;
-//                         let command = msg.payload().command();
-//                         println!("Sending a message to local. Command: {}.", command.to_string());
-//                         local.write_all(&message).await.map_err(|_e| PeerError::BytesReadError)?;
-//                     },
-//                     Err(_) => {
-//                         return Err(PeerError::UnknownMessage)
-//                     },
-//                 }
-//             },
-//             None => {},
-//         }
-//         let mut buffer = Vec::new();
-//         let mut cursor = std::io::Cursor::new(buffer.clone());
-//         let n = local.read_to_end(&mut buffer).await.map_err(|e| PeerError::BytesReadError)?;
-//         if n > 0 {
-//             let msg = RawNetworkMessage::consensus_decode(&mut cursor).map_err(|_e| PeerError::UnknownMessage)?;
-//             let command = msg.payload().command();
-//             println!("Message sent over channel: {}.", command.to_string());
-//             sender.send(Ok((buffer, SendTo::Local))).await.map_err(|_e| PeerError::UnknownMessage)?;
-//         }
-//     }
-// }
 
 #[tokio::main]
 async fn main() {
