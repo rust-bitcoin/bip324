@@ -1,5 +1,5 @@
 use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, PacketHandler};
-use bitcoin::p2p::Magic;
+use bitcoin::p2p::{Address, Magic};
 use bitcoin::{
     consensus::Decodable,
     p2p::{message::RawNetworkMessage, message_network::VersionMessage},
@@ -38,67 +38,34 @@ const M: Magic = Magic::SIGNET;
 //     }
 // }
 
-async fn init_outbound_conn(mut proxy: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Initialing outbound connection.");
-    let mut buffer: Vec<u8> = Vec::new();
-    let n = proxy.read_to_end(&mut buffer).await?;
+async fn init_outbound_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Validating client connection.");
+    // Peek the first 70 bytes, 24 for the header and 46 for the first part of the version message.
+    let mut peek_bytes = [0; 70];
+    let n = client.peek(&mut peek_bytes).await?;
     println!("Bytes read from local connection: {n}");
-    let recv_magic: [u8; 4] = buffer[..4].try_into()?;
-    println!("Got magic: {}", hex::encode(recv_magic));
-    if M.to_bytes().ne(&recv_magic) {
+    println!("Got magic: {}", hex::encode(&peek_bytes[0..4]));
+    if M.to_bytes().ne(&peek_bytes[0..4]) {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
             "Invalid magic.",
         )));
     }
-    println!("Matches our network.");
-    let mut cursor = std::io::Cursor::new(buffer.clone());
-    let msg = RawNetworkMessage::consensus_decode(&mut cursor)?;
-    let command = msg.payload().command();
-    println!("Message command: {}.", command.to_string());
-    if !command.to_string().eq("version") {
-        return Err(Box::new(io::Error::new(
-            io::ErrorKind::Other,
-            "Connections must open with Version message.",
-        )));
-    }
-    let version = buffer.clone();
-    let payload = buffer[24..].to_vec();
-    let mut cursor = std::io::Cursor::new(payload);
-    let ver = VersionMessage::consensus_decode_from_finite_reader(&mut cursor)?;
-    let remote_addr = ver.receiver.socket_addr()?;
-    println!("Connecting to: {}...", remote_addr.to_string());
-    let mut outbound = TcpStream::connect(remote_addr).await?;
-    println!("Sending Version message...");
-    outbound
-        .write_all(&version)
-        .await?;
-    println!("Sent version to remote.");
-    let mut buffer = Vec::new();
-    println!("Reading Version response from remote...");
-    let n = outbound.read_to_end(&mut buffer).await?;
-    println!("Bytes read from {} host: {n}", remote_addr.to_string());
-    println!("{}", hex::encode(&buffer));
-    if n < 64 {
-        return Err(Box::new(io::Error::new(
-            io::ErrorKind::Other,
-            "Remote closed connection. Disconnecting.",
-        )));
-    }
-    println!("Writing the received message to local.");
-    proxy.write_all(&buffer).await?;
-    let mut cursor = std::io::Cursor::new(buffer.clone());
-    let msg = RawNetworkMessage::consensus_decode(&mut cursor)?;
-    let command = msg.payload().command();
-    println!("Message command from {}: {}.", remote_addr.to_string(), command.to_string());
-    let (mut client_reader, mut client_writer) = proxy.split();
-    let (mut remote_reader, mut remote_writer) = outbound.split();
+
+    let mut addr_bytes = &peek_bytes[44..];
+    let remote_addr = Address::consensus_decode(&mut addr_bytes).expect("network address bytes");
+    let remote_ip = remote_addr.socket_addr().expect("IP");
+    println!("Initialing remote connection {}.", remote_ip);
+    let mut remote = TcpStream::connect(remote_ip).await?;
+
+    let (mut client_reader, mut client_writer) = client.split();
+    let (mut remote_reader, mut remote_writer) = remote.split();
     loop {
         select! {
             res = tokio::io::copy(&mut client_reader, &mut remote_writer) => {
                 match res {
                     Ok(bytes) => {
-                        println!("Responded to {} with {bytes} bytes.", remote_addr.to_string());
+                        println!("Responded to {} with {bytes} bytes.", remote_ip);
                         if bytes == 0 {
                             return Err(Box::new(io::Error::new(
                                 io::ErrorKind::Other,
@@ -113,7 +80,7 @@ async fn init_outbound_conn(mut proxy: TcpStream) -> Result<(), Box<dyn std::err
                         )));
                     },
                 }
-            }, 
+            },
             res = tokio::io::copy(&mut remote_reader, &mut client_writer) => {
                 match res {
                     Ok(bytes) => {
@@ -132,9 +99,9 @@ async fn init_outbound_conn(mut proxy: TcpStream) -> Result<(), Box<dyn std::err
                         )));
                     },
                 }
-            }, 
+            },
         }
-     }
+    }
 }
 
 // async fn communicate_outbound(
