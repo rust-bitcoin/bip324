@@ -24,16 +24,16 @@ jobs:
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
           rustup update ${{ matrix.toolchain }}
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --all --verbose
       - name: Lint
         run: cargo clippy --all --all-targets
       - name: Format
         run: cargo fmt --all -- --check
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --all --verbose
       - name: Check No Standard Library Support
         run: |
           rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
           cargo install cross
-          cross build --target thumbv7m-none-eabi --no-default-features
+          cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
         
