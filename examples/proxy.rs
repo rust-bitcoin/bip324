@@ -5,6 +5,7 @@ use bitcoin::{
     p2p::{message::RawNetworkMessage, message_network::VersionMessage},
 };
 use core::fmt;
+use hex::prelude::*;
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -44,7 +45,7 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     let n = buf_reader.read_to_end(&mut buffer).await?;
     println!("Bytes read from local connection: {n}");
     let recv_magic: [u8; 4] = buffer[..4].try_into()?;
-    println!("Got magic: {}", hex::encode(recv_magic));
+    println!("Got magic: {}", recv_magic.to_lower_hex_string());
     if M.to_bytes().ne(&recv_magic) {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
@@ -79,7 +80,7 @@ async fn init_outbound_conn(mut sock: TcpStream) -> Result<(), Box<dyn std::erro
     println!("Reading handshake response from remote.");
     let n = buf_reader.read_to_end(&mut buffer).await?;
     println!("Bytes read from remote host: {n}");
-    println!("{}", hex::encode(&buffer));
+    println!("{}", &buffer.to_lower_hex_string());
     if n < 64 {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
