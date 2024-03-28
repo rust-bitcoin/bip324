@@ -1,5 +1,6 @@
 use bitcoin::consensus::Decodable;
 use bitcoin::p2p::{Address, Magic};
+use hex::prelude::*;
 use std::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
@@ -13,7 +14,7 @@ async fn init_outbound_conn(mut client: TcpStream) -> Result<(), Box<dyn std::er
     let mut peek_bytes = [0; 70];
     let n = client.peek(&mut peek_bytes).await?;
     println!("Bytes read from local connection: {n}");
-    println!("Got magic: {}", hex::encode(&peek_bytes[0..4]));
+    println!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
     if M.to_bytes().ne(&peek_bytes[0..4]) {
         return Err(Box::new(io::Error::new(
             io::ErrorKind::Other,
