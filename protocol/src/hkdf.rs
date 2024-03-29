@@ -55,7 +55,7 @@ impl<T: Hash> Hkdf<T> {
         let total_blocks = (okm.len() + T::LEN - 1) / T::LEN;
 
         while counter <= total_blocks as u8 {
-            let mut hmac_engine: HmacEngine<T> = HmacEngine::new(self.prk.as_byte_array());
+            let mut hmac_engine: HmacEngine<T> = HmacEngine::new(self.prk);
 
             // First block does not have a previous block,
             // all other blocks include last block in the HMAC input.
