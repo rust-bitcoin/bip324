@@ -1,10 +1,7 @@
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 //!
-//! The interface is scoped to BIP324's requirements. For
-//! example, the hash implementation is hardcoded to SHA256, but
-//! this could be abstracted away if necessary. The interface
-//! also requires an extract step which is technically not
-//! defined in the RFC5869.
+//! Implementation based on RFC5869, but the interface is scoped
+//! to BIP324's requirements.
 
 use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use core::fmt;
@@ -13,7 +10,7 @@ use core::fmt;
 const MAX_OUTPUT_BLOCKS: usize = 255;
 
 /// Size of output exceeds maximum length allowed.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MaxLengthError;
 
 impl fmt::Display for MaxLengthError {
