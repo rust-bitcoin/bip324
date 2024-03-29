@@ -97,7 +97,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 42];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -119,7 +119,7 @@ mod tests {
             "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
         ).unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 82];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -135,7 +135,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 256 * 32];
         let e = hkdf.expand(&info, &mut okm);
 
