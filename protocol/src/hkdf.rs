@@ -31,7 +31,6 @@ pub struct Hkdf<T: Hash> {
 impl<T: Hash> Hkdf<T> {
     /// Initialize a HKDF by performing the extract step.
     pub fn new(salt: &[u8], ikm: &[u8]) -> Self {
-        // Hardcoding SHA256 for now, might be worth parameterizing hash function.
         let mut hmac_engine: HmacEngine<T> = HmacEngine::new(salt);
         hmac_engine.input(ikm);
         Self {
