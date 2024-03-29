@@ -1,8 +1,10 @@
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 //!
-//! The interface is limited to the BIP324 use case for now. This
-//! includes hardcoding to the SHA256 hash implementation, as well
-//! as requiring an extract step.
+//! The interface is scoped to BIP324's requirements. For
+//! example, the hash implementation is hardcoded to SHA256, but
+//! this could be abstracted away if necessary. The interface
+//! also requires an extract step which is technically not
+//! defined in the RFC5869.
 
 use bitcoin_hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 use core::fmt;
@@ -12,17 +14,18 @@ const HASH_LENGTH_BYTES: usize = sha256::Hash::LEN;
 // Output keying material max length multiple.
 const MAX_OUTPUT_BLOCKS: usize = 255;
 
+/// Size of output exceeds maximum length allowed.
 #[derive(Copy, Clone, Debug)]
-pub struct InvalidLength;
+pub struct MaxLengthError;
 
-impl fmt::Display for InvalidLength {
+impl fmt::Display for MaxLengthError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "too large output")
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for InvalidLength {}
+impl std::error::Error for MaxLengthError {}
 
 /// HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 pub struct Hkdf {
@@ -42,10 +45,10 @@ impl Hkdf {
     }
 
     /// Expand the key to generate output key material in okm.
-    pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), InvalidLength> {
+    pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), MaxLengthError> {
         // Length of output keying material must be less than 255 * hash length.
         if okm.len() > (MAX_OUTPUT_BLOCKS * HASH_LENGTH_BYTES) {
-            return Err(InvalidLength);
+            return Err(MaxLengthError);
         }
 
         // Counter starts at "1" based on RFC5869 spec and is committed to in the hash.
