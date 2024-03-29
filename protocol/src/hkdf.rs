@@ -33,7 +33,7 @@ pub struct Hkdf<T: Hash> {
 
 impl<T: Hash> Hkdf<T> {
     /// Initialize a HKDF by performing the extract step.
-    pub fn extract(salt: &[u8], ikm: &[u8]) -> Self {
+    pub fn new(salt: &[u8], ikm: &[u8]) -> Self {
         // Hardcoding SHA256 for now, might be worth parameterizing hash function.
         let mut hmac_engine: HmacEngine<T> = HmacEngine::new(salt);
         hmac_engine.input(ikm);
@@ -55,7 +55,7 @@ impl<T: Hash> Hkdf<T> {
         let total_blocks = (okm.len() + T::LEN - 1) / T::LEN;
 
         while counter <= total_blocks as u8 {
-            let mut hmac_engine: HmacEngine<T> = HmacEngine::new(self.prk);
+            let mut hmac_engine: HmacEngine<T> = HmacEngine::new(&self.prk[..]);
 
             // First block does not have a previous block,
             // all other blocks include last block in the HMAC input.
@@ -76,8 +76,7 @@ impl<T: Hash> Hkdf<T> {
                 counter as usize * T::LEN
             };
 
-            okm[start_index..end_index]
-                .copy_from_slice(&t.to_byte_array()[0..(end_index - start_index)]);
+            okm[start_index..end_index].copy_from_slice(&t[0..(end_index - start_index)]);
 
             counter += 1;
         }
@@ -98,7 +97,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::extract(&salt, &ikm);
+        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
         let mut okm = [0u8; 42];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -120,7 +119,7 @@ mod tests {
             "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
         ).unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::extract(&salt, &ikm);
+        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
         let mut okm = [0u8; 82];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -136,7 +135,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf: Hkdf<sha256::Hash> = Hkdf::extract(&salt, &ikm);
+        let hkdf: Hkdf<sha256::Hash> = Hkdf::new(&salt, &ikm);
         let mut okm = [0u8; 256 * 32];
         let e = hkdf.expand(&info, &mut okm);
 
