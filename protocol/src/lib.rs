@@ -45,6 +45,7 @@ mod error;
 mod hkdf;
 mod types;
 
+use bitcoin_hashes::sha256;
 use chacha20poly1305::ChaCha20;
 use chacha20poly1305::ChaCha20Poly1305;
 
@@ -473,7 +474,7 @@ fn initialize_session_key_material(ikm: &[u8], mainnet: bool) -> SessionKeyMater
         SIGNET_NETWORK_MAGIC
     };
     let salt = [ikm_salt, magic].concat();
-    let hk = Hkdf::extract(salt.as_slice(), ikm);
+    let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
     let session_info = "session_id".as_bytes();
     hk.expand(session_info, &mut session_id)

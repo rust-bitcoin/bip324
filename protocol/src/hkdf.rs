@@ -1,21 +1,16 @@
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 //!
-//! The interface is scoped to BIP324's requirements. For
-//! example, the hash implementation is hardcoded to SHA256, but
-//! this could be abstracted away if necessary. The interface
-//! also requires an extract step which is technically not
-//! defined in the RFC5869.
+//! Implementation based on RFC5869, but the interface is scoped
+//! to BIP324's requirements.
 
-use bitcoin_hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use core::fmt;
 
-// Hardcoded hash length for SHA256 backed implementation.
-const HASH_LENGTH_BYTES: usize = sha256::Hash::LEN;
 // Output keying material max length multiple.
 const MAX_OUTPUT_BLOCKS: usize = 255;
 
 /// Size of output exceeds maximum length allowed.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MaxLengthError;
 
 impl fmt::Display for MaxLengthError {
@@ -28,58 +23,56 @@ impl fmt::Display for MaxLengthError {
 impl std::error::Error for MaxLengthError {}
 
 /// HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
-pub struct Hkdf {
+pub struct Hkdf<T: Hash> {
     /// Pseudorandom key based on the extract step.
-    prk: [u8; HASH_LENGTH_BYTES],
+    prk: Hmac<T>,
 }
 
-impl Hkdf {
+impl<T: Hash> Hkdf<T> {
     /// Initialize a HKDF by performing the extract step.
-    pub fn extract(salt: &[u8], ikm: &[u8]) -> Self {
-        // Hardcoding SHA256 for now, might be worth parameterizing hash function.
-        let mut hmac_engine: HmacEngine<sha256::Hash> = HmacEngine::new(salt);
+    pub fn new(salt: &[u8], ikm: &[u8]) -> Self {
+        let mut hmac_engine: HmacEngine<T> = HmacEngine::new(salt);
         hmac_engine.input(ikm);
         Self {
-            prk: Hmac::from_engine(hmac_engine).to_byte_array(),
+            prk: Hmac::from_engine(hmac_engine),
         }
     }
 
     /// Expand the key to generate output key material in okm.
     pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), MaxLengthError> {
         // Length of output keying material must be less than 255 * hash length.
-        if okm.len() > (MAX_OUTPUT_BLOCKS * HASH_LENGTH_BYTES) {
+        if okm.len() > (MAX_OUTPUT_BLOCKS * T::LEN) {
             return Err(MaxLengthError);
         }
 
         // Counter starts at "1" based on RFC5869 spec and is committed to in the hash.
         let mut counter = 1u8;
         // Ceiling calculation for the total number of blocks (iterations) required for the expand.
-        let total_blocks = (okm.len() + HASH_LENGTH_BYTES - 1) / HASH_LENGTH_BYTES;
+        let total_blocks = (okm.len() + T::LEN - 1) / T::LEN;
 
         while counter <= total_blocks as u8 {
-            let mut hmac_engine: HmacEngine<sha256::Hash> = HmacEngine::new(&self.prk);
+            let mut hmac_engine: HmacEngine<T> = HmacEngine::new(&self.prk[..]);
 
             // First block does not have a previous block,
             // all other blocks include last block in the HMAC input.
             if counter != 1u8 {
-                let previous_start_index = (counter as usize - 2) * HASH_LENGTH_BYTES;
-                let previous_end_index = (counter as usize - 1) * HASH_LENGTH_BYTES;
+                let previous_start_index = (counter as usize - 2) * T::LEN;
+                let previous_end_index = (counter as usize - 1) * T::LEN;
                 hmac_engine.input(&okm[previous_start_index..previous_end_index]);
             }
             hmac_engine.input(info);
             hmac_engine.input(&[counter]);
 
             let t = Hmac::from_engine(hmac_engine);
-            let start_index = (counter as usize - 1) * HASH_LENGTH_BYTES;
+            let start_index = (counter as usize - 1) * T::LEN;
             // Last block might not take full hash length.
             let end_index = if counter == (total_blocks as u8) {
                 okm.len()
             } else {
-                counter as usize * HASH_LENGTH_BYTES
+                counter as usize * T::LEN
             };
 
-            okm[start_index..end_index]
-                .copy_from_slice(&t.to_byte_array()[0..(end_index - start_index)]);
+            okm[start_index..end_index].copy_from_slice(&t[0..(end_index - start_index)]);
 
             counter += 1;
         }
@@ -91,6 +84,7 @@ impl Hkdf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin_hashes::sha256;
     use hex::prelude::*;
 
     #[test]
@@ -99,7 +93,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf = Hkdf::extract(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 42];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -121,7 +115,7 @@ mod tests {
             "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
         ).unwrap();
 
-        let hkdf = Hkdf::extract(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 82];
         hkdf.expand(&info, &mut okm).unwrap();
 
@@ -137,7 +131,7 @@ mod tests {
         let ikm = Vec::from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
         let info = Vec::from_hex("f0f1f2f3f4f5f6f7f8f9").unwrap();
 
-        let hkdf = Hkdf::extract(&salt, &ikm);
+        let hkdf = Hkdf::<sha256::Hash>::new(&salt, &ikm);
         let mut okm = [0u8; 256 * 32];
         let e = hkdf.expand(&info, &mut okm);
 
