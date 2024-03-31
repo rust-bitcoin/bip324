@@ -11,11 +11,13 @@ const MAX_OUTPUT_BLOCKS: usize = 255;
 
 /// Size of output exceeds maximum length allowed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct MaxLengthError;
+pub struct MaxLengthError {
+    max: usize,
+}
 
 impl fmt::Display for MaxLengthError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "too large output")
+        write!(f, "exceeds {} byte max output material limit", self.max)
     }
 }
 
@@ -40,9 +42,11 @@ impl<T: Hash> Hkdf<T> {
 
     /// Expand the key to generate output key material in okm.
     pub fn expand(&self, info: &[u8], okm: &mut [u8]) -> Result<(), MaxLengthError> {
-        // Length of output keying material must be less than 255 * hash length.
+        // Length of output keying material in bytes must be less than 255 * hash length.
         if okm.len() > (MAX_OUTPUT_BLOCKS * T::LEN) {
-            return Err(MaxLengthError);
+            return Err(MaxLengthError {
+                max: MAX_OUTPUT_BLOCKS * T::LEN,
+            });
         }
 
         // Counter starts at "1" based on RFC5869 spec and is committed to in the hash.
