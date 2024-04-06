@@ -29,14 +29,14 @@ const VERSION_COMMAND: [u8; 12] = [
 pub enum Error {
     WrongNetwork,
     WrongCommand,
-    Network,
+    Network(std::io::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::WrongNetwork => write!(f, "Recieved message on wrong network"),
-            Error::Network => write!(f, "Network error"),
+            Error::Network(e) => write!(f, "Network error {}", e),
             Error::WrongCommand => write!(f, "Recieved message with wrong command"),
         }
     }
@@ -45,7 +45,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Network => None,
+            Error::Network(e) => Some(e),
             Error::WrongNetwork => None,
             Error::WrongCommand => None,
         }
@@ -54,8 +54,8 @@ impl std::error::Error for Error {
 
 // Convert IO errors.
 impl From<std::io::Error> for Error {
-    fn from(_: std::io::Error) -> Self {
-        Error::Network
+    fn from(e: std::io::Error) -> Self {
+        Error::Network(e)
     }
 }
 
