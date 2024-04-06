@@ -1,10 +1,11 @@
 //! Simple V1 proxy to test hooking things up end to end.
 
+use bip324_proxy::{read_v1, write_v1};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 
 /// Validate and bootstrap proxy connection.
-async fn proxy_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
     println!("Initialing remote connection {}.", remote_ip);
@@ -12,43 +13,29 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Err
 
     let (mut client_reader, mut client_writer) = client.split();
     let (mut remote_reader, mut remote_writer) = remote.split();
+
+    println!("Setting up proxy loop.");
     loop {
         select! {
-            res = tokio::io::copy(&mut client_reader, &mut remote_writer) => {
+            res = read_v1(&mut client_reader) => {
                 match res {
-                    Ok(bytes) => {
-                        println!("Responded to {} with {bytes} bytes.", remote_ip);
-                        if bytes == 0 {
-                            return Err(Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "Client closed connection. Disconnecting.",
-                            )));
-                        }
+                    Ok(msg) => {
+                         println!("Read {} message from client, writing to remote.", msg.cmd());
+                         write_v1(&mut remote_writer, msg).await?;
                     },
-                    Err(_) => {
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "Remote closed connection: Disconnecting.",
-                        )));
+                    Err(e) => {
+                         return Err(e);
                     },
                 }
             },
-            res = tokio::io::copy(&mut remote_reader, &mut client_writer) => {
+            res = read_v1(&mut remote_reader) => {
                 match res {
-                    Ok(bytes) => {
-                        println!("Responded to local with {bytes} bytes.");
-                        if bytes == 0 {
-                            return Err(Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "Client closed connection. Disconnecting.",
-                            )));
-                        }
+                    Ok(msg) => {
+                         println!("Read {} message from remote, writing to client.", msg.cmd());
+                         write_v1(&mut client_writer, msg).await?;
                     },
-                    Err(_) => {
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "Client closed connection. Disconnecting.",
-                        )));
+                    Err(e) => {
+                         return Err(e);
                     },
                 }
             },
