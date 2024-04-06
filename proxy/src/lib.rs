@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 /// Default to local host on port 1324.
 pub const DEFAULT_PROXY: &str = "127.0.0.1:1324";
 /// Default to the signet network.
-const DEFAULT_MAGIC: Magic = Magic::SIGNET;
+const DEFAULT_MAGIC: Magic = Magic::BITCOIN;
 /// All V1 messages have a 24 byte header.
 const V1_HEADER_BYTES: usize = 24;
 /// Hex encoding of ascii version command.
