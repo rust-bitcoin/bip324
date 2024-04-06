@@ -19,19 +19,25 @@ pub const DEFAULT_PROXY: &str = "127.0.0.1:1324";
 const DEFAULT_MAGIC: Magic = Magic::BITCOIN;
 /// All V1 messages have a 24 byte header.
 const V1_HEADER_BYTES: usize = 24;
+/// Hex encoding of ascii version command.
+const VERSION_COMMAND: [u8; 12] = [
+    0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 
 /// An error occured while establishing the proxy connection or during the main loop.
 #[derive(Debug)]
 pub enum Error {
-    UnknownMessage,
+    WrongNetwork,
+    WrongCommand,
     Network,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::UnknownMessage => write!(f, "Received unknown message"),
+            Error::WrongNetwork => write!(f, "Recieved message on wrong network"),
             Error::Network => write!(f, "Network error"),
+            Error::WrongCommand => write!(f, "Recieved message with wrong command"),
         }
     }
 }
@@ -39,8 +45,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::UnknownMessage => None,
             Error::Network => None,
+            Error::WrongNetwork => None,
+            Error::WrongCommand => None,
         }
     }
 }
@@ -57,14 +64,21 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
     println!("Validating client connection.");
     // Peek the first 70 bytes, 24 for the header and 46 for the first part of the version message.
     let mut peek_bytes = [0; 70];
-    let n = client.peek(&mut peek_bytes).await?;
+    client.peek(&mut peek_bytes).await?;
 
-    println!("Bytes read from local connection: {n}");
+    // Check network magic.
     println!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
     if DEFAULT_MAGIC.to_bytes().ne(&peek_bytes[0..4]) {
-        return Err(Error::UnknownMessage);
+        return Err(Error::WrongNetwork);
     }
 
+    // Check command.
+    println!("Got command: {}", &peek_bytes[4..16].to_lower_hex_string());
+    if VERSION_COMMAND.ne(&peek_bytes[4..16]) {
+        return Err(Error::WrongCommand);
+    }
+
+    // Pull off address.
     let mut addr_bytes = &peek_bytes[44..];
     let remote_addr = Address::consensus_decode(&mut addr_bytes).expect("network address bytes");
     let socket_addr = remote_addr.socket_addr().expect("IP");
