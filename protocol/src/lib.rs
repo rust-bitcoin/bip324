@@ -1,40 +1,4 @@
 //! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
-//!
-//! # Use case
-//!
-//! 1. Client-server applications that transmit and receive Bitcoin P2P messages and would like increased privacy.
-//!
-//! # Example
-//! ```rust
-//! use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake, receive_v2_handshake, responder_complete_v2_handshake};
-//! // Alice starts a connection with Bob by making a pub/priv keypair and sending a message to Bob.
-//! let handshake_init = initialize_v2_handshake(None).unwrap();
-//!
-//! // Bob parses Alice's message, generates his pub/priv key, and sends a message back.
-//! let mut bob_handshake = receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-//!
-//! // Alice finishes her handshake by using her keys from earlier, and sending a final message to Bob.
-//! let alice_completion = initiator_complete_v2_handshake(bob_handshake.message.clone(), handshake_init, true).unwrap();
-//!
-//! // Bob checks Alice derived the correct keys for the session by authenticating her first message.
-//! let _bob_completion = responder_complete_v2_handshake(alice_completion.message.clone(), &mut bob_handshake).unwrap();
-//!
-//! // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
-//! let mut alice = alice_completion.packet_handler;
-//! let mut bob = bob_handshake.packet_handler;
-//!
-//! let message = b"Hello world".to_vec();
-//! let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
-//! let messages = alice.receive_v2_packets(encrypted_message_to_alice, None).unwrap();
-//! let secret_message = messages.first().unwrap().message.clone().unwrap();
-//! assert_eq!(message, secret_message);
-//!
-//! let message = b"Goodbye!".to_vec();
-//! let encrypted_message_to_bob = alice.prepare_v2_packet(message.clone(), None, false).unwrap();
-//! let messages = bob.receive_v2_packets(encrypted_message_to_bob, None).unwrap();
-//! let secret_message = messages.first().unwrap().message.clone().unwrap();
-//! assert_eq!(message, secret_message);
-//! ```
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
@@ -43,7 +7,8 @@ extern crate alloc;
 mod chacha20poly1305;
 mod error;
 mod hkdf;
-mod types;
+
+use core::fmt;
 
 use bitcoin_hashes::sha256;
 use chacha20poly1305::ChaCha20;
@@ -62,13 +27,7 @@ use secp256k1::{
     ffi::types::AlignedType,
     PublicKey, Secp256k1, SecretKey,
 };
-pub use types::SessionKeyMaterial;
-pub use types::{
-    CompleteHandshake, EcdhPoint, HandshakeRole, InitiatorHandshake, NetworkMagic, ReceivedMessage,
-    ResponderHandshake,
-};
 
-const MAX_GARBAGE_LEN: u32 = 4095;
 const REKEY_INTERVAL: u32 = 224;
 const LENGTH_FIELD_LEN: usize = 3;
 const CHACHA_BLOCKS_USED: u32 = 3;
@@ -77,9 +36,88 @@ const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const NETWORK_MAGIC: &[u8] = &[0xF9, 0xBE, 0xB4, 0xD9];
 const SIGNET_NETWORK_MAGIC: &[u8] = &[0x0A, 0x03, 0xCF, 0x40];
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Network {
     Mainnet,
     Signet,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    MessageLengthTooSmall,
+    IncompatableV1Message,
+    MaxGargbageLength,
+    InitiateFlow,
+    SecretMaterialsGeneration(secp256k1::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::SecretMaterialsGeneration(e) => {
+                write!(f, "Unable to generate secret materials {}", e)
+            }
+            Error::MessageLengthTooSmall => write!(f, "Message length too small allocation"),
+            Error::IncompatableV1Message => write!(f, "Incompatable V1 message"),
+            Error::MaxGargbageLength => write!(f, "Max garabage length"),
+            Error::InitiateFlow => write!(f, "Initate flow out of sequence"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::SecretMaterialsGeneration(e) => Some(e),
+            Error::MessageLengthTooSmall => None,
+            Error::IncompatableV1Message => None,
+            Error::MaxGargbageLength => None,
+            Error::InitiateFlow => None,
+        }
+    }
+}
+
+impl From<secp256k1::Error> for Error {
+    fn from(e: secp256k1::Error) -> Self {
+        Error::SecretMaterialsGeneration(e)
+    }
+}
+
+/// A point on the curve used to complete the handshake.
+#[derive(Clone, Debug)]
+pub struct EcdhPoint {
+    secret_key: SecretKey,
+    elligator_swift: ElligatorSwift,
+}
+
+/// All keys derived from the ECDH.
+#[derive(Debug, Clone)]
+pub struct SessionKeyMaterial {
+    /// A unique ID to identify a connection.
+    session_id: [u8; 32],
+    initiator_length_key: [u8; 32],
+    initiator_packet_key: [u8; 32],
+    responder_length_key: [u8; 32],
+    responder_packet_key: [u8; 32],
+    initiator_garbage_terminator: [u8; 16],
+    responder_garbage_terminator: [u8; 16],
+}
+
+/// Your role in the handshake.
+#[derive(Clone, Debug)]
+pub enum HandshakeRole {
+    /// You started the handshake with a peer.
+    Initiator,
+    /// You are responding to a handshake.
+    Responder,
+}
+
+/// A message or decoy packet from a connected peer.
+#[derive(Clone, Debug)]
+pub struct ReceivedMessage {
+    /// A message to handle or `None` if the peer sent a decoy and the message may be safely ignored.
+    pub message: Option<Vec<u8>>,
 }
 
 /// Encrypt and decrypt messages with a peer.
@@ -97,18 +135,18 @@ pub struct PacketHandler {
 }
 
 impl PacketHandler {
-    fn new(session_keys: SessionKeyMaterial, role: HandshakeRole) -> Self {
+    fn new(materials: SessionKeyMaterial, role: HandshakeRole) -> Self {
         match role {
             HandshakeRole::Initiator => {
-                let other_garbage_terminator = session_keys.responder_garbage_terminator;
-                let length_encoding_cipher = FSChaCha20::new(session_keys.initiator_length_key);
-                let length_decoding_cipher = FSChaCha20::new(session_keys.responder_length_key);
+                let other_garbage_terminator = materials.responder_garbage_terminator;
+                let length_encoding_cipher = FSChaCha20::new(materials.initiator_length_key);
+                let length_decoding_cipher = FSChaCha20::new(materials.responder_length_key);
                 let packet_encoding_cipher =
-                    FSChaCha20Poly1305::new(session_keys.initiator_packet_key);
+                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
                 let packet_decoding_cipher =
-                    FSChaCha20Poly1305::new(session_keys.responder_packet_key);
+                    FSChaCha20Poly1305::new(materials.responder_packet_key);
                 PacketHandler {
-                    session_id: session_keys.session_id,
+                    session_id: materials.session_id,
                     role,
                     other_garbage_terminator,
                     length_encoding_cipher,
@@ -118,15 +156,15 @@ impl PacketHandler {
                 }
             }
             HandshakeRole::Responder => {
-                let other_garbage_terminator = session_keys.initiator_garbage_terminator;
-                let length_encoding_cipher = FSChaCha20::new(session_keys.responder_length_key);
-                let length_decoding_cipher = FSChaCha20::new(session_keys.initiator_length_key);
+                let other_garbage_terminator = materials.initiator_garbage_terminator;
+                let length_encoding_cipher = FSChaCha20::new(materials.responder_length_key);
+                let length_decoding_cipher = FSChaCha20::new(materials.initiator_length_key);
                 let packet_encoding_cipher =
-                    FSChaCha20Poly1305::new(session_keys.responder_packet_key);
+                    FSChaCha20Poly1305::new(materials.responder_packet_key);
                 let packet_decoding_cipher =
-                    FSChaCha20Poly1305::new(session_keys.initiator_packet_key);
+                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
                 PacketHandler {
-                    session_id: session_keys.session_id,
+                    session_id: materials.session_id,
                     role,
                     other_garbage_terminator,
                     length_encoding_cipher,
@@ -459,19 +497,18 @@ fn get_shared_secrets(
     b: ElligatorSwift,
     secret: SecretKey,
     party: ElligatorSwiftParty,
-    mainnet: bool,
+    network: Network,
 ) -> SessionKeyMaterial {
     let data = "bip324_ellswift_xonly_ecdh".as_bytes();
     let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
-    initialize_session_key_material(ecdh_sk.as_secret_bytes(), mainnet)
+    initialize_session_key_material(ecdh_sk.as_secret_bytes(), network)
 }
 
-fn initialize_session_key_material(ikm: &[u8], mainnet: bool) -> SessionKeyMaterial {
+fn initialize_session_key_material(ikm: &[u8], network: Network) -> SessionKeyMaterial {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-    let magic = if mainnet {
-        NETWORK_MAGIC
-    } else {
-        SIGNET_NETWORK_MAGIC
+    let magic = match network {
+        Network::Mainnet => NETWORK_MAGIC,
+        Network::Signet => SIGNET_NETWORK_MAGIC,
     };
     let salt = [ikm_salt, magic].concat();
     let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ikm);
@@ -514,273 +551,149 @@ fn initialize_session_key_material(ikm: &[u8], mainnet: bool) -> SessionKeyMater
     }
 }
 
-/// Initialize a V2 transport handshake with a peer. The `InitiatorHandshake` contains a message ready to be sent over the wire,
-/// and the information necessary for completing ECDH when the peer responds.
-///
-/// # Arguments
-///
-/// `garbage_len` - The length of the additional garbage to be sent along with the encoded public key.
-///
-/// # Returns
-///
-/// A partial handshake.
-///
-/// # Errors
-///
-/// Fails if their was an error generating the keypair.
-#[cfg(feature = "std")]
-pub fn initialize_v2_handshake(
-    garbage_len: Option<u32>,
-) -> Result<InitiatorHandshake, secp256k1::Error> {
-    let mut rng = rand::thread_rng();
-    initialize_v2_handshake_with_rng(garbage_len, &mut rng)
+/// Key exchange handshake used to establish the secret material in the communication channel.
+pub enum Handshake {
+    Initiate {
+        point: EcdhPoint,
+        network: Network,
+    },
+    Respond {
+        point: EcdhPoint,
+        materials: SessionKeyMaterial,
+        network: Network,
+    },
 }
 
-/// Initialize a V2 transport handshake with a peer. The `InitiatorHandshake` contains a message ready to be sent over the wire,
-/// and the information necessary for completing ECDH when the peer responds.
-///
-/// # Arguments
-///
-/// `garbage_len` - The length of the additional garbage to be sent along with the encoded public key.
-/// `rng` - supplied Random Number Generator.
-///
-/// # Returns
-///
-/// A partial handshake.
-///
-/// # Errors
-///
-/// Fails if their was an error generating the keypair.
-pub fn initialize_v2_handshake_with_rng(
-    garbage_len: Option<u32>,
-    rng: &mut impl Rng,
-) -> Result<InitiatorHandshake, secp256k1::Error> {
-    let sk = gen_key(rng)?;
-    let es = new_elligator_swift(sk);
-    let garbage_len = garbage_len.unwrap_or(MAX_GARBAGE_LEN);
-    let garbage = gen_garbage(garbage_len, rng);
-    let point = EcdhPoint {
-        secret_key: sk,
-        elligator_swift: es,
-    };
-    let mut message = es.to_array().to_vec();
-    message.extend_from_slice(&garbage);
-    Ok(InitiatorHandshake {
-        message,
-        point,
-        garbage,
-    })
-}
+impl Handshake {
+    /// Initialize a V2 transport handshake with a peer.
+    ///
+    /// # Returns
+    ///
+    /// An initialized handshake which must be finalized.
+    ///
+    /// # Errors
+    ///
+    /// Fails if their was an error generating the keypair.
+    #[cfg(feature = "std")]
+    pub fn new(network: Network, buffer: &mut [u8]) -> Result<Self, secp256k1::Error> {
+        let mut rng = rand::thread_rng();
+        Self::new_with_rng(network, buffer, &mut rng)
+    }
 
-/// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire and a struct for parsing packets.
-///
-/// # Arguments
-///
-/// `message` - The message received over the wire.
-///
-/// # Returns
-///
-/// A completed handshake containing a `PacketHandler`.
-///
-/// # Errors
-///
-/// Fails if the packet was not prepared properly.
-#[cfg(feature = "std")]
-pub fn receive_v2_handshake(
-    message: Vec<u8>,
-    mainnet: bool,
-) -> Result<ResponderHandshake, ResponderHandshakeError> {
-    let mut rng = rand::thread_rng();
-    receive_v2_handshake_with_rng(message, &mut rng, mainnet)
-}
-
-/// Receive a V2 handshake over the wire. The `ResponderHandshake` contains the message ready to be sent over the wire and a struct for parsing packets.
-///
-/// # Arguments
-///
-/// `message` - The message received over the wire.
-/// `rng` - Supplied Random Number Generator.
-///
-/// # Returns
-///
-/// A completed handshake containing a `PacketHandler`.
-///
-/// # Errors
-///
-/// Fails if the packet was not prepared properly.
-pub fn receive_v2_handshake_with_rng(
-    message: Vec<u8>,
-    rng: &mut impl Rng,
-    mainnet: bool,
-) -> Result<ResponderHandshake, ResponderHandshakeError> {
-    let mut network_magic = if mainnet {
-        NETWORK_MAGIC.to_vec()
-    } else {
-        SIGNET_NETWORK_MAGIC.to_vec()
-    };
-    let mut version_bytes = "version".as_bytes().to_vec();
-    version_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
-    network_magic.extend(version_bytes);
-
-    if message.starts_with(&network_magic) {
-        Err(ResponderHandshakeError::IncorrectMessage(
-            "Cannot respond to V1 message.".to_string(),
-        ))
-    } else {
-        let mut response: Vec<u8> = Vec::new();
-        let sk = gen_key(rng).map_err(ResponderHandshakeError::ECC)?;
+    /// Initialize a V2 transport handshake with a peer.
+    ///
+    /// # Arguments
+    ///
+    /// `rng` - supplied Random Number Generator.
+    ///
+    /// # Returns
+    ///
+    /// An initialized handshake which must be finalized.
+    ///
+    /// # Errors
+    ///
+    /// Fails if their was an error generating the keypair.
+    pub fn new_with_rng(
+        network: Network,
+        buffer: &mut [u8],
+        rng: &mut impl Rng,
+    ) -> Result<Self, secp256k1::Error> {
+        let sk = gen_key(rng)?;
         let es = new_elligator_swift(sk);
-        response.extend(&es.to_array());
-        let elliswift_message = &message[..64];
-        let elliswift_slice: Result<[u8; 64], _> = elliswift_message.try_into();
-        let their_elliswift = elliswift_slice
-            .map_err(|e| ResponderHandshakeError::IncorrectMessage(e.to_string()))?;
-        let theirs = ElligatorSwift::from_array(their_elliswift);
-        let session_keys = get_shared_secrets(theirs, es, sk, ElligatorSwiftParty::B, mainnet);
-        let initiator_garbage = message[64..].to_vec();
-        let initiator_garbage_len = initiator_garbage.len() as u32;
-        let response_garbage = gen_garbage(initiator_garbage_len, rng);
-        if initiator_garbage_len > MAX_GARBAGE_LEN {
-            return Err(ResponderHandshakeError::IncorrectMessage(
-                "Garbage length is too large.".to_string(),
-            ));
+        let point = EcdhPoint {
+            secret_key: sk,
+            elligator_swift: es,
+        };
+
+        buffer[0..64].copy_from_slice(&point.elligator_swift.to_array());
+
+        Ok(Handshake::Initiate { point, network })
+    }
+
+    /// Initialize handshake from a peer request.
+    #[cfg(feature = "std")]
+    pub fn new_from_request(network: Network, message: &[u8]) -> Result<Self, Error> {
+        let mut rng = rand::thread_rng();
+        Self::new_from_request_with_rng(network, message, &mut rng)
+    }
+
+    /// Initialize handshake from a peer request.
+    pub fn new_from_request_with_rng(
+        network: Network,
+        message: &[u8],
+        rng: &mut impl Rng,
+    ) -> Result<Self, Error> {
+        let mut network_magic = match network {
+            Network::Mainnet => NETWORK_MAGIC.to_vec(),
+            Network::Signet => SIGNET_NETWORK_MAGIC.to_vec(),
+        };
+        let mut version_bytes = "version".as_bytes().to_vec();
+        version_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
+        network_magic.extend(version_bytes);
+
+        if message.starts_with(&network_magic) {
+            return Err(Error::IncompatableV1Message);
         }
-        response.extend(response_garbage.clone());
-        response.extend(session_keys.responder_garbage_terminator);
-        let mut packet_handler = PacketHandler::new(session_keys.clone(), HandshakeRole::Responder);
-        let garbage_auth = packet_handler
-            .prepare_v2_packet(Vec::new(), Some(response_garbage), false)
-            .map_err(|e| ResponderHandshakeError::EncryptionError(e.to_string()))?;
-        response.extend(garbage_auth);
-        Ok(ResponderHandshake {
-            message: response,
-            session_keys,
-            packet_handler,
-            initiator_garbage,
+
+        let sk = gen_key(rng)?;
+        let es = new_elligator_swift(sk);
+        let point = EcdhPoint {
+            secret_key: sk,
+            elligator_swift: es,
+        };
+
+        let mut elliswift_message = [0u8; 64];
+        elliswift_message.copy_from_slice(&message[0..64]);
+        let theirs = ElligatorSwift::from_array(elliswift_message);
+        let materials = get_shared_secrets(theirs, es, sk, ElligatorSwiftParty::B, network);
+        Ok(Handshake::Respond {
+            materials,
+            point,
+            network,
         })
     }
-}
 
-/// Receive a message from the responder and complete the V2 handshake.
-///
-/// # Arguments
-///
-/// `message` - The message received over the wire.
-///
-/// `responder_handshake` - The result of the initial handshake.
-///
-/// # Returns
-///
-/// A completed handshake containing a `PacketHandler`.
-///
-/// # Errors
-///
-/// Fails if the packet was not decrypted or authenticated properly.
-pub fn initiator_complete_v2_handshake(
-    message: Vec<u8>,
-    init_handshake: InitiatorHandshake,
-    mainnet: bool,
-) -> Result<CompleteHandshake, HandshakeCompletionError> {
-    let elliswift_message = &message[..64];
-    let elliswift_slice: Result<[u8; 64], _> = elliswift_message.try_into();
-    let their_elliswift =
-        elliswift_slice.map_err(|e| HandshakeCompletionError::MessageTooShort(e.to_string()))?;
-    let theirs = ElligatorSwift::from_array(their_elliswift);
-    let session_keys = get_shared_secrets(
-        init_handshake.point.elligator_swift,
-        theirs,
-        init_handshake.point.secret_key,
-        ElligatorSwiftParty::A,
-        mainnet,
-    );
-    let mut packet_handler = PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
-    let their_garbge_term = session_keys.responder_garbage_terminator;
-    let garbage_aad = split_completion_message(message[64..].to_vec(), their_garbge_term);
-    match garbage_aad {
-        Some((garbage, contents)) => {
-            packet_handler
-                .receive_v2_packets(contents, Some(garbage))
-                .map_err(|e| HandshakeCompletionError::DecryptionError(e.to_string()))?;
-            let garbage_term = session_keys.initiator_garbage_terminator.to_vec();
-            let mut response: Vec<u8> = Vec::new();
-            response.extend(garbage_term);
-            let auth = packet_handler
-                .prepare_v2_packet(Vec::new(), Some(init_handshake.garbage), false)
-                .map_err(|e| HandshakeCompletionError::DecryptionError(e.to_string()))?;
-            response.extend(&auth);
-            let handshake = CompleteHandshake {
-                message: response,
-                packet_handler,
-            };
-            Ok(handshake)
+    /// Finalizes handshake and returns a handler for further communication on the channel.
+    pub fn finalize(
+        self,
+        their_elliswift: Option<[u8; 64]>,
+        buffer: &mut [u8],
+    ) -> Result<PacketHandler, Error> {
+        match self {
+            // Take their public key and make materials, then send last packet with garbage term.
+            Handshake::Initiate { point, network } => {
+                let their_elliswift = their_elliswift.ok_or(Error::InitiateFlow)?;
+                let theirs = ElligatorSwift::from_array(their_elliswift);
+                let materials = get_shared_secrets(
+                    point.elligator_swift,
+                    theirs,
+                    point.secret_key,
+                    ElligatorSwiftParty::A,
+                    network,
+                );
+                buffer[..16].copy_from_slice(&materials.initiator_garbage_terminator);
+                Ok(PacketHandler::new(materials, HandshakeRole::Initiator))
+            }
+            // Send last packet with garbage term.
+            Handshake::Respond {
+                materials,
+                point,
+                network: _,
+            } => {
+                buffer[..64].copy_from_slice(&point.elligator_swift.to_array());
+                let garbage_index = buffer.len() - 16;
+                buffer[garbage_index..].copy_from_slice(&materials.responder_garbage_terminator);
+                Ok(PacketHandler::new(materials, HandshakeRole::Responder))
+            }
         }
-        None => Err(HandshakeCompletionError::NoTerminator(
-            "The garbage terminator was not found in the response message.".to_string(),
-        )),
-    }
-}
-
-/// Receive a message from the initiator and complete the handshake or disconnect.
-///
-/// # Arguments
-///
-/// `message` - The message received over the wire.
-///
-/// `responder_handshake` - A mutuable reference to the result of the initial handshake response.
-///
-/// # Returns
-///
-/// Void if the handshake was successful.
-///
-/// # Errors
-///
-/// Fails if the packet was not decrypted or authenticated properly.
-pub fn responder_complete_v2_handshake(
-    message: Vec<u8>,
-    responder_handshake: &mut ResponderHandshake,
-) -> Result<(), HandshakeCompletionError> {
-    let garbage_term = message[..16].to_vec();
-    if garbage_term.ne(&responder_handshake
-        .session_keys
-        .initiator_garbage_terminator
-        .to_vec())
-    {
-        return Err(HandshakeCompletionError::NoTerminator(
-            "Garbage terminator does not match.".to_string(),
-        ));
-    }
-    let garbage_auth = message[16..].to_vec();
-    responder_handshake
-        .packet_handler
-        .receive_v2_packets(
-            garbage_auth,
-            Some(responder_handshake.initiator_garbage.clone()),
-        )
-        .map_err(|e| HandshakeCompletionError::DecryptionError(e.to_string()))?;
-    Ok(())
-}
-
-fn split_completion_message(
-    message: Vec<u8>,
-    garbage_term: [u8; 16],
-) -> Option<(Vec<u8>, Vec<u8>)> {
-    if let Some(index) = message
-        .windows(garbage_term.len())
-        .position(|window| window == garbage_term)
-    {
-        let before = message[..index].to_vec();
-        let after = message[(index + garbage_term.len())..].to_vec();
-        Some((before, after))
-    } else {
-        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::{panic, str::FromStr};
     use hex::prelude::*;
-    use std::str::FromStr;
 
     #[test]
     fn test_sec_keygen() {
@@ -790,23 +703,36 @@ mod tests {
 
     #[test]
     fn test_initial_message() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let message = &handshake_init.message.to_lower_hex_string();
-        let es = handshake_init.point.elligator_swift.to_string();
-        assert!(message.contains(&es))
+        let mut message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut message).unwrap();
+        let message = message.to_lower_hex_string();
+        match handshake_init {
+            Handshake::Initiate { point, network } => {
+                let es = point.elligator_swift.to_string();
+                assert!(message.contains(&es))
+            }
+            Handshake::Respond {
+                point,
+                materials,
+                network,
+            } => {
+                panic!("Shouldn't be a respond!")
+            }
+        }
     }
 
     #[test]
     fn test_message_response() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        receive_v2_handshake(handshake_init.message, true).unwrap();
+        let mut message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut message).unwrap();
+        Handshake::new_from_request(Network::Mainnet, &message).unwrap();
     }
 
     #[test]
     fn test_expand_extract() {
         let ikm = Vec::from_hex("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
             .unwrap();
-        let session_keys = initialize_session_key_material(&ikm, true);
+        let session_keys = initialize_session_key_material(&ikm, Network::Mainnet);
         assert_eq!(
             session_keys.session_id.to_lower_hex_string(),
             "ce72dffb015da62b0d0f5474cab8bc72605225b0cee3f62312ec680ec5f41ba5"
@@ -825,7 +751,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         assert_eq!(
             "9a6478b5fbab1f4dd2f78994b774c03211c78312786e602da75a0d1767fb55cf",
@@ -859,14 +785,26 @@ mod tests {
 
     #[test]
     fn test_handshake_session_id() {
-        let handshake_init = initialize_v2_handshake(Some(0)).unwrap();
+        let mut init_message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
         let handshake_response =
-            receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-        let handshake_completion =
-            initiator_complete_v2_handshake(handshake_response.message, handshake_init, true)
-                .unwrap();
-        let sid = handshake_completion.packet_handler.session_id;
-        let sid2 = handshake_response.packet_handler.session_id;
+            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+
+        let mut response_message = vec![0u8; 80];
+        let response_packet_handler = handshake_response
+            .finalize(None, &mut response_message)
+            .unwrap();
+
+        let mut init_finalize_message = vec![0u8; 16];
+        let init_packet_handler = handshake_init
+            .finalize(
+                Some(response_message[0..64].try_into().unwrap()),
+                &mut init_finalize_message,
+            )
+            .unwrap();
+
+        let sid = init_packet_handler.session_id;
+        let sid2 = response_packet_handler.session_id;
         assert_eq!(sid, sid2);
     }
 
@@ -882,7 +820,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -920,7 +858,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -960,7 +898,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -976,22 +914,24 @@ mod tests {
 
     #[test]
     fn test_full_handshake() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response =
-            receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-        let alice_completion = initiator_complete_v2_handshake(
-            handshake_response.message.clone(),
-            handshake_init,
-            true,
-        )
-        .unwrap();
-        let _bob_completion = responder_complete_v2_handshake(
-            alice_completion.message.clone(),
-            &mut handshake_response,
-        )
-        .unwrap();
-        let mut alice = alice_completion.packet_handler;
-        let mut bob = handshake_response.packet_handler;
+        let mut init_message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_response =
+            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+
+        let mut response_message = vec![0u8; 80];
+        let mut bob = handshake_response
+            .finalize(None, &mut response_message)
+            .unwrap();
+
+        let mut init_finalize_message = vec![0u8; 16];
+        let mut alice = handshake_init
+            .finalize(
+                Some(response_message[0..64].try_into().unwrap()),
+                &mut init_finalize_message,
+            )
+            .unwrap();
+
         let message = b"Hello world".to_vec();
         let encrypted_message_to_alice =
             bob.prepare_v2_packet(message.clone(), None, false).unwrap();
@@ -1013,22 +953,24 @@ mod tests {
 
     #[test]
     fn test_decode_multiple_messages() {
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response =
-            receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-        let alice_completion = initiator_complete_v2_handshake(
-            handshake_response.message.clone(),
-            handshake_init,
-            true,
-        )
-        .unwrap();
-        let _bob_completion = responder_complete_v2_handshake(
-            alice_completion.message.clone(),
-            &mut handshake_response,
-        )
-        .unwrap();
-        let mut alice = alice_completion.packet_handler;
-        let mut bob = handshake_response.packet_handler;
+        let mut init_message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_response =
+            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+
+        let mut response_message = vec![0u8; 80];
+        let mut bob = handshake_response
+            .finalize(None, &mut response_message)
+            .unwrap();
+
+        let mut init_finalize_message = vec![0u8; 16];
+        let mut alice = handshake_init
+            .finalize(
+                Some(response_message[0..64].try_into().unwrap()),
+                &mut init_finalize_message,
+            )
+            .unwrap();
+
         let message = b"Hello world".to_vec();
         let mut first_message_to_alice =
             bob.prepare_v2_packet(message.clone(), None, false).unwrap();
@@ -1042,22 +984,25 @@ mod tests {
     #[test]
     fn test_fuzz_decode_multiple_messages() {
         let mut rng = rand::thread_rng();
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response =
-            receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-        let alice_completion = initiator_complete_v2_handshake(
-            handshake_response.message.clone(),
-            handshake_init,
-            true,
-        )
-        .unwrap();
-        let _bob_completion = responder_complete_v2_handshake(
-            alice_completion.message.clone(),
-            &mut handshake_response,
-        )
-        .unwrap();
-        let mut alice = alice_completion.packet_handler;
-        let mut bob = handshake_response.packet_handler;
+
+        let mut init_message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_response =
+            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+
+        let mut response_message = vec![0u8; 80];
+        let mut bob = handshake_response
+            .finalize(None, &mut response_message)
+            .unwrap();
+
+        let mut init_finalize_message = vec![0u8; 16];
+        let mut alice = handshake_init
+            .finalize(
+                Some(response_message[0..64].try_into().unwrap()),
+                &mut init_finalize_message,
+            )
+            .unwrap();
+
         let mut message_to_bob = Vec::new();
         for _ in 0..REKEY_INTERVAL + 100 {
             let message = gen_garbage(420, &mut rng);
@@ -1072,22 +1017,25 @@ mod tests {
     #[test]
     fn test_partial_decodings() {
         let mut rng = rand::thread_rng();
-        let handshake_init = initialize_v2_handshake(None).unwrap();
-        let mut handshake_response =
-            receive_v2_handshake(handshake_init.message.clone(), true).unwrap();
-        let alice_completion = initiator_complete_v2_handshake(
-            handshake_response.message.clone(),
-            handshake_init,
-            true,
-        )
-        .unwrap();
-        let _bob_completion = responder_complete_v2_handshake(
-            alice_completion.message.clone(),
-            &mut handshake_response,
-        )
-        .unwrap();
-        let mut alice = alice_completion.packet_handler;
-        let mut bob = handshake_response.packet_handler;
+
+        let mut init_message = vec![0u8; 64];
+        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_response =
+            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+
+        let mut response_message = vec![0u8; 80];
+        let mut bob = handshake_response
+            .finalize(None, &mut response_message)
+            .unwrap();
+
+        let mut init_finalize_message = vec![0u8; 16];
+        let mut alice = handshake_init
+            .finalize(
+                Some(response_message[0..64].try_into().unwrap()),
+                &mut init_finalize_message,
+            )
+            .unwrap();
+
         let mut message_to_bob = Vec::new();
         let message = gen_garbage(420, &mut rng);
         let enc_packet = alice
@@ -1116,7 +1064,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -1150,7 +1098,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            true,
+            Network::Mainnet,
         );
         let id = session_keys.session_id;
         assert_eq!(
@@ -1188,7 +1136,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);
@@ -1214,7 +1162,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            true,
+            Network::Mainnet,
         );
         let id = session_keys.session_id;
         assert_eq!(
@@ -1250,7 +1198,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            true,
+            Network::Mainnet,
         );
         let mut alice_packet_handler =
             PacketHandler::new(session_keys.clone(), HandshakeRole::Initiator);

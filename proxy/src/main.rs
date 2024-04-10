@@ -14,8 +14,8 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Err
     outbound.write_all(&handshake.message).await?;
     println!("Sent handshake to remote.");
 
-    // 64 bytes ES + 16 byte garbage terminator?
-    let mut buffer = vec![0u8; 80];
+    // 64 bytes ES.
+    let mut buffer = vec![0u8; 64];
     println!("Reading handshake response from remote.");
     outbound.read_exact(&mut buffer).await?;
 
