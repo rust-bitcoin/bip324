@@ -487,11 +487,6 @@ fn new_elligator_swift(sk: SecretKey) -> ElligatorSwift {
     ElligatorSwift::from_pubkey(pk)
 }
 
-fn gen_garbage(garbage_len: u32, rng: &mut impl Rng) -> Vec<u8> {
-    let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
-    buffer
-}
-
 fn get_shared_secrets(
     a: ElligatorSwift,
     b: ElligatorSwift,
@@ -551,21 +546,29 @@ fn initialize_session_key_material(ikm: &[u8], network: Network) -> SessionKeyMa
     }
 }
 
-/// Key exchange handshake used to establish the secret material in the communication channel.
-pub enum Handshake {
-    Initiate {
-        point: EcdhPoint,
-        network: Network,
-    },
-    Respond {
-        point: EcdhPoint,
-        materials: SessionKeyMaterial,
-        network: Network,
-    },
+/// Handshake state-machine to establish the secret material in the communication channel.
+pub struct Handshake<'a> {
+    /// Bitcoin network peers are operating on.
+    network: Network,
+    /// Initiator or responder.
+    role: HandshakeRole,
+    /// Local point for key exchange.
+    point: EcdhPoint,
+    /// Optional garbage bytes used in handshake.
+    garbage: Option<&'a [u8]>,
+    /// Secret materials generated in the handshake.
+    materials: Option<SessionKeyMaterial>,
 }
 
-impl Handshake {
+impl<'a> Handshake<'a> {
     /// Initialize a V2 transport handshake with a peer.
+    ///
+    /// # Arguements
+    ///
+    /// * `network` - The bitcoin network which both peers operate on.
+    /// * `garbage` - Optional garbage to send in handshake.
+    /// * `buffer` - Message buffer to send to peer after the handshake is initialized. Will have its
+    ///   first 64 bytes overwritten to contain the generated public key, but the rest can be garbage.
     ///
     /// # Returns
     ///
@@ -575,16 +578,24 @@ impl Handshake {
     ///
     /// Fails if their was an error generating the keypair.
     #[cfg(feature = "std")]
-    pub fn new(network: Network, buffer: &mut [u8]) -> Result<Self, secp256k1::Error> {
+    pub fn new(
+        network: Network,
+        garbage: Option<&'a [u8]>,
+        buffer: &mut [u8],
+    ) -> Result<Self, secp256k1::Error> {
         let mut rng = rand::thread_rng();
-        Self::new_with_rng(network, buffer, &mut rng)
+        Self::new_with_rng(network, garbage, buffer, &mut rng)
     }
 
     /// Initialize a V2 transport handshake with a peer.
     ///
     /// # Arguments
     ///
-    /// `rng` - supplied Random Number Generator.
+    /// * `network` - The bitcoin network which both peers operate on.
+    /// * `garbage` - Optional garbage to send in handshake.    
+    /// * `buffer` - Message buffer to send to peer after the handshake is initialized. Will have its
+    /// first 64 bytes overwritten to contain the generated public key, but the rest can be garbage.
+    /// * `rng` - Supplied Random Number Generator.
     ///
     /// # Returns
     ///
@@ -595,6 +606,7 @@ impl Handshake {
     /// Fails if their was an error generating the keypair.
     pub fn new_with_rng(
         network: Network,
+        garbage: Option<&'a [u8]>,
         buffer: &mut [u8],
         rng: &mut impl Rng,
     ) -> Result<Self, secp256k1::Error> {
@@ -606,21 +618,64 @@ impl Handshake {
         };
 
         buffer[0..64].copy_from_slice(&point.elligator_swift.to_array());
+        if let Some(garbage) = garbage {
+            buffer[64..64 + garbage.len()].copy_from_slice(&garbage);
+        }
 
-        Ok(Handshake::Initiate { point, network })
+        Ok(Handshake {
+            network,
+            role: HandshakeRole::Initiator,
+            point,
+            garbage,
+            materials: None,
+        })
     }
 
-    /// Initialize handshake from a peer request.
+    /// Initialize handshake from an initial peer request.
+    ///
+    /// # Arguements
+    ///
+    /// * `network` - The bitcoin network which both peers operate on.
+    /// * `garbage` - Optional garbage to send in handshake.
+    /// * `initial_message` - Message sent by peer.
+    ///
+    /// # Returns
+    ///
+    /// An initialized handshake which must be finalized.
+    ///
+    /// # Errors
+    ///
+    /// Fails if their was an error generating the keypair.
     #[cfg(feature = "std")]
-    pub fn new_from_request(network: Network, message: &[u8]) -> Result<Self, Error> {
+    pub fn new_from_request(
+        network: Network,
+        garbage: Option<&'a [u8]>,
+        initial_message: &[u8],
+    ) -> Result<Self, Error> {
         let mut rng = rand::thread_rng();
-        Self::new_from_request_with_rng(network, message, &mut rng)
+        Self::new_from_request_with_rng(network, garbage, initial_message, &mut rng)
     }
 
-    /// Initialize handshake from a peer request.
+    /// Initialize handshake from an initial peer request.
+    ///
+    /// # Arguements
+    ///
+    /// * `network` - The bitcoin network which both peers operate on.
+    /// * `garbage` - Optional garbage to send in handshake.
+    /// * `initial_message` - Message sent by peer.
+    /// * `rng` - Supplied Random Number Generator.    ///
+    ///
+    /// # Returns
+    ///
+    /// An initialized handshake which must be finalized.
+    ///
+    /// # Errors
+    ///
+    /// Fails if their was an error generating the keypair.
     pub fn new_from_request_with_rng(
         network: Network,
-        message: &[u8],
+        garbage: Option<&'a [u8]>,
+        initial_message: &[u8],
         rng: &mut impl Rng,
     ) -> Result<Self, Error> {
         let mut network_magic = match network {
@@ -631,7 +686,7 @@ impl Handshake {
         version_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
         network_magic.extend(version_bytes);
 
-        if message.starts_with(&network_magic) {
+        if initial_message.starts_with(&network_magic) {
             return Err(Error::IncompatableV1Message);
         }
 
@@ -643,47 +698,84 @@ impl Handshake {
         };
 
         let mut elliswift_message = [0u8; 64];
-        elliswift_message.copy_from_slice(&message[0..64]);
+        elliswift_message.copy_from_slice(&initial_message[0..64]);
         let theirs = ElligatorSwift::from_array(elliswift_message);
         let materials = get_shared_secrets(theirs, es, sk, ElligatorSwiftParty::B, network);
-        Ok(Handshake::Respond {
-            materials,
+        Ok(Handshake {
             point,
             network,
+            role: HandshakeRole::Responder,
+            garbage,
+            materials: Some(materials),
         })
     }
 
     /// Finalizes handshake and returns a handler for further communication on the channel.
+    ///
+    /// The handshake is consumed since from here on out only the handler should be used.
+    ///
+    /// # Arguments
+    ///
+    /// * `responders_elliswift` - If initator, must supply the key returned by the responder.
+    /// * `buffer` - Buffer to write message for peer to finilize handshake.
+    ///
+    /// # Returns
+    ///
+    /// Package handler for further communitcation with peer.
     pub fn finalize(
         self,
-        their_elliswift: Option<[u8; 64]>,
+        responders_elliswift: Option<[u8; 64]>,
         buffer: &mut [u8],
     ) -> Result<PacketHandler, Error> {
-        match self {
-            // Take their public key and make materials, then send last packet with garbage term.
-            Handshake::Initiate { point, network } => {
-                let their_elliswift = their_elliswift.ok_or(Error::InitiateFlow)?;
+        match self.role {
+            // Take their public key and make materials, then send write garbage term, decoy packets, and version packet.
+            HandshakeRole::Initiator => {
+                let their_elliswift = responders_elliswift.ok_or(Error::InitiateFlow)?;
                 let theirs = ElligatorSwift::from_array(their_elliswift);
                 let materials = get_shared_secrets(
-                    point.elligator_swift,
+                    self.point.elligator_swift,
                     theirs,
-                    point.secret_key,
+                    self.point.secret_key,
                     ElligatorSwiftParty::A,
-                    network,
+                    self.network,
                 );
                 buffer[..16].copy_from_slice(&materials.initiator_garbage_terminator);
-                Ok(PacketHandler::new(materials, HandshakeRole::Initiator))
+                let mut packet_handler = PacketHandler::new(materials, HandshakeRole::Initiator);
+
+                // TODO: Support decoy packets.
+                // Empty vec is signaling version.
+                let version_packet = packet_handler
+                    .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
+                    .expect("version packet creation");
+                buffer[16..16 + version_packet.len()].copy_from_slice(&version_packet);
+
+                Ok(packet_handler)
             }
-            // Send last packet with garbage term.
-            Handshake::Respond {
-                materials,
-                point,
-                network: _,
-            } => {
-                buffer[..64].copy_from_slice(&point.elligator_swift.to_array());
-                let garbage_index = buffer.len() - 16;
-                buffer[garbage_index..].copy_from_slice(&materials.responder_garbage_terminator);
-                Ok(PacketHandler::new(materials, HandshakeRole::Responder))
+            // Write public key, garbage, garbage term, decoy packets, and version packet.
+            HandshakeRole::Responder => {
+                let materials = self.materials.expect("responder always has materials");
+                buffer[..64].copy_from_slice(&self.point.elligator_swift.to_array());
+
+                let mut garbage_index = 64;
+                if let Some(garbage) = self.garbage {
+                    garbage_index = 64 + garbage.len();
+                    buffer[64..garbage_index].copy_from_slice(&garbage);
+                }
+                let packet_index = garbage_index + 16;
+                buffer[garbage_index..packet_index]
+                    .copy_from_slice(&materials.responder_garbage_terminator);
+
+                let mut packet_handler = PacketHandler::new(materials, HandshakeRole::Responder);
+
+                // TODO: Support decoy packets.
+                // Empty vec is signaling version.
+                let version_packet = packet_handler
+                    .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
+                    .expect("version packet creation");
+                buffer[packet_index..packet_index + version_packet.len()]
+                    .copy_from_slice(&version_packet);
+
+                Ok(packet_handler)
             }
         }
     }
@@ -692,8 +784,13 @@ impl Handshake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::{panic, str::FromStr};
+    use core::str::FromStr;
     use hex::prelude::*;
+
+    fn gen_garbage(garbage_len: u32, rng: &mut impl Rng) -> Vec<u8> {
+        let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
+        buffer
+    }
 
     #[test]
     fn test_sec_keygen() {
@@ -704,28 +801,17 @@ mod tests {
     #[test]
     fn test_initial_message() {
         let mut message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut message).unwrap();
+        let handshake = Handshake::new(Network::Mainnet, None, &mut message).unwrap();
         let message = message.to_lower_hex_string();
-        match handshake_init {
-            Handshake::Initiate { point, network } => {
-                let es = point.elligator_swift.to_string();
-                assert!(message.contains(&es))
-            }
-            Handshake::Respond {
-                point,
-                materials,
-                network,
-            } => {
-                panic!("Shouldn't be a respond!")
-            }
-        }
+        let es = handshake.point.elligator_swift.to_string();
+        assert!(message.contains(&es))
     }
 
     #[test]
     fn test_message_response() {
         let mut message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut message).unwrap();
-        Handshake::new_from_request(Network::Mainnet, &message).unwrap();
+        Handshake::new(Network::Mainnet, None, &mut message).unwrap();
+        Handshake::new_from_request(Network::Mainnet, None, &message).unwrap();
     }
 
     #[test]
@@ -786,16 +872,16 @@ mod tests {
     #[test]
     fn test_handshake_session_id() {
         let mut init_message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_init = Handshake::new(Network::Mainnet, None, &mut init_message).unwrap();
         let handshake_response =
-            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+            Handshake::new_from_request(Network::Mainnet, None, &init_message).unwrap();
 
-        let mut response_message = vec![0u8; 80];
+        let mut response_message = vec![0u8; 100];
         let response_packet_handler = handshake_response
             .finalize(None, &mut response_message)
             .unwrap();
 
-        let mut init_finalize_message = vec![0u8; 16];
+        let mut init_finalize_message = vec![0u8; 36];
         let init_packet_handler = handshake_init
             .finalize(
                 Some(response_message[0..64].try_into().unwrap()),
@@ -915,16 +1001,16 @@ mod tests {
     #[test]
     fn test_full_handshake() {
         let mut init_message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_init = Handshake::new(Network::Mainnet, None, &mut init_message).unwrap();
         let handshake_response =
-            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+            Handshake::new_from_request(Network::Mainnet, None, &init_message).unwrap();
 
-        let mut response_message = vec![0u8; 80];
+        let mut response_message = vec![0u8; 100];
         let mut bob = handshake_response
             .finalize(None, &mut response_message)
             .unwrap();
 
-        let mut init_finalize_message = vec![0u8; 16];
+        let mut init_finalize_message = vec![0u8; 36];
         let mut alice = handshake_init
             .finalize(
                 Some(response_message[0..64].try_into().unwrap()),
@@ -954,16 +1040,16 @@ mod tests {
     #[test]
     fn test_decode_multiple_messages() {
         let mut init_message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_init = Handshake::new(Network::Mainnet, None, &mut init_message).unwrap();
         let handshake_response =
-            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+            Handshake::new_from_request(Network::Mainnet, None, &init_message).unwrap();
 
-        let mut response_message = vec![0u8; 80];
+        let mut response_message = vec![0u8; 100];
         let mut bob = handshake_response
             .finalize(None, &mut response_message)
             .unwrap();
 
-        let mut init_finalize_message = vec![0u8; 16];
+        let mut init_finalize_message = vec![0u8; 36];
         let mut alice = handshake_init
             .finalize(
                 Some(response_message[0..64].try_into().unwrap()),
@@ -986,16 +1072,16 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let mut init_message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_init = Handshake::new(Network::Mainnet, None, &mut init_message).unwrap();
         let handshake_response =
-            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+            Handshake::new_from_request(Network::Mainnet, None, &init_message).unwrap();
 
-        let mut response_message = vec![0u8; 80];
+        let mut response_message = vec![0u8; 100];
         let mut bob = handshake_response
             .finalize(None, &mut response_message)
             .unwrap();
 
-        let mut init_finalize_message = vec![0u8; 16];
+        let mut init_finalize_message = vec![0u8; 36];
         let mut alice = handshake_init
             .finalize(
                 Some(response_message[0..64].try_into().unwrap()),
@@ -1019,16 +1105,16 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let mut init_message = vec![0u8; 64];
-        let handshake_init = Handshake::new(Network::Mainnet, &mut init_message).unwrap();
+        let handshake_init = Handshake::new(Network::Mainnet, None, &mut init_message).unwrap();
         let handshake_response =
-            Handshake::new_from_request(Network::Mainnet, &init_message).unwrap();
+            Handshake::new_from_request(Network::Mainnet, None, &init_message).unwrap();
 
-        let mut response_message = vec![0u8; 80];
+        let mut response_message = vec![0u8; 100];
         let mut bob = handshake_response
             .finalize(None, &mut response_message)
             .unwrap();
 
-        let mut init_finalize_message = vec![0u8; 16];
+        let mut init_finalize_message = vec![0u8; 36];
         let mut alice = handshake_init
             .finalize(
                 Some(response_message[0..64].try_into().unwrap()),
