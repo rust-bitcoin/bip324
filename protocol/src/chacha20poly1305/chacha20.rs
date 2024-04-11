@@ -232,12 +232,12 @@ fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -
     kstream
 }
 
-#[cfg(feature = "std")]
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
     use hex::prelude::*;
+    #[cfg(feature = "std")]
     use rand::Rng;
 
     #[test]
@@ -426,6 +426,7 @@ mod tests {
         assert_eq!(binding, to);
     }
 
+    #[cfg(feature = "std")]
     fn gen_garbage(garbage_len: u32) -> Vec<u8> {
         let mut rng = rand::thread_rng();
         let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
@@ -433,6 +434,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_fuzz_other() {
         for _ in 0..100 {
             let garbage_key = gen_garbage(32);
