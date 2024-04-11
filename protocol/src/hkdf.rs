@@ -86,7 +86,6 @@ impl<T: Hash> Hkdf<T> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "std")]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
