@@ -1,17 +1,41 @@
 mod chacha20;
 mod poly1305;
 
-use crate::error;
 pub(crate) use chacha20::ChaCha20;
 use poly1305::Poly1305;
 
-use error::ChaCha20Poly1305DecryptionError;
-use error::ChaCha20Poly1305EncryptionError;
-
-use alloc::string::ToString;
+use alloc::fmt;
 
 // Zero array for padding slices.
 const ZEROES: [u8; 16] = [0u8; 16];
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    UnauthenticatedAdditionalData,
+    CiphertextTooShort,
+    IncorrectBuffer,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
+            Error::CiphertextTooShort => write!(f, "Ciphertext must be at least 16 bytes."),
+            Error::IncorrectBuffer => write!(f, "The buffer provided was incorrect. Ensure the buffer is 16 bytes longer than the message."),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::UnauthenticatedAdditionalData => None,
+            Error::CiphertextTooShort => None,
+            Error::IncorrectBuffer => None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct ChaCha20Poly1305 {
@@ -29,9 +53,9 @@ impl ChaCha20Poly1305 {
         plaintext: &'a mut [u8],
         aad: Option<&'a [u8]>,
         buffer: &'a mut [u8],
-    ) -> Result<&'a [u8], ChaCha20Poly1305EncryptionError> {
+    ) -> Result<&'a [u8], Error> {
         if plaintext.len() + 16 != buffer.len() {
-            return Err(ChaCha20Poly1305EncryptionError::IncorrectBuffer("The buffer provided was incorrect. Ensure the buffer is 16 bytes longer than the message.".to_string()));
+            return Err(Error::IncorrectBuffer);
         }
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
         chacha.apply_keystream(plaintext);
@@ -81,7 +105,7 @@ impl ChaCha20Poly1305 {
         self,
         ciphertext: &'a mut [u8],
         aad: Option<&'a [u8]>,
-    ) -> Result<&'a [u8], ChaCha20Poly1305DecryptionError> {
+    ) -> Result<&'a [u8], Error> {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 0);
         let keystream = chacha.get_keystream(0);
         let mut poly = Poly1305::new(
@@ -118,16 +142,10 @@ impl ChaCha20Poly1305 {
                 chacha.apply_keystream(received_msg);
                 Ok(received_msg)
             } else {
-                Err(
-                    ChaCha20Poly1305DecryptionError::UnauthenticatedAdditionalData(
-                        "Computed tag did not match.".to_string(),
-                    ),
-                )
+                Err(Error::UnauthenticatedAdditionalData)
             }
         } else {
-            Err(ChaCha20Poly1305DecryptionError::CiphertextTooShort(
-                "Ciphertext must be at least 16 bytes.".to_string(),
-            ))
+            Err(Error::CiphertextTooShort)
         }
     }
 }

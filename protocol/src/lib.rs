@@ -6,21 +6,17 @@ extern crate alloc;
 extern crate std;
 
 mod chacha20poly1305;
-mod error;
+mod fschacha20poly1305;
 mod hkdf;
 
 use core::fmt;
 
 use bitcoin_hashes::sha256;
-use chacha20poly1305::ChaCha20;
-use chacha20poly1305::ChaCha20Poly1305;
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use error::FSChaChaError;
-pub use error::{HandshakeCompletionError, ResponderHandshakeError};
+use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 use hkdf::Hkdf;
 use rand::Rng;
 use secp256k1::{
@@ -29,11 +25,8 @@ use secp256k1::{
     PublicKey, Secp256k1, SecretKey,
 };
 
-const REKEY_INTERVAL: u32 = 224;
 const LENGTH_FIELD_LEN: usize = 3;
-const CHACHA_BLOCKS_USED: u32 = 3;
 const DECOY: u8 = 128;
-const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const NETWORK_MAGIC: &[u8] = &[0xF9, 0xBE, 0xB4, 0xD9];
 const SIGNET_NETWORK_MAGIC: &[u8] = &[0x0A, 0x03, 0xCF, 0x40];
 
@@ -47,9 +40,11 @@ pub enum Network {
 pub enum Error {
     MessageLengthTooSmall,
     IncompatableV1Message,
-    MaxGargbageLength,
+    MaxGarbageLength,
     InitiateFlow,
     SecretMaterialsGeneration(secp256k1::Error),
+    Cipher(fschacha20poly1305::Error),
+    OutOfSync,
 }
 
 impl fmt::Display for Error {
@@ -60,8 +55,10 @@ impl fmt::Display for Error {
             }
             Error::MessageLengthTooSmall => write!(f, "Message length too small allocation"),
             Error::IncompatableV1Message => write!(f, "Incompatable V1 message"),
-            Error::MaxGargbageLength => write!(f, "Max garabage length"),
+            Error::MaxGarbageLength => write!(f, "Max garabage length"),
             Error::InitiateFlow => write!(f, "Initate flow out of sequence"),
+            Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
+            Error::OutOfSync => write!(f, "Ciphers are out of sync"),
         }
     }
 }
@@ -73,8 +70,10 @@ impl std::error::Error for Error {
             Error::SecretMaterialsGeneration(e) => Some(e),
             Error::MessageLengthTooSmall => None,
             Error::IncompatableV1Message => None,
-            Error::MaxGargbageLength => None,
+            Error::MaxGarbageLength => None,
             Error::InitiateFlow => None,
+            Error::Cipher(e) => Some(e),
+            Error::OutOfSync => None,
         }
     }
 }
@@ -82,6 +81,12 @@ impl std::error::Error for Error {
 impl From<secp256k1::Error> for Error {
     fn from(e: secp256k1::Error) -> Self {
         Error::SecretMaterialsGeneration(e)
+    }
+}
+
+impl From<fschacha20poly1305::Error> for Error {
+    fn from(e: fschacha20poly1305::Error) -> Self {
+        Error::Cipher(e)
     }
 }
 
@@ -186,7 +191,7 @@ impl PacketHandler {
         contents: Vec<u8>,
         aad: Option<Vec<u8>>,
         decoy: bool,
-    ) -> Result<Vec<u8>, FSChaChaError> {
+    ) -> Result<Vec<u8>, Error> {
         let mut packet: Vec<u8> = Vec::new();
         let mut header: u8 = 0;
         if decoy {
@@ -243,7 +248,7 @@ impl PacketHandler {
         &mut self,
         contents: Vec<u8>,
         aad: Option<Vec<u8>>,
-    ) -> Result<ReceivedMessage, FSChaChaError> {
+    ) -> Result<ReceivedMessage, Error> {
         let auth = aad.unwrap_or_default();
         let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
         let header = *plaintext
@@ -277,7 +282,7 @@ impl PacketHandler {
         &mut self,
         ciphertext: Vec<u8>,
         aad: Option<Vec<u8>>,
-    ) -> Result<Vec<ReceivedMessage>, FSChaChaError> {
+    ) -> Result<Vec<ReceivedMessage>, Error> {
         let auth = aad.unwrap_or_default();
         let mut messages: Vec<ReceivedMessage> = Vec::new();
         let mut start_index: Option<usize> = Some(0);
@@ -295,7 +300,7 @@ impl PacketHandler {
         ciphertext: &[u8],
         auth: &[u8],
         start_index: usize,
-    ) -> Result<(Option<Vec<u8>>, Option<usize>), FSChaChaError> {
+    ) -> Result<(Option<Vec<u8>>, Option<usize>), Error> {
         let enc_content_len = ciphertext[start_index..LENGTH_FIELD_LEN + start_index].to_vec();
         let mut content_len = self.length_decoding_cipher.crypt(enc_content_len);
         content_len.push(0u8);
@@ -306,9 +311,7 @@ impl PacketHandler {
         let aead_len = 1 + content_len + 16;
         let mut next_content: Option<usize> = None;
         if aead_len > ciphertext.len() as u32 {
-            return Err(FSChaChaError::StreamDecryption(
-                "Failed to decrypt length bytes properly.".to_string(),
-            ));
+            return Err(Error::OutOfSync);
         }
         if start_index as u32 + aead_len + 3 < ciphertext.len() as u32 {
             next_content = Some((start_index as u32 + aead_len + 3) as usize);
@@ -323,141 +326,6 @@ impl PacketHandler {
         }
         let message = plaintext[1..].to_vec();
         Ok((Some(message), next_content))
-    }
-}
-
-enum CryptType {
-    Encrypt,
-    Decrypt,
-}
-
-/// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
-/// nonces and re-keying.
-///
-/// FSChaCha20Poly1305 is used for message packets in BIP324.
-#[derive(Clone, Debug)]
-struct FSChaCha20Poly1305 {
-    key: [u8; 32],
-    message_counter: u32,
-}
-
-impl FSChaCha20Poly1305 {
-    fn new(key: [u8; 32]) -> Self {
-        FSChaCha20Poly1305 {
-            key,
-            message_counter: 0,
-        }
-    }
-
-    fn crypt(
-        &mut self,
-        aad: Vec<u8>,
-        mut contents: Vec<u8>,
-        crypt_type: CryptType,
-    ) -> Result<Vec<u8>, FSChaChaError> {
-        let mut counter_div = (self.message_counter / REKEY_INTERVAL)
-            .to_le_bytes()
-            .to_vec();
-        counter_div.extend([0u8; 4]); // ok? invalid for 4 billion messages
-        let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
-        let mut nonce = counter_mod.to_vec();
-        nonce.extend(counter_div); // mod slice then div slice
-        let cipher =
-            ChaCha20Poly1305::new(self.key, nonce.try_into().expect("Nonce is malformed."));
-        let converted_ciphertext: Vec<u8> = match crypt_type {
-            CryptType::Encrypt => {
-                let mut buffer = contents.clone();
-                buffer.extend([0u8; 16]);
-                cipher
-                    .encrypt(&mut contents, Some(&aad), &mut buffer)
-                    .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
-                buffer.to_vec()
-            }
-            CryptType::Decrypt => {
-                let mut ciphertext = contents.clone();
-                cipher
-                    .decrypt(&mut ciphertext, Some(&aad))
-                    .map_err(|e| FSChaChaError::Poly1305Decryption(e.to_string()))?;
-                ciphertext[..ciphertext.len() - 16].to_vec()
-            }
-        };
-        if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
-            let mut rekey_nonce = REKEY_INITIAL_NONCE.to_vec();
-            let mut counter_div = (self.message_counter / REKEY_INTERVAL)
-                .to_le_bytes()
-                .to_vec();
-            counter_div.extend([0u8; 4]);
-            let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
-            let mut nonce = counter_mod.to_vec();
-            nonce.extend(counter_div);
-            rekey_nonce.extend(nonce[4..].to_vec());
-            let mut buffer = [0u8; 48];
-            let mut plaintext = [0u8; 32];
-            let cipher = ChaCha20Poly1305::new(
-                self.key,
-                rekey_nonce.try_into().expect("Nonce is malformed."),
-            );
-            cipher
-                .encrypt(&mut plaintext, Some(&aad), &mut buffer)
-                .map_err(|e| FSChaChaError::Poly1305Encryption(e.to_string()))?;
-            self.key = buffer[0..32]
-                .try_into()
-                .expect("Cipher should be at least 32 bytes.");
-        }
-        self.message_counter += 1;
-        Ok(converted_ciphertext)
-    }
-
-    pub fn encrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, FSChaChaError> {
-        self.crypt(aad, contents, CryptType::Encrypt)
-    }
-
-    pub fn decrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, FSChaChaError> {
-        self.crypt(aad, contents, CryptType::Decrypt)
-    }
-}
-
-/// A wrapper over ChaCha20 (unauthenticated) stream cipher which handles automatically changing
-/// nonces and re-keying.
-///
-/// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
-/// implicitly authenticated by the message packets.
-#[derive(Clone, Debug)]
-struct FSChaCha20 {
-    key: [u8; 32],
-    block_counter: u32,
-    chunk_counter: u32,
-}
-
-impl FSChaCha20 {
-    fn new(key: [u8; 32]) -> Self {
-        FSChaCha20 {
-            key,
-            block_counter: 0,
-            chunk_counter: 0,
-        }
-    }
-
-    fn crypt(&mut self, chunk: Vec<u8>) -> Vec<u8> {
-        let zeroes = (0u32).to_le_bytes().to_vec();
-        let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
-        let mut nonce = zeroes.clone();
-        nonce.extend(counter_mod);
-        nonce.extend(zeroes);
-        let mut cipher = ChaCha20::new(self.key, nonce.try_into().expect("Nonce is malformed."), 0);
-        let mut buffer = chunk.clone();
-        cipher.seek(self.block_counter);
-        cipher.apply_keystream(&mut buffer);
-        self.block_counter += CHACHA_BLOCKS_USED;
-        if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
-            let mut key_buffer = [0u8; 32];
-            cipher.seek(self.block_counter);
-            cipher.apply_keystream(&mut key_buffer);
-            self.block_counter = 0;
-            self.key = key_buffer;
-        }
-        self.chunk_counter += 1;
-        buffer
     }
 }
 
@@ -771,6 +639,8 @@ mod tests {
     #[test]
     #[cfg(feature = "std")]
     fn test_initial_message() {
+        use alloc::string::ToString;
+
         let mut message = [0u8; 64];
         let handshake =
             Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
@@ -909,7 +779,7 @@ mod tests {
         );
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
-        for _ in 0..REKEY_INTERVAL + 100 {
+        for _ in 0..fschacha20poly1305::REKEY_INTERVAL + 100 {
             let message = gen_garbage(4095, &mut rng);
             let enc_packet = alice_packet_handler
                 .prepare_v2_packet(message.clone(), None, false)
@@ -1089,7 +959,7 @@ mod tests {
             .unwrap();
 
         let mut message_to_bob = Vec::new();
-        for _ in 0..REKEY_INTERVAL + 100 {
+        for _ in 0..fschacha20poly1305::REKEY_INTERVAL + 100 {
             let message = gen_garbage(420, &mut rng);
             let enc_packet = alice
                 .prepare_v2_packet(message.clone(), None, false)
