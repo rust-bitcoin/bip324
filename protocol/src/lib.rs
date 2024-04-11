@@ -587,9 +587,15 @@ impl<'a> Handshake<'a> {
         // Authenticate received garbage and get version packet.
         // The version packet is ignored in this version of the protocol, but
         // moves along state in the ciphers.
+        // TODO: Allow this to handle different sized buffers (too small, too large).
+        let packet_length = packet_handler.decypt_len(
+            garbage_and_version.1[0..3]
+                .try_into()
+                .expect("at least 3 version bytes"),
+        );
         packet_handler
-            .receive_v2_packets(
-                garbage_and_version.1.to_vec(),
+            .decrypt_contents(
+                garbage_and_version.1[3..packet_length + 3].to_vec(),
                 Some(garbage_and_version.0.to_vec()),
             )
             .expect("find version packet");
