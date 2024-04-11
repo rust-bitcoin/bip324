@@ -589,13 +589,13 @@ impl<'a> Handshake<'a> {
         // moves along state in the ciphers.
         // TODO: Allow this to handle different sized buffers (too small, too large).
         let packet_length = packet_handler.decypt_len(
-            garbage_and_version.1[0..3]
+            garbage_and_version.1[0..LENGTH_FIELD_LEN]
                 .try_into()
                 .expect("at least 3 version bytes"),
         );
         packet_handler
             .decrypt_contents(
-                garbage_and_version.1[3..packet_length + 3].to_vec(),
+                garbage_and_version.1[LENGTH_FIELD_LEN..packet_length + LENGTH_FIELD_LEN].to_vec(),
                 Some(garbage_and_version.0.to_vec()),
             )
             .expect("find version packet");
