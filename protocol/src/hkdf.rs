@@ -86,8 +86,10 @@ impl<T: Hash> Hkdf<T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use bitcoin_hashes::sha256;
     use hex::prelude::*;
 

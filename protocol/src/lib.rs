@@ -1,8 +1,9 @@
 //! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
-
-#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+#![no_std]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod chacha20poly1305;
 mod error;
@@ -747,24 +748,30 @@ fn split_garbage_and_version<'a>(
 
 #[cfg(test)]
 mod tests {
+    //! Any tests requiring a random number generator are currently
+    //! gated with the std feature flag.
+
     use super::*;
     use core::str::FromStr;
     use hex::prelude::*;
 
+    #[cfg(feature = "std")]
     fn gen_garbage(garbage_len: u32, rng: &mut impl Rng) -> Vec<u8> {
         let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
         buffer
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_sec_keygen() {
         let mut rng = rand::thread_rng();
         gen_key(&mut rng).unwrap();
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_initial_message() {
-        let mut message = vec![0u8; 64];
+        let mut message = [0u8; 64];
         let handshake =
             Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
         let message = message.to_lower_hex_string();
@@ -773,11 +780,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_message_response() {
-        let mut message = vec![0u8; 64];
+        let mut message = [0u8; 64];
         Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
 
-        let mut response_message = vec![0u8; 100];
+        let mut response_message = [0u8; 100];
         let mut response = Handshake::new(
             Network::Mainnet,
             Role::Responder,
@@ -792,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_expand_extract() {
         let ikm = Vec::from_hex("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
             .unwrap();
@@ -883,6 +892,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_fuzz_packets() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -922,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_authenticated_garbage() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -948,6 +959,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_full_handshake() {
         // The initiator's handshake writes its 64 byte elligator swift key to the buffer to send to the responder.
         let mut init_message = vec![0u8; 64];
@@ -1007,6 +1019,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_decode_multiple_messages() {
         let mut init_message = vec![0u8; 64];
         let mut init_handshake =
@@ -1045,6 +1058,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_fuzz_decode_multiple_messages() {
         let mut rng = rand::thread_rng();
 
@@ -1086,6 +1100,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_partial_decodings() {
         let mut rng = rand::thread_rng();
 
@@ -1130,6 +1145,7 @@ mod tests {
     // The rest are sourced from: https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_vector_1() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -1164,6 +1180,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_vector_2() {
         let alice =
             SecretKey::from_str("1f9c581b35231838f0f17cf0c979835baccb7f3abbbb96ffcc318ab71e6e126f")
@@ -1201,6 +1218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_vector_3() {
         let alice =
             SecretKey::from_str("0286c41cd30913db0fdff7a64ebda5c8e3e7cef10f2aebc00a7650443cf4c60d")
@@ -1226,6 +1244,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_vector_4() {
         let alice =
             SecretKey::from_str("6c77432d1fda31e9f942f8af44607e10f3ad38a65f8a4bddae823e5eff90dc38")
@@ -1261,6 +1280,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_vector_5() {
         let alice =
             SecretKey::from_str("a6ec25127ca1aa4cf16b20084ba1e6516baae4d32422288e9b36d8bddd2de35a")

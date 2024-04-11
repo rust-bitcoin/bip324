@@ -231,6 +231,7 @@ fn _print_acc(num: &[u32; 5]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use hex::prelude::*;
 
     #[test]

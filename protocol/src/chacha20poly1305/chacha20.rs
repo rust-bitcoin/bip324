@@ -232,9 +232,11 @@ fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -
     kstream
 }
 
+#[cfg(feature = "std")]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use hex::prelude::*;
     use rand::Rng;
 
