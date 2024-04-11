@@ -1,4 +1,4 @@
-//! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
+//! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 

@@ -1,4 +1,4 @@
-use bip324::{initialize_v2_handshake, initiator_complete_v2_handshake};
+use bip324::{Handshake, Network, Role};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -10,19 +10,28 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), Box<dyn std::error::Err
     let mut outbound = TcpStream::connect(remote_ip).await?;
 
     println!("Initiating handshake.");
-    let handshake = initialize_v2_handshake(Some(0))?;
-    outbound.write_all(&handshake.message).await?;
+    let mut message = vec![0u8; 64];
+    let mut init_handshake =
+        Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
+    outbound.write_all(&message).await?;
     println!("Sent handshake to remote.");
 
     // 64 bytes ES.
-    let mut buffer = vec![0u8; 64];
+    let mut material_message = vec![0u8; 64];
     println!("Reading handshake response from remote.");
-    outbound.read_exact(&mut buffer).await?;
+    outbound.read_exact(&mut material_message).await?;
 
-    println!("Completing handshake.");
-    let finish_handshake = initiator_complete_v2_handshake(buffer, handshake, true)?;
+    println!("Completing materials.");
+    let mut garbage_terminator_message = vec![0u8; 36];
+    init_handshake
+        .complete_materials(
+            material_message.try_into().unwrap(),
+            &mut garbage_terminator_message,
+        )
+        .unwrap();
+
     println!("Remote handshake accepted. Sending garbage terminator.");
-    outbound.write_all(&finish_handshake.message).await?;
+    outbound.write_all(&garbage_terminator_message).await?;
 
     // TODO: setup read/write loop.
     Ok(())
