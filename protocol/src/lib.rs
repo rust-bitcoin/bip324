@@ -660,8 +660,8 @@ impl<'a> Handshake<'a> {
             }
             Role::Responder => {
                 let materials = get_shared_secrets(
-                    self.point.elligator_swift,
                     theirs,
+                    self.point.elligator_swift,
                     self.point.secret_key,
                     ElligatorSwiftParty::B,
                     self.network,
@@ -673,8 +673,6 @@ impl<'a> Handshake<'a> {
                 materials
             }
         };
-
-        println!("{:?}", materials);
 
         let mut packet_handler = PacketHandler::new(materials, self.role.clone());
 
