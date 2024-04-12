@@ -5,6 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 
 /// Validate and bootstrap proxy connection.
+#[allow(clippy::unused_io_amount)]
 async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
