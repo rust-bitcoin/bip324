@@ -200,7 +200,23 @@ pub async fn write_v2<T: AsyncWrite + Unpin>(
     encrypter: &mut PacketWriter,
     msg: Message,
 ) -> Result<(), Error> {
-    let mut write_bytes = vec![];
+    let mut contents = vec![];
+    let shortid_index = V2_SHORTID_COMMANDS.iter().position(|w| w == &&msg.cmd[..]);
+    match shortid_index {
+        Some(id) => {
+            let encoded_id = (id + 1) as u8;
+            contents.push(encoded_id);
+        }
+        None => {
+            contents.push(0u8);
+            contents.extend_from_slice(from_ascii(msg.cmd).as_slice());
+        }
+    }
+
+    contents.extend_from_slice(msg.payload.as_slice());
+    let write_bytes = encrypter
+        .prepare_v2_packet(contents, None, false)
+        .expect("encryption");
     Ok(output.write_all(&write_bytes).await?)
 }
 
