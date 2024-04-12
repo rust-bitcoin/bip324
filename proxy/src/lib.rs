@@ -112,6 +112,13 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
     input: &mut T,
     decrypter: &mut PacketReader,
 ) -> Result<RawNetworkMessage, Error> {
+    let mut length_bytes = [0u8; 3];
+    input.read_exact(&mut length_bytes).await?;
+    let packet_bytes = decrypter.decypt_len(length_bytes);
+    let mut packet_bytes = vec![0u8; packet_bytes];
+    input.read_exact(&mut packet_bytes).await?;
+
+    Ok(todo!())
 }
 
 /// Write the network message to the output stream.

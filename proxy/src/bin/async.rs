@@ -1,10 +1,11 @@
 use bip324::{Handshake, Network, Role};
+use bip324_proxy::{read_v1, read_v2, write_v1, write_v2};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::select;
 
 /// Validate and bootstrap proxy connection.
-#[allow(clippy::unused_io_amount)]
-async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
     println!("Reaching out to {}.", remote_ip);
@@ -40,6 +41,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
     remote.write_all(&local_garbage_terminator_message).await?;
 
     println!("Authenticating garbage and version packet.");
+    // TODO: Make this robust.
     let mut remote_garbage_and_version = vec![0u8; 5000];
     remote.read(&mut remote_garbage_and_version).await?;
     let packet_reader = handshake
@@ -50,7 +52,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
     println!("Splitting channels.");
     let (mut client_reader, mut client_writer) = client.split();
     let (mut remote_reader, mut remote_writer) = remote.split();
-    let (mut encrypter, mut decrypter) = packet_reader.split();
+    let (mut decrypter, mut encrypter) = packet_reader.split();
 
     println!("Setting up proxy loop.");
     loop {
