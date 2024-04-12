@@ -6,8 +6,10 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use bitcoin::consensus::{Decodable, Encodable};
-pub use bitcoin::p2p::message::RawNetworkMessage;
+use bip324::{PacketReader, PacketWriter};
+use bitcoin::consensus::Decodable;
+use bitcoin::hashes::sha256d;
+use bitcoin::hashes::Hash;
 use bitcoin::p2p::{Address, Magic};
 use hex::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,13 +17,48 @@ use tokio::net::TcpStream;
 
 /// Default to local host on port 1324.
 pub const DEFAULT_PROXY: &str = "127.0.0.1:1324";
-/// Default to the signet network.
 const DEFAULT_MAGIC: Magic = Magic::BITCOIN;
 /// All V1 messages have a 24 byte header.
 const V1_HEADER_BYTES: usize = 24;
 /// Hex encoding of ascii version command.
 const VERSION_COMMAND: [u8; 12] = [
     0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// A subset of commands are represented with a single byte
+/// in V2 instead of the 12-byte ASCII encoding like V1. The
+/// indexes of the commands in the list corresponds to their
+/// ID in the protocol, but needs +1 since the zero indexed
+/// is reserved to indicated a 12-bytes representation.
+const V2_SHORTID_COMMANDS: &[&str] = &[
+    "addr",
+    "block",
+    "blocktxn",
+    "cmpctblock",
+    "feefilter",
+    "filteradd",
+    "filterclear",
+    "filterload",
+    "getblocks",
+    "getblocktxn",
+    "getdata",
+    "getheaders",
+    "headers",
+    "inv",
+    "mempool",
+    "merkleblock",
+    "notfound",
+    "ping",
+    "pong",
+    "sendcmpct",
+    "tx",
+    "getcfilters",
+    "cfilter",
+    "getcfheaders",
+    "cfheaders",
+    "getcfcheckpt",
+    "cfcheckpt",
+    "addrv2",
 ];
 
 /// An error occured while establishing the proxy connection or during the main loop.
@@ -59,6 +96,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// Parsed message.
+pub struct Message {
+    pub cmd: String,
+    pub payload: Vec<u8>,
+}
+
 /// Peek the input stream and pluck the remote address based on the version message.
 pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
     println!("Validating client connection.");
@@ -87,10 +130,11 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
 }
 
 /// Read a network message off of the input stream.
-pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<RawNetworkMessage, Error> {
+pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<Message, Error> {
     let mut header_bytes = [0; V1_HEADER_BYTES];
     input.read_exact(&mut header_bytes).await?;
 
+    let cmd = to_ascii(header_bytes[4..16].try_into().expect("12 bytes"));
     let payload_len = u32::from_le_bytes(
         header_bytes[16..20]
             .try_into()
@@ -99,21 +143,95 @@ pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<RawNetworkMe
 
     let mut payload = vec![0u8; payload_len as usize];
     input.read_exact(&mut payload).await?;
-    let mut full_message = header_bytes.to_vec();
-    full_message.append(&mut payload);
-    let message = RawNetworkMessage::consensus_decode(&mut full_message.as_slice())
-        .expect("raw network message");
 
-    Ok(message)
+    Ok(Message { cmd, payload })
+}
+
+pub async fn read_v2<T: AsyncRead + Unpin>(
+    input: &mut T,
+    decrypter: &mut PacketReader,
+) -> Result<Message, Error> {
+    let mut length_bytes = [0u8; 3];
+    input.read_exact(&mut length_bytes).await?;
+    let packet_bytes_len = decrypter.decypt_len(length_bytes);
+    let mut packet_bytes = vec![0u8; packet_bytes_len];
+    input.read_exact(&mut packet_bytes).await?;
+    let contents = decrypter
+        .decrypt_contents(packet_bytes, None)
+        .expect("decrypt")
+        .message
+        .expect("decrypt");
+
+    // If packet is using short or full ID.
+    let (cmd, cmd_index) = if contents.starts_with(&[0u8]) {
+        (to_ascii(contents[1..13].try_into().expect("12 bytes")), 13)
+    } else {
+        (
+            V2_SHORTID_COMMANDS[(contents[0] as u8 - 1) as usize].to_string(),
+            1,
+        )
+    };
+
+    let payload = contents[cmd_index..].to_vec();
+    Ok(Message { cmd, payload })
+}
+
+/// Write the message to the output stream as a v1 packet.
+pub async fn write_v1<T: AsyncWrite + Unpin>(output: &mut T, msg: Message) -> Result<(), Error> {
+    let mut write_bytes = vec![];
+    // 4 bytes of network magic.
+    write_bytes.extend_from_slice(DEFAULT_MAGIC.to_bytes().as_slice());
+    // 12 bytes for the command as encoded ascii.
+    write_bytes.extend_from_slice(from_ascii(msg.cmd).as_slice());
+    // 4 bytes for length, little endian.
+    let length_bytes = (msg.payload.len() as u32).to_le_bytes();
+    write_bytes.extend_from_slice(length_bytes.as_slice());
+    // First 4 bytes of double sha256 digest is checksum.
+    let checksum: [u8; 4] = sha256d::Hash::hash(msg.payload.as_slice()).as_byte_array()[..4]
+        .try_into()
+        .expect("4 byte checksum");
+    write_bytes.extend_from_slice(checksum.as_slice());
+    // Finally write the payload.
+    write_bytes.extend_from_slice(msg.payload.as_slice());
+    Ok(output.write_all(&write_bytes).await?)
 }
 
 /// Write the network message to the output stream.
-pub async fn write_v1<T: AsyncWrite + Unpin>(
+pub async fn write_v2<T: AsyncWrite + Unpin>(
     output: &mut T,
-    msg: RawNetworkMessage,
+    encrypter: &mut PacketWriter,
+    msg: Message,
 ) -> Result<(), Error> {
-    let mut write_bytes = vec![];
-    msg.consensus_encode(&mut write_bytes)
-        .expect("write to vector");
+    let mut contents = vec![];
+    let shortid_index = V2_SHORTID_COMMANDS.iter().position(|w| w == &&msg.cmd[..]);
+    match shortid_index {
+        Some(id) => {
+            let encoded_id = (id + 1) as u8;
+            contents.push(encoded_id);
+        }
+        None => {
+            contents.push(0u8);
+            contents.extend_from_slice(from_ascii(msg.cmd).as_slice());
+        }
+    }
+
+    contents.extend_from_slice(msg.payload.as_slice());
+    let write_bytes = encrypter
+        .prepare_v2_packet(contents, None, false)
+        .expect("encryption");
     Ok(output.write_all(&write_bytes).await?)
+}
+
+fn to_ascii(bytes: [u8; 12]) -> String {
+    String::from_utf8(bytes.to_vec())
+        .expect("ascii")
+        .trim_end_matches("00")
+        .to_string()
+}
+
+fn from_ascii(ascii: String) -> [u8; 12] {
+    let mut output_bytes = [0u8; 12];
+    let cmd_bytes = ascii.as_bytes();
+    output_bytes[0..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+    output_bytes
 }

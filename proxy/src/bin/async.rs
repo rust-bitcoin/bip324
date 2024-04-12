@@ -1,14 +1,16 @@
 use bip324::{Handshake, Network, Role};
+use bip324_proxy::{read_v1, read_v2, write_v1, write_v2};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::select;
 
 /// Validate and bootstrap proxy connection.
 #[allow(clippy::unused_io_amount)]
-async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
     println!("Reaching out to {}.", remote_ip);
-    let mut outbound = TcpStream::connect(remote_ip).await?;
+    let mut remote = TcpStream::connect(remote_ip).await?;
 
     println!("Initiating handshake.");
     let mut local_material_message = vec![0u8; 64];
@@ -19,13 +21,13 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
         &mut local_material_message,
     )
     .unwrap();
-    outbound.write_all(&local_material_message).await?;
+    remote.write_all(&local_material_message).await?;
     println!("Sent handshake to remote.");
 
     // 64 bytes ES.
     let mut remote_material_message = [0u8; 64];
     println!("Reading handshake response from remote.");
-    outbound.read_exact(&mut remote_material_message).await?;
+    remote.read_exact(&mut remote_material_message).await?;
 
     println!("Completing materials.");
     let mut local_garbage_terminator_message = [0u8; 36];
@@ -37,20 +39,49 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
         .unwrap();
 
     println!("Sending garbage terminator and version packet.");
-    outbound
-        .write_all(&local_garbage_terminator_message)
-        .await?;
+    remote.write_all(&local_garbage_terminator_message).await?;
 
     println!("Authenticating garbage and version packet.");
+    // TODO: Make this robust.
     let mut remote_garbage_and_version = vec![0u8; 5000];
-    outbound.read(&mut remote_garbage_and_version).await?;
-    handshake
+    remote.read(&mut remote_garbage_and_version).await?;
+    let packet_handler = handshake
         .authenticate_garbage_and_version(&remote_garbage_and_version)
         .expect("authenticated garbage");
     println!("Channel authenticated.");
 
-    // TODO: setup read/write loop.
-    Ok(())
+    println!("Splitting channels.");
+    let (mut client_reader, mut client_writer) = client.split();
+    let (mut remote_reader, mut remote_writer) = remote.split();
+    let (mut decrypter, mut encrypter) = packet_handler.split();
+
+    println!("Setting up proxy loop.");
+    loop {
+        select! {
+            res = read_v1(&mut client_reader) => {
+                match res {
+                    Ok(msg) => {
+                         println!("Read {} message from client, writing to remote.", msg.cmd);
+                         write_v2(&mut remote_writer, &mut encrypter, msg).await?;
+                    },
+                    Err(e) => {
+                         return Err(e);
+                    },
+                }
+            },
+            res = read_v2(&mut remote_reader, &mut decrypter) => {
+                match res {
+                    Ok(msg) => {
+                         println!("Read {} message from remote, writing to client.", msg.cmd);
+                         write_v1(&mut client_writer, msg).await?;
+                    },
+                    Err(e) => {
+                         return Err(e);
+                    },
+                }
+            },
+        }
+    }
 }
 
 #[tokio::main]
