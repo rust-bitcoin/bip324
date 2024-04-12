@@ -3,13 +3,12 @@
 //! The V1 and V2 p2p protocols have different header encodings, so a proxy has to do
 //! a little more work than just encrypt/decrypt.
 
-use core::slice::SlicePattern;
 use std::fmt;
 use std::net::SocketAddr;
 
 use bip324::{PacketReader, PacketWriter};
-use bitcoin::consensus::{Decodable, Encodable};
-pub use bitcoin::p2p::message::RawNetworkMessage;
+use bitcoin::consensus::Decodable;
+use bitcoin::hashes::sha256;
 use bitcoin::p2p::{Address, Magic};
 use hex::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -96,6 +95,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// Parsed message.
+pub struct Message {
+    pub cmd: String,
+    pub payload: Vec<u8>,
+}
+
 /// Peek the input stream and pluck the remote address based on the version message.
 pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
     println!("Validating client connection.");
@@ -124,10 +129,11 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
 }
 
 /// Read a network message off of the input stream.
-pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<RawNetworkMessage, Error> {
+pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<Message, Error> {
     let mut header_bytes = [0; V1_HEADER_BYTES];
     input.read_exact(&mut header_bytes).await?;
 
+    let cmd = to_ascii(header_bytes[4..16].try_into().expect("12 bytes"));
     let payload_len = u32::from_le_bytes(
         header_bytes[16..20]
             .try_into()
@@ -136,40 +142,45 @@ pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<RawNetworkMe
 
     let mut payload = vec![0u8; payload_len as usize];
     input.read_exact(&mut payload).await?;
-    let mut full_message = header_bytes.to_vec();
-    full_message.append(&mut payload);
-    let message = RawNetworkMessage::consensus_decode(&mut full_message.as_slice())
-        .expect("raw network message");
 
-    Ok(message)
+    Ok(Message { cmd, payload })
 }
 
 pub async fn read_v2<T: AsyncRead + Unpin>(
     input: &mut T,
     decrypter: &mut PacketReader,
-) -> Result<RawNetworkMessage, Error> {
+) -> Result<Message, Error> {
     let mut length_bytes = [0u8; 3];
     input.read_exact(&mut length_bytes).await?;
     let packet_bytes = decrypter.decypt_len(length_bytes);
     let mut packet_bytes = vec![0u8; packet_bytes];
     input.read_exact(&mut packet_bytes).await?;
 
-    let type_index = if packet_bytes[0] == 0u8 { 13 } else { 1 };
-    let mut payload = &packet_bytes[type_index..];
+    // If packet is using short or full ID.
+    let (cmd, cmd_index) = if packet_bytes[0] == 0u8 {
+        (
+            to_ascii(packet_bytes[4..16].try_into().expect("12 bytes")),
+            13,
+        )
+    } else {
+        (
+            V2_SHORTID_COMMANDS[packet_bytes[0] as usize - 1].to_string(),
+            1,
+        )
+    };
 
-    let message = RawNetworkMessage::consensus_decode(&mut payload).expect("raw network message");
-
-    Ok(message)
+    let payload = packet_bytes[cmd_index..].to_vec();
+    Ok(Message { cmd, payload })
 }
 
-/// Write the network message to the output stream.
-pub async fn write_v1<T: AsyncWrite + Unpin>(
-    output: &mut T,
-    msg: RawNetworkMessage,
-) -> Result<(), Error> {
+/// Write the message to the output stream as a v1 packet.
+pub async fn write_v1<T: AsyncWrite + Unpin>(output: &mut T, msg: Message) -> Result<(), Error> {
     let mut write_bytes = vec![];
-    msg.consensus_encode(&mut write_bytes)
-        .expect("write to vector");
+    write_bytes.extend_from_slice(DEFAULT_MAGIC.to_bytes().as_slice());
+    write_bytes.extend_from_slice(from_ascii(msg.cmd).as_slice());
+    write_bytes.extend_from_slice(msg.payload.len().to_le_bytes().as_slice());
+    // TODO: get double sha256 checksum.
+    write_bytes.extend_from_slice(msg.payload.as_slice());
     Ok(output.write_all(&write_bytes).await?)
 }
 
@@ -177,10 +188,17 @@ pub async fn write_v1<T: AsyncWrite + Unpin>(
 pub async fn write_v2<T: AsyncWrite + Unpin>(
     output: &mut T,
     encrypter: &mut PacketWriter,
-    msg: RawNetworkMessage,
+    msg: Message,
 ) -> Result<(), Error> {
     let mut write_bytes = vec![];
-    msg.consensus_encode(&mut write_bytes)
-        .expect("write to vector");
     Ok(output.write_all(&write_bytes).await?)
 }
+
+fn to_ascii(bytes: [u8; 12]) -> String {
+    String::from_utf8(bytes.to_vec())
+        .expect("ascii")
+        .trim_end_matches("00")
+        .to_string()
+}
+
+fn from_ascii(ascii: String) -> [u8; 12] {}
