@@ -3,6 +3,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 /// Validate and bootstrap proxy connection.
+#[allow(clippy::unused_io_amount)]
 async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
@@ -30,7 +31,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
     let mut local_garbage_terminator_message = [0u8; 36];
     handshake
         .complete_materials(
-            remote_material_message.try_into().unwrap(),
+            remote_material_message,
             &mut local_garbage_terminator_message,
         )
         .unwrap();

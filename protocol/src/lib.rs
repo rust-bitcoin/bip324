@@ -484,7 +484,7 @@ impl<'a> Handshake<'a> {
 
         buffer[0..64].copy_from_slice(&point.elligator_swift.to_array());
         if let Some(garbage) = garbage {
-            buffer[64..64 + garbage.len()].copy_from_slice(&garbage);
+            buffer[64..64 + garbage.len()].copy_from_slice(garbage);
         }
 
         Ok(Handshake {
@@ -522,8 +522,7 @@ impl<'a> Handshake<'a> {
                     self.network,
                 );
                 response[..16].copy_from_slice(&materials.initiator_garbage_terminator);
-                self.remote_garbage_terminator =
-                    Some(materials.responder_garbage_terminator.clone());
+                self.remote_garbage_terminator = Some(materials.responder_garbage_terminator);
 
                 materials
             }
@@ -536,8 +535,7 @@ impl<'a> Handshake<'a> {
                     self.network,
                 );
                 response[..16].copy_from_slice(&materials.responder_garbage_terminator);
-                self.remote_garbage_terminator =
-                    Some(materials.initiator_garbage_terminator.clone());
+                self.remote_garbage_terminator = Some(materials.initiator_garbage_terminator);
 
                 materials
             }
@@ -606,10 +604,10 @@ impl<'a> Handshake<'a> {
 
 /// Split a message on the garbage terminator returning the garbage itself
 /// and the remaing message, expected to be the version packet.
-fn split_garbage_and_version<'a>(
-    message: &'a [u8],
+fn split_garbage_and_version(
+    message: &[u8],
     garbage_term: [u8; 16],
-) -> Result<(&'a [u8], &'a [u8]), Error> {
+) -> Result<(&[u8], &[u8]), Error> {
     if let Some(index) = message
         .windows(garbage_term.len())
         .position(|window| window == garbage_term)
@@ -671,7 +669,7 @@ mod tests {
         .unwrap();
 
         response
-            .complete_materials(message.try_into().unwrap(), &mut response_message[64..])
+            .complete_materials(message, &mut response_message[64..])
             .unwrap();
     }
 
@@ -1084,7 +1082,7 @@ mod tests {
             let enc = alice_packet_handler
                 .prepare_v2_packet(message.clone(), None, false)
                 .unwrap();
-            if (&enc.to_lower_hex_string())
+            if (enc.to_lower_hex_string())
                 .eq("1da1bcf589f9b61872f45b7fa5371dd3f8bdf5d515b0c5f9fe9f0044afb8dc0aa1cd39a8c4")
             {
                 found = i;
