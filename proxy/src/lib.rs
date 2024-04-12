@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 
 use bip324::{PacketReader, PacketWriter};
 use bitcoin::consensus::Decodable;
-use bitcoin::hashes::sha256;
+use bitcoin::hashes::sha256d;
+use bitcoin::hashes::Hash;
 use bitcoin::p2p::{Address, Magic};
 use hex::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -179,7 +180,10 @@ pub async fn write_v1<T: AsyncWrite + Unpin>(output: &mut T, msg: Message) -> Re
     write_bytes.extend_from_slice(DEFAULT_MAGIC.to_bytes().as_slice());
     write_bytes.extend_from_slice(from_ascii(msg.cmd).as_slice());
     write_bytes.extend_from_slice(msg.payload.len().to_le_bytes().as_slice());
-    // TODO: get double sha256 checksum.
+    let checksum: [u8; 4] = sha256d::Hash::hash(msg.payload.as_slice()).as_byte_array()[..4]
+        .try_into()
+        .expect("4 byte checksum");
+    write_bytes.extend_from_slice(checksum.as_slice());
     write_bytes.extend_from_slice(msg.payload.as_slice());
     Ok(output.write_all(&write_bytes).await?)
 }
@@ -201,4 +205,9 @@ fn to_ascii(bytes: [u8; 12]) -> String {
         .to_string()
 }
 
-fn from_ascii(ascii: String) -> [u8; 12] {}
+fn from_ascii(ascii: String) -> [u8; 12] {
+    let mut output_bytes = [0u8; 12];
+    let cmd_bytes = ascii.as_bytes();
+    output_bytes[0..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+    output_bytes
+}
