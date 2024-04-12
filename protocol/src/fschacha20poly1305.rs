@@ -1,6 +1,7 @@
 use alloc::{fmt, vec::Vec};
 
-use crate::chacha20poly1305::{ChaCha20, ChaCha20Poly1305};
+use crate::chacha20poly1305::chacha20::ChaCha20;
+use crate::chacha20poly1305::ChaCha20Poly1305;
 
 const CHACHA_BLOCKS_USED: u32 = 3;
 pub(crate) const REKEY_INTERVAL: u32 = 224;
