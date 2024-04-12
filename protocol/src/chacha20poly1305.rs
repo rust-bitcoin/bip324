@@ -1,12 +1,12 @@
-mod chacha20;
+pub(crate) mod chacha20;
 mod poly1305;
 
-pub(crate) use chacha20::ChaCha20;
+use chacha20::ChaCha20;
 use poly1305::Poly1305;
 
 use alloc::fmt;
 
-// Zero array for padding slices.
+/// Zero array for padding slices.
 const ZEROES: [u8; 16] = [0u8; 16];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
