@@ -6,6 +6,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
+use bip324::{PacketReader, PacketWriter};
 use bitcoin::consensus::{Decodable, Encodable};
 pub use bitcoin::p2p::message::RawNetworkMessage;
 use bitcoin::p2p::{Address, Magic};
@@ -107,9 +108,27 @@ pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<RawNetworkMe
     Ok(message)
 }
 
+pub async fn read_v2<T: AsyncRead + Unpin>(
+    input: &mut T,
+    decrypter: &mut PacketReader,
+) -> Result<RawNetworkMessage, Error> {
+}
+
 /// Write the network message to the output stream.
 pub async fn write_v1<T: AsyncWrite + Unpin>(
     output: &mut T,
+    msg: RawNetworkMessage,
+) -> Result<(), Error> {
+    let mut write_bytes = vec![];
+    msg.consensus_encode(&mut write_bytes)
+        .expect("write to vector");
+    Ok(output.write_all(&write_bytes).await?)
+}
+
+/// Write the network message to the output stream.
+pub async fn write_v2<T: AsyncWrite + Unpin>(
+    output: &mut T,
+    encrypter: &mut PacketWriter,
     msg: RawNetworkMessage,
 ) -> Result<(), Error> {
     let mut write_bytes = vec![];

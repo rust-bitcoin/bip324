@@ -52,21 +52,21 @@ async fn proxy_conn(client: TcpStream) -> Result<(), Box<dyn std::error::Error>>
     let (mut remote_reader, mut remote_writer) = remote.split();
     let (mut encrypter, mut decrypter) = packet_reader.split();
 
-    println!("Setting up proxy loop.")
+    println!("Setting up proxy loop.");
     loop {
         select! {
             res = read_v1(&mut client_reader) => {
                 match res {
                     Ok(msg) => {
                          println!("Read {} message from client, writing to remote.", msg.cmd());
-                         write_v1(&mut remote_writer, msg).await?;
+                         write_v2(&mut remote_writer, &mut encrypter, msg).await?;
                     },
                     Err(e) => {
                          return Err(e);
                     },
                 }
             },
-            res = read_v1(&mut remote_reader) => {
+            res = read_v2(&mut remote_reader, &mut decrypter) => {
                 match res {
                     Ok(msg) => {
                          println!("Read {} message from remote, writing to client.", msg.cmd());
