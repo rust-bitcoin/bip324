@@ -117,6 +117,7 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
     let packet_bytes = decrypter.decypt_len(length_bytes);
     let mut packet_bytes = vec![0u8; packet_bytes];
     input.read_exact(&mut packet_bytes).await?;
+    let message = RawNetworkMessage::magic()
 
     Ok(todo!())
 }
