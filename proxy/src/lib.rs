@@ -177,13 +177,19 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
 /// Write the message to the output stream as a v1 packet.
 pub async fn write_v1<T: AsyncWrite + Unpin>(output: &mut T, msg: Message) -> Result<(), Error> {
     let mut write_bytes = vec![];
+    // 4 bytes of network magic.
     write_bytes.extend_from_slice(DEFAULT_MAGIC.to_bytes().as_slice());
+    // 12 bytes for the command as encoded ascii.
     write_bytes.extend_from_slice(from_ascii(msg.cmd).as_slice());
-    write_bytes.extend_from_slice(msg.payload.len().to_le_bytes().as_slice());
+    // 4 bytes for length, little endian.
+    let length_bytes = (msg.payload.len() as u32).to_le_bytes();
+    write_bytes.extend_from_slice(length_bytes.as_slice());
+    // First 4 bytes of double sha256 digest is checksum.
     let checksum: [u8; 4] = sha256d::Hash::hash(msg.payload.as_slice()).as_byte_array()[..4]
         .try_into()
         .expect("4 byte checksum");
     write_bytes.extend_from_slice(checksum.as_slice());
+    // Finally write the payload.
     write_bytes.extend_from_slice(msg.payload.as_slice());
     Ok(output.write_all(&write_bytes).await?)
 }
