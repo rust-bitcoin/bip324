@@ -126,100 +126,27 @@ pub struct ReceivedMessage {
     pub message: Option<Vec<u8>>,
 }
 
-/// Encrypt and decrypt messages with a peer.
 #[derive(Clone, Debug)]
-pub struct PacketHandler {
-    length_encoding_cipher: FSChaCha20,
+pub struct PacketReader {
     length_decoding_cipher: FSChaCha20,
-    packet_encoding_cipher: FSChaCha20Poly1305,
     packet_decoding_cipher: FSChaCha20Poly1305,
 }
 
-impl PacketHandler {
-    fn new(materials: SessionKeyMaterial, role: Role) -> Self {
-        match role {
-            Role::Initiator => {
-                let length_encoding_cipher = FSChaCha20::new(materials.initiator_length_key);
-                let length_decoding_cipher = FSChaCha20::new(materials.responder_length_key);
-                let packet_encoding_cipher =
-                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
-                let packet_decoding_cipher =
-                    FSChaCha20Poly1305::new(materials.responder_packet_key);
-                PacketHandler {
-                    length_encoding_cipher,
-                    length_decoding_cipher,
-                    packet_encoding_cipher,
-                    packet_decoding_cipher,
-                }
-            }
-            Role::Responder => {
-                let length_encoding_cipher = FSChaCha20::new(materials.responder_length_key);
-                let length_decoding_cipher = FSChaCha20::new(materials.initiator_length_key);
-                let packet_encoding_cipher =
-                    FSChaCha20Poly1305::new(materials.responder_packet_key);
-                let packet_decoding_cipher =
-                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
-                PacketHandler {
-                    length_encoding_cipher,
-                    length_decoding_cipher,
-                    packet_encoding_cipher,
-                    packet_decoding_cipher,
-                }
-            }
-        }
-    }
-
-    /// Prepare a vector of bytes to be encrypted and sent over the wire.
+impl PacketReader {
+    /// Decode the length, in bytes, of the of the rest imbound message.
+    ///
+    /// Intended for use with `TcpStream` and `read_exact`. Note that this does not decode to the
+    /// length of contents described in BIP324, and is meant to represent the entire imbound message.
     ///
     /// # Arguments
     ///
-    /// `contents` - The Bitcoin P2P protocol message to send.
-    ///
-    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
-    ///
-    /// `decoy` - Should the peer ignore this message.
-    ///
-    /// # Returns
-    ///
-    /// A ciphertext to send over the wire.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the packet was not encrypted properly.
-    pub fn prepare_v2_packet(
-        &mut self,
-        contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
-        decoy: bool,
-    ) -> Result<Vec<u8>, Error> {
-        let mut packet: Vec<u8> = Vec::new();
-        let mut header: u8 = 0;
-        if decoy {
-            header = DECOY;
-        }
-        let content_len = (contents.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN].to_vec();
-        let mut plaintext = vec![header];
-        plaintext.extend(contents);
-        let auth = aad.unwrap_or_default();
-        let enc_len = self.length_encoding_cipher.crypt(content_len);
-        let enc_packet = self.packet_encoding_cipher.encrypt(auth, plaintext)?;
-        packet.extend(enc_len);
-        packet.extend(enc_packet);
-        Ok(packet)
-    }
-
-    /// Decode the length, in bytes, of the of the rest imbound message. Intended for use with `TcpStream` and `read_exact`.
-    /// Note that this does not decode to the length of contents described in BIP324, and is meant to represent the entire imbound message.
-    ///
-    /// # Arguments
-    ///
-    /// `len_slice` - The first three bytes of the message.
+    /// `len_bytes` - The first three bytes of the ciphertext.
     ///
     /// # Returns
     ///
     /// The length to be read into the buffer next to receive the full message from the peer.
-    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> usize {
-        let mut enc_content_len = self.length_decoding_cipher.crypt(len_slice.to_vec());
+    pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
+        let mut enc_content_len = self.length_decoding_cipher.crypt(len_bytes.to_vec());
         enc_content_len.push(0u8);
         let content_slice: [u8; 4] = enc_content_len
             .try_into()
@@ -262,6 +189,172 @@ impl PacketHandler {
             message: Some(message),
         })
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct PacketWriter {
+    length_encoding_cipher: FSChaCha20,
+    packet_encoding_cipher: FSChaCha20Poly1305,
+}
+
+impl PacketWriter {
+    /// Prepare a vector of bytes to be encrypted and sent over the wire.
+    ///
+    /// # Arguments
+    ///
+    /// `contents` - The Bitcoin P2P protocol message to send.
+    ///
+    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    ///
+    /// `decoy` - Should the peer ignore this message.
+    ///
+    /// # Returns
+    ///
+    /// A ciphertext to send over the wire.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet was not encrypted properly.
+    pub fn prepare_v2_packet(
+        &mut self,
+        contents: Vec<u8>,
+        aad: Option<Vec<u8>>,
+        decoy: bool,
+    ) -> Result<Vec<u8>, Error> {
+        let mut packet: Vec<u8> = Vec::new();
+        let mut header: u8 = 0;
+        if decoy {
+            header = DECOY;
+        }
+        let content_len = (contents.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN].to_vec();
+        let mut plaintext = vec![header];
+        plaintext.extend(contents);
+        let auth = aad.unwrap_or_default();
+        let enc_len = self.length_encoding_cipher.crypt(content_len);
+        let enc_packet = self.packet_encoding_cipher.encrypt(auth, plaintext)?;
+        packet.extend(enc_len);
+        packet.extend(enc_packet);
+        Ok(packet)
+    }
+}
+
+/// Encrypt and decrypt messages with a peer.
+#[derive(Clone, Debug)]
+pub struct PacketHandler {
+    packet_reader: PacketReader,
+    packet_writer: PacketWriter,
+}
+
+impl PacketHandler {
+    fn new(materials: SessionKeyMaterial, role: Role) -> Self {
+        match role {
+            Role::Initiator => {
+                let length_encoding_cipher = FSChaCha20::new(materials.initiator_length_key);
+                let length_decoding_cipher = FSChaCha20::new(materials.responder_length_key);
+                let packet_encoding_cipher =
+                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
+                let packet_decoding_cipher =
+                    FSChaCha20Poly1305::new(materials.responder_packet_key);
+                PacketHandler {
+                    packet_reader: PacketReader {
+                        length_decoding_cipher,
+                        packet_decoding_cipher,
+                    },
+                    packet_writer: PacketWriter {
+                        length_encoding_cipher,
+                        packet_encoding_cipher,
+                    },
+                }
+            }
+            Role::Responder => {
+                let length_encoding_cipher = FSChaCha20::new(materials.responder_length_key);
+                let length_decoding_cipher = FSChaCha20::new(materials.initiator_length_key);
+                let packet_encoding_cipher =
+                    FSChaCha20Poly1305::new(materials.responder_packet_key);
+                let packet_decoding_cipher =
+                    FSChaCha20Poly1305::new(materials.initiator_packet_key);
+                PacketHandler {
+                    packet_reader: PacketReader {
+                        length_decoding_cipher,
+                        packet_decoding_cipher,
+                    },
+                    packet_writer: PacketWriter {
+                        length_encoding_cipher,
+                        packet_encoding_cipher,
+                    },
+                }
+            }
+        }
+    }
+
+    /// Split the handler into separate reader and a writer.
+    pub fn split(self) -> (PacketReader, PacketWriter) {
+        (self.packet_reader, self.packet_writer)
+    }
+
+    /// Prepare a vector of bytes to be encrypted and sent over the wire.
+    ///
+    /// # Arguments
+    ///
+    /// `contents` - The Bitcoin P2P protocol message to send.
+    ///
+    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    ///
+    /// `decoy` - Should the peer ignore this message.
+    ///
+    /// # Returns
+    ///
+    /// A ciphertext to send over the wire.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet was not encrypted properly.
+    pub fn prepare_v2_packet(
+        &mut self,
+        contents: Vec<u8>,
+        aad: Option<Vec<u8>>,
+        decoy: bool,
+    ) -> Result<Vec<u8>, Error> {
+        self.packet_writer.prepare_v2_packet(contents, aad, decoy)
+    }
+
+    /// Decode the length, in bytes, of the of the rest imbound message. Intended for use with `TcpStream` and `read_exact`.
+    /// Note that this does not decode to the length of contents described in BIP324, and is meant to represent the entire imbound message.
+    ///
+    /// # Arguments
+    ///
+    /// `len_slice` - The first three bytes of the message.
+    ///
+    /// # Returns
+    ///
+    /// The length to be read into the buffer next to receive the full message from the peer.
+    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> usize {
+        self.packet_reader.decypt_len(len_slice)
+    }
+
+    /// Decrypt the rest of the message from the peer, excluding the 3 length bytes. This method should only be called after
+    /// calling `decrypt_len` on the first three bytes of the buffer.
+    ///
+    /// # Arguments
+    ///
+    /// `contents` - The message from the peer.
+    ///
+    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    ///
+    /// # Returns
+    ///
+    /// The message from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet was not decrypted or authenticated properly.  
+    pub fn decrypt_contents(
+        &mut self,
+        contents: Vec<u8>,
+        aad: Option<Vec<u8>>,
+    ) -> Result<ReceivedMessage, Error> {
+        self.packet_reader.decrypt_contents(contents, aad)
+    }
 
     /// Decrypt the one or more messages from bytes received by a V2 peer.
     ///
@@ -302,7 +395,10 @@ impl PacketHandler {
         start_index: usize,
     ) -> Result<(Option<Vec<u8>>, Option<usize>), Error> {
         let enc_content_len = ciphertext[start_index..LENGTH_FIELD_LEN + start_index].to_vec();
-        let mut content_len = self.length_decoding_cipher.crypt(enc_content_len);
+        let mut content_len = self
+            .packet_reader
+            .length_decoding_cipher
+            .crypt(enc_content_len);
         content_len.push(0u8);
         let content_slice: [u8; 4] = content_len
             .try_into()
@@ -317,7 +413,10 @@ impl PacketHandler {
             next_content = Some((start_index as u32 + aead_len + 3) as usize);
         }
         let aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3].to_vec();
-        let plaintext = self.packet_decoding_cipher.decrypt(auth.to_vec(), aead)?;
+        let plaintext = self
+            .packet_reader
+            .packet_decoding_cipher
+            .decrypt(auth.to_vec(), aead)?;
         let header = *plaintext
             .first()
             .expect("All contents should include a header.");
