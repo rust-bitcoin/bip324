@@ -153,19 +153,19 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
 ) -> Result<Message, Error> {
     let mut length_bytes = [0u8; 3];
     input.read_exact(&mut length_bytes).await?;
-    let packet_bytes = decrypter.decypt_len(length_bytes);
-    let mut packet_bytes = vec![0u8; packet_bytes];
+    let packet_bytes_len = decrypter.decypt_len(length_bytes);
+    let mut packet_bytes = vec![0u8; packet_bytes_len];
     input.read_exact(&mut packet_bytes).await?;
 
     // If packet is using short or full ID.
-    let (cmd, cmd_index) = if packet_bytes[0] == 0u8 {
+    let (cmd, cmd_index) = if packet_bytes.starts_with(&[0u8]) {
         (
-            to_ascii(packet_bytes[4..16].try_into().expect("12 bytes")),
+            to_ascii(packet_bytes[1..13].try_into().expect("12 bytes")),
             13,
         )
     } else {
         (
-            V2_SHORTID_COMMANDS[packet_bytes[0] as usize - 1].to_string(),
+            V2_SHORTID_COMMANDS[(packet_bytes[0] as u8 - 1) as usize].to_string(),
             1,
         )
     };
