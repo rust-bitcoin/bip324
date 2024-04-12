@@ -20,7 +20,7 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
             res = read_v1(&mut client_reader) => {
                 match res {
                     Ok(msg) => {
-                         println!("Read {} message from client, writing to remote.", msg.cmd());
+                         println!("Read {} message from client, writing to remote.", msg.cmd);
                          write_v1(&mut remote_writer, msg).await?;
                     },
                     Err(e) => {
@@ -31,7 +31,7 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
             res = read_v1(&mut remote_reader) => {
                 match res {
                     Ok(msg) => {
-                         println!("Read {} message from remote, writing to client.", msg.cmd());
+                         println!("Read {} message from remote, writing to client.", msg.cmd);
                          write_v1(&mut client_writer, msg).await?;
                     },
                     Err(e) => {
