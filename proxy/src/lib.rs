@@ -156,21 +156,23 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
     let packet_bytes_len = decrypter.decypt_len(length_bytes);
     let mut packet_bytes = vec![0u8; packet_bytes_len];
     input.read_exact(&mut packet_bytes).await?;
+    let contents = decrypter
+        .decrypt_contents(packet_bytes, None)
+        .expect("decrypt")
+        .message
+        .expect("decrypt");
 
     // If packet is using short or full ID.
-    let (cmd, cmd_index) = if packet_bytes.starts_with(&[0u8]) {
-        (
-            to_ascii(packet_bytes[1..13].try_into().expect("12 bytes")),
-            13,
-        )
+    let (cmd, cmd_index) = if contents.starts_with(&[0u8]) {
+        (to_ascii(contents[1..13].try_into().expect("12 bytes")), 13)
     } else {
         (
-            V2_SHORTID_COMMANDS[(packet_bytes[0] as u8 - 1) as usize].to_string(),
+            V2_SHORTID_COMMANDS[(contents[0] as u8 - 1) as usize].to_string(),
             1,
         )
     };
 
-    let payload = packet_bytes[cmd_index..].to_vec();
+    let payload = contents[cmd_index..].to_vec();
     Ok(Message { cmd, payload })
 }
 
