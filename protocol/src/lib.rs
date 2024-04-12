@@ -133,18 +133,20 @@ pub struct PacketReader {
 }
 
 impl PacketReader {
-    /// Decode the length, in bytes, of the of the rest imbound message. Intended for use with `TcpStream` and `read_exact`.
-    /// Note that this does not decode to the length of contents described in BIP324, and is meant to represent the entire imbound message.
+    /// Decode the length, in bytes, of the of the rest imbound message.
+    ///
+    /// Intended for use with `TcpStream` and `read_exact`. Note that this does not decode to the
+    /// length of contents described in BIP324, and is meant to represent the entire imbound message.
     ///
     /// # Arguments
     ///
-    /// `len_slice` - The first three bytes of the message.
+    /// `len_bytes` - The first three bytes of the ciphertext.
     ///
     /// # Returns
     ///
     /// The length to be read into the buffer next to receive the full message from the peer.
-    pub fn decypt_len(&mut self, len_slice: [u8; 3]) -> usize {
-        let mut enc_content_len = self.length_decoding_cipher.crypt(len_slice.to_vec());
+    pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
+        let mut enc_content_len = self.length_decoding_cipher.crypt(len_bytes.to_vec());
         enc_content_len.push(0u8);
         let content_slice: [u8; 4] = enc_content_len
             .try_into()
