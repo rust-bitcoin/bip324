@@ -121,7 +121,7 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
         return Err(Error::WrongCommand);
     }
 
-    // Pull off address.
+    // Pull off address from the addr_recv field of the version message.
     let mut addr_bytes = &peek_bytes[44..];
     let remote_addr = Address::consensus_decode(&mut addr_bytes).expect("network address bytes");
     let socket_addr = remote_addr.socket_addr().expect("IP");
