@@ -14,12 +14,14 @@ const ZEROES: [u8; 16] = [0u8; 16];
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     UnauthenticatedAdditionalData,
+    Cipher(chacha20::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
+            Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
         }
     }
 }
@@ -29,7 +31,14 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::UnauthenticatedAdditionalData => None,
+            Error::Cipher(e) => Some(e),
         }
+    }
+}
+
+impl From<chacha20::Error> for Error {
+    fn from(e: chacha20::Error) -> Self {
+        Error::Cipher(e)
     }
 }
 
@@ -57,8 +66,8 @@ impl ChaCha20Poly1305 {
     /// The 16-byte authentication tag.
     pub fn encrypt(self, content: &mut [u8], aad: Option<&[u8]>) -> Result<[u8; 16], Error> {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
-        chacha.apply_keystream(content);
-        let keystream = chacha.get_keystream(0);
+        chacha.apply_keystream(content)?;
+        let keystream = chacha.get_keystream(0)?;
         let mut poly = Poly1305::new(
             keystream[..32]
                 .try_into()
@@ -105,7 +114,7 @@ impl ChaCha20Poly1305 {
         aad: Option<&[u8]>,
     ) -> Result<(), Error> {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 0);
-        let keystream = chacha.get_keystream(0);
+        let keystream = chacha.get_keystream(0)?;
         let mut poly = Poly1305::new(
             keystream[..32]
                 .try_into()
@@ -135,7 +144,7 @@ impl ChaCha20Poly1305 {
         let derived_tag = poly.tag();
         if derived_tag.eq(&tag) {
             let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
-            chacha.apply_keystream(content);
+            chacha.apply_keystream(content)?;
             Ok(())
         } else {
             Err(Error::UnauthenticatedAdditionalData)
