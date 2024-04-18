@@ -2,7 +2,7 @@
 
 use alloc::fmt;
 
-/// Errors encrypting and decrypting messages with ChaCha20 and Poly1305 authentication tags.
+/// Possible errors using the ChaCha20 cipher.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     InvalidKey,
