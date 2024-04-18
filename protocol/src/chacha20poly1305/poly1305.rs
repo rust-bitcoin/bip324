@@ -3,10 +3,35 @@
 //! Implementation heavily inspired by [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
 //! referred to as "Donna". Further reference to [this](https://loup-vaillant.fr/tutorials/poly1305-design) article was used to formulate the multiplication loop.
 
+use alloc::fmt;
+
 /// 2^26 for the 26-bit limbs.
 const BITMASK: u32 = 0x03ffffff;
 /// Number is encoded in five 26-bit limbs.
 const CARRY: u32 = 26;
+
+/// Possible errors using Poly1305 authentication tags.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    InvalidKey,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::InvalidKey => write!(f, "Invalid 32-byte key."),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::InvalidKey => None,
+        }
+    }
+}
 
 /// Poly1305 authenticator takes a 32-byte one-time key and a message and produces a 16-byte tag.
 ///
@@ -27,22 +52,23 @@ pub(crate) struct Poly1305 {
 
 impl Poly1305 {
     /// Initialize authenticator with a 32-byte one-time secret key.
-    pub(crate) fn new(key: [u8; 32]) -> Self {
+    pub(crate) fn new(key: [u8; 32]) -> Result<Self, Error> {
         // Taken from donna. Assigns r to a 26-bit 5-limb number while simultaneously 'clamping' r.
-        let r0 = u32::from_le_bytes(key[0..4].try_into().expect("Valid subset of 32.")) & 0x3ffffff;
-        let r1 = u32::from_le_bytes(key[3..7].try_into().expect("Valid subset of 32.")) >> 2
+        let r0 =
+            u32::from_le_bytes(key[0..4].try_into().map_err(|_| Error::InvalidKey)?) & 0x3ffffff;
+        let r1 = u32::from_le_bytes(key[3..7].try_into().map_err(|_| Error::InvalidKey)?) >> 2
             & 0x03ffff03;
-        let r2 = u32::from_le_bytes(key[6..10].try_into().expect("Valid subset of 32.")) >> 4
+        let r2 = u32::from_le_bytes(key[6..10].try_into().map_err(|_| Error::InvalidKey)?) >> 4
             & 0x03ffc0ff;
-        let r3 = u32::from_le_bytes(key[9..13].try_into().expect("Valid subset of 32.")) >> 6
+        let r3 = u32::from_le_bytes(key[9..13].try_into().map_err(|_| Error::InvalidKey)?) >> 6
             & 0x03f03fff;
-        let r4 = u32::from_le_bytes(key[12..16].try_into().expect("Valid subset of 32.")) >> 8
+        let r4 = u32::from_le_bytes(key[12..16].try_into().map_err(|_| Error::InvalidKey)?) >> 8
             & 0x000fffff;
         let r = [r0, r1, r2, r3, r4];
-        let s0 = u32::from_le_bytes(key[16..20].try_into().expect("Valid subset of 32."));
-        let s1 = u32::from_le_bytes(key[20..24].try_into().expect("Valid subset of 32."));
-        let s2 = u32::from_le_bytes(key[24..28].try_into().expect("Valid subset of 32."));
-        let s3 = u32::from_le_bytes(key[28..32].try_into().expect("Valid subset of 32."));
+        let s0 = u32::from_le_bytes(key[16..20].try_into().map_err(|_| Error::InvalidKey)?);
+        let s1 = u32::from_le_bytes(key[20..24].try_into().map_err(|_| Error::InvalidKey)?);
+        let s2 = u32::from_le_bytes(key[24..28].try_into().map_err(|_| Error::InvalidKey)?);
+        let s3 = u32::from_le_bytes(key[28..32].try_into().map_err(|_| Error::InvalidKey)?);
         let s = [s0, s1, s2, s3];
         let acc = [0; 5];
 
@@ -50,13 +76,13 @@ impl Poly1305 {
         let leftovers = [0u8; 16];
         let leftovers_len = 0;
 
-        Poly1305 {
+        Ok(Poly1305 {
             r,
             s,
             acc,
             leftovers,
             leftovers_len,
-        }
+        })
     }
 
     /// Add message to be authenticated, can be called multiple times before creating tag.
@@ -239,7 +265,7 @@ mod tests {
         let key = Vec::from_hex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
             .unwrap();
         let key = key.as_slice().try_into().unwrap();
-        let mut poly = Poly1305::new(key);
+        let mut poly = Poly1305::new(key).unwrap();
         let message = b"Cryptographic Forum Research Group";
         poly.add(message);
         let tag = poly.tag();

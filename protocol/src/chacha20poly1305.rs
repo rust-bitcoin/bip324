@@ -15,6 +15,7 @@ const ZEROES: [u8; 16] = [0u8; 16];
 pub enum Error {
     UnauthenticatedAdditionalData,
     Cipher(chacha20::Error),
+    AuthenticationTag(poly1305::Error),
 }
 
 impl fmt::Display for Error {
@@ -22,6 +23,7 @@ impl fmt::Display for Error {
         match self {
             Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
+            Error::AuthenticationTag(e) => write!(f, "Authentication tag error {}", e),
         }
     }
 }
@@ -32,6 +34,7 @@ impl std::error::Error for Error {
         match self {
             Error::UnauthenticatedAdditionalData => None,
             Error::Cipher(e) => Some(e),
+            Error::AuthenticationTag(e) => Some(e),
         }
     }
 }
@@ -39,6 +42,12 @@ impl std::error::Error for Error {
 impl From<chacha20::Error> for Error {
     fn from(e: chacha20::Error) -> Self {
         Error::Cipher(e)
+    }
+}
+
+impl From<poly1305::Error> for Error {
+    fn from(e: poly1305::Error) -> Self {
+        Error::AuthenticationTag(e)
     }
 }
 
@@ -72,7 +81,7 @@ impl ChaCha20Poly1305 {
             keystream[..32]
                 .try_into()
                 .expect("32 is a valid subset of 64."),
-        );
+        )?;
         let aad = aad.unwrap_or(&[]);
         // AAD and ciphertext are padded if not 16-byte aligned.
         poly.add(aad);
@@ -119,7 +128,7 @@ impl ChaCha20Poly1305 {
             keystream[..32]
                 .try_into()
                 .expect("32 is a valid subset of 64."),
-        );
+        )?;
         let aad = aad.unwrap_or(&[]);
         poly.add(aad);
         // AAD and ciphertext are padded if not 16-byte aligned.
