@@ -146,11 +146,14 @@ impl PacketReader {
     ///
     /// The length to be read into the buffer next to receive the full message from the peer.
     pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
-        let mut enc_content_len = self.length_decoding_cipher.crypt(len_bytes.to_vec());
-        enc_content_len.push(0u8);
-        let content_slice: [u8; 4] = enc_content_len
-            .try_into()
-            .expect("Length of slice should be 4.");
+        let mut enc_content_len = [0u8; 3];
+        // TODO: should we just make len_butes mutable?
+        enc_content_len.copy_from_slice(&len_bytes);
+        self.length_decoding_cipher
+            .crypt(&mut enc_content_len)
+            .expect("crypt");
+        let mut content_slice = [0u8; 4];
+        content_slice[0..3].copy_from_slice(&enc_content_len);
         let content_len = u32::from_le_bytes(content_slice);
         content_len as usize + 17
     }
@@ -226,13 +229,16 @@ impl PacketWriter {
         if decoy {
             header = DECOY;
         }
-        let content_len = (contents.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN].to_vec();
+        let mut content_len = [0u8; 3];
+        content_len.copy_from_slice(&(contents.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN]);
         let mut plaintext = vec![header];
         plaintext.extend(contents);
         let auth = aad.unwrap_or_default();
-        let enc_len = self.length_encoding_cipher.crypt(content_len);
+        self.length_encoding_cipher
+            .crypt(&mut content_len)
+            .expect("encrypt length");
         let enc_packet = self.packet_encoding_cipher.encrypt(auth, plaintext)?;
-        packet.extend(enc_len);
+        packet.extend(&content_len);
         packet.extend(enc_packet);
         Ok(packet)
     }
@@ -394,15 +400,14 @@ impl PacketHandler {
         auth: &[u8],
         start_index: usize,
     ) -> Result<(Option<Vec<u8>>, Option<usize>), Error> {
-        let enc_content_len = ciphertext[start_index..LENGTH_FIELD_LEN + start_index].to_vec();
-        let mut content_len = self
-            .packet_reader
+        let mut content_len = [0u8; 3];
+        content_len.copy_from_slice(&ciphertext[start_index..LENGTH_FIELD_LEN + start_index]);
+        self.packet_reader
             .length_decoding_cipher
-            .crypt(enc_content_len);
-        content_len.push(0u8);
-        let content_slice: [u8; 4] = content_len
-            .try_into()
-            .expect("Length of slice should be 4.");
+            .crypt(&mut content_len)
+            .expect("decrypt length");
+        let mut content_slice = [0u8; 4];
+        content_slice[0..LENGTH_FIELD_LEN].copy_from_slice(&content_len);
         let content_len = u32::from_le_bytes(content_slice);
         let aead_len = 1 + content_len + 16;
         let mut next_content: Option<usize> = None;
