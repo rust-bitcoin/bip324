@@ -1,4 +1,4 @@
-use alloc::{fmt, vec::Vec};
+use alloc::fmt;
 
 use crate::chacha20poly1305::chacha20::ChaCha20;
 use crate::chacha20poly1305::ChaCha20Poly1305;
@@ -32,11 +32,6 @@ impl std::error::Error for Error {
     }
 }
 
-pub enum CryptType {
-    Encrypt,
-    Decrypt,
-}
-
 /// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
 /// nonces and re-keying.
 ///
@@ -55,38 +50,19 @@ impl FSChaCha20Poly1305 {
         }
     }
 
-    fn crypt(
-        &mut self,
-        aad: Vec<u8>,
-        mut contents: Vec<u8>,
-        crypt_type: CryptType,
-    ) -> Result<Vec<u8>, Error> {
-        let mut counter_div = (self.message_counter / REKEY_INTERVAL)
-            .to_le_bytes()
-            .to_vec();
-        counter_div.extend([0u8; 4]); // ok? invalid for 4 billion messages
+    /// Derive current nonce.
+    fn nonce(&self) -> [u8; 12] {
+        let counter_div = (self.message_counter / REKEY_INTERVAL).to_le_bytes();
         let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
-        let mut nonce = counter_mod.to_vec();
-        nonce.extend(counter_div); // mod slice then div slice
-        let cipher =
-            ChaCha20Poly1305::new(self.key, nonce.try_into().expect("Nonce is malformed."));
-        let converted_ciphertext: Vec<u8> = match crypt_type {
-            CryptType::Encrypt => {
-                let mut buffer = contents.clone();
-                buffer.extend([0u8; 16]);
-                cipher
-                    .encrypt(&mut contents, Some(&aad), &mut buffer)
-                    .map_err(|_| Error::Encryption)?;
-                buffer.to_vec()
-            }
-            CryptType::Decrypt => {
-                let mut ciphertext = contents.clone();
-                cipher
-                    .decrypt(&mut ciphertext, Some(&aad))
-                    .map_err(|_| Error::Decryption)?;
-                ciphertext[..ciphertext.len() - 16].to_vec()
-            }
-        };
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(&counter_mod);
+        nonce[4..8].copy_from_slice(&counter_div);
+
+        nonce
+    }
+
+    /// Increment the message counter and rekey if necessary.
+    fn rekey(&mut self, aad: &[u8]) -> Result<(), Error> {
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
             let mut rekey_nonce = REKEY_INITIAL_NONCE.to_vec();
             let mut counter_div = (self.message_counter / REKEY_INTERVAL)
@@ -104,22 +80,39 @@ impl FSChaCha20Poly1305 {
                 rekey_nonce.try_into().expect("Nonce is malformed."),
             );
             cipher
-                .encrypt(&mut plaintext, Some(&aad), &mut buffer)
+                .encrypt(&mut plaintext, Some(&aad))
                 .map_err(|_| Error::Encryption)?;
-            self.key = buffer[0..32]
-                .try_into()
-                .expect("Cipher should be at least 32 bytes.");
+            self.key = plaintext;
         }
+
         self.message_counter += 1;
-        Ok(converted_ciphertext)
+        Ok(())
     }
 
-    pub fn encrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, Error> {
-        self.crypt(aad, contents, CryptType::Encrypt)
+    /// Encrypt the contents in place and return the 16-byte authentication tag.
+    pub fn encrypt(&mut self, aad: &[u8], contents: &mut [u8]) -> Result<[u8; 16], Error> {
+        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+
+        let tag = cipher
+            .encrypt(contents, Some(&aad))
+            .map_err(|_| Error::Encryption)?;
+
+        self.rekey(aad)?;
+
+        Ok(tag)
     }
 
-    pub fn decrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, Error> {
-        self.crypt(aad, contents, CryptType::Decrypt)
+    /// Decrypt the contents in place.
+    pub fn decrypt(&mut self, aad: &[u8], contents: &mut [u8], tag: [u8; 16]) -> Result<(), Error> {
+        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+
+        cipher
+            .decrypt(contents, tag, Some(aad))
+            .map_err(|_| Error::Decryption)?;
+
+        self.rekey(aad)?;
+
+        Ok(())
     }
 }
 
