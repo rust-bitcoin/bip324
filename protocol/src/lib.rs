@@ -140,7 +140,7 @@ impl PacketReader {
     ///
     /// # Arguments
     ///
-    /// `len_bytes` - The first three bytes of the ciphertext.
+    /// - `len_bytes` - The first three bytes of the ciphertext.
     ///
     /// # Returns
     ///
@@ -163,9 +163,8 @@ impl PacketReader {
     ///
     /// # Arguments
     ///
-    /// `contents` - The message from the peer.
-    ///
-    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `contents` - The message from the peer.
+    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Returns
     ///
@@ -180,14 +179,21 @@ impl PacketReader {
         aad: Option<Vec<u8>>,
     ) -> Result<ReceivedMessage, Error> {
         let auth = aad.unwrap_or_default();
-        let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
-        let header = *plaintext
+        let mut contents = contents.clone();
+        let contents_len = contents.len();
+        let (ciphertext, tag) = contents.split_at_mut(contents_len - 16);
+        self.packet_decoding_cipher.decrypt(
+            &auth,
+            ciphertext,
+            tag.try_into().expect("16 bytes"),
+        )?;
+        let header = *ciphertext
             .first()
             .expect("All contents should include a header.");
         if header.eq(&DECOY) {
             return Ok(ReceivedMessage { message: None });
         }
-        let message = plaintext[1..].to_vec();
+        let message = ciphertext[1..].to_vec();
         Ok(ReceivedMessage {
             message: Some(message),
         })
@@ -201,26 +207,24 @@ pub struct PacketWriter {
 }
 
 impl PacketWriter {
-    /// Prepare a vector of bytes to be encrypted and sent over the wire.
+    /// Encrypt plaintext bytes to be sent over the wire.
     ///
     /// # Arguments
     ///
-    /// `contents` - The Bitcoin P2P protocol message to send.
-    ///
-    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
-    ///
-    /// `decoy` - Should the peer ignore this message.
+    /// - `plaintext` - Plaintext to be encrypted.
+    /// - `aad`       - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `decoy`     - Should the peer ignore this message.
     ///
     /// # Returns
     ///
-    /// A ciphertext to send over the wire.
+    /// An encrypted packet to send over the wire.
     ///
     /// # Errors
     ///
     /// Fails if the packet was not encrypted properly.
     pub fn prepare_v2_packet(
         &mut self,
-        contents: Vec<u8>,
+        plaintext: Vec<u8>,
         aad: Option<Vec<u8>>,
         decoy: bool,
     ) -> Result<Vec<u8>, Error> {
@@ -230,16 +234,17 @@ impl PacketWriter {
             header = DECOY;
         }
         let mut content_len = [0u8; 3];
-        content_len.copy_from_slice(&(contents.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN]);
-        let mut plaintext = vec![header];
-        plaintext.extend(contents);
+        content_len.copy_from_slice(&(plaintext.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN]);
+        let mut content = vec![header];
+        content.extend(plaintext);
         let auth = aad.unwrap_or_default();
         self.length_encoding_cipher
             .crypt(&mut content_len)
             .expect("encrypt length");
-        let enc_packet = self.packet_encoding_cipher.encrypt(auth, plaintext)?;
+        let tag = self.packet_encoding_cipher.encrypt(&auth, &mut content)?;
         packet.extend(&content_len);
-        packet.extend(enc_packet);
+        packet.extend(content);
+        packet.extend(tag);
         Ok(packet)
     }
 }
@@ -417,18 +422,23 @@ impl PacketHandler {
         if start_index as u32 + aead_len + 3 < ciphertext.len() as u32 {
             next_content = Some((start_index as u32 + aead_len + 3) as usize);
         }
-        let aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3].to_vec();
-        let plaintext = self
-            .packet_reader
-            .packet_decoding_cipher
-            .decrypt(auth.to_vec(), aead)?;
-        let header = *plaintext
+
+        let mut aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3].to_vec();
+        let aead_len = aead.len();
+        let (ciphertext, tag) = aead.split_at_mut(aead_len - 16);
+
+        self.packet_reader.packet_decoding_cipher.decrypt(
+            auth,
+            ciphertext,
+            tag.try_into().expect("16 bytes"),
+        )?;
+        let header = *ciphertext
             .first()
             .expect("All contents should include a header.");
         if header.eq(&DECOY) {
             return Ok((None, next_content));
         }
-        let message = plaintext[1..].to_vec();
+        let message = ciphertext[1..].to_vec();
         Ok((Some(message), next_content))
     }
 }
@@ -887,7 +897,8 @@ mod tests {
         );
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
-        for _ in 0..fschacha20poly1305::REKEY_INTERVAL + 100 {
+        // Force a rekey under the hood.
+        for _ in 0..(224 + 100) {
             let message = gen_garbage(4095, &mut rng);
             let enc_packet = alice_packet_handler
                 .prepare_v2_packet(message.clone(), None, false)
@@ -1067,7 +1078,8 @@ mod tests {
             .unwrap();
 
         let mut message_to_bob = Vec::new();
-        for _ in 0..fschacha20poly1305::REKEY_INTERVAL + 100 {
+        // Force a rekey under the hood.
+        for _ in 0..(224 + 100) {
             let message = gen_garbage(420, &mut rng);
             let enc_packet = alice
                 .prepare_v2_packet(message.clone(), None, false)

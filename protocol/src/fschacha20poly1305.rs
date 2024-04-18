@@ -1,12 +1,13 @@
-use alloc::{fmt, vec::Vec};
+use alloc::fmt;
 
 use crate::chacha20poly1305::chacha20::ChaCha20;
 use crate::chacha20poly1305::ChaCha20Poly1305;
 
 const CHACHA_BLOCKS_USED: u32 = 3;
-pub(crate) const REKEY_INTERVAL: u32 = 224;
+const REKEY_INTERVAL: u32 = 224;
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 
+/// Errors encrypting and decrypting with FSChaCha20Poly1305.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Encryption,
@@ -32,11 +33,6 @@ impl std::error::Error for Error {
     }
 }
 
-pub enum CryptType {
-    Encrypt,
-    Decrypt,
-}
-
 /// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
 /// nonces and re-keying.
 ///
@@ -55,44 +51,19 @@ impl FSChaCha20Poly1305 {
         }
     }
 
-    fn crypt(
-        &mut self,
-        aad: Vec<u8>,
-        contents: Vec<u8>,
-        crypt_type: CryptType,
-    ) -> Result<Vec<u8>, Error> {
-        let mut counter_div = (self.message_counter / REKEY_INTERVAL)
-            .to_le_bytes()
-            .to_vec();
-        counter_div.extend([0u8; 4]); // ok? invalid for 4 billion messages
+    /// Derive current nonce.
+    fn nonce(&self) -> [u8; 12] {
+        let counter_div = (self.message_counter / REKEY_INTERVAL).to_le_bytes();
         let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
-        let mut nonce = counter_mod.to_vec();
-        nonce.extend(counter_div); // mod slice then div slice
-        let cipher =
-            ChaCha20Poly1305::new(self.key, nonce.try_into().expect("Nonce is malformed."));
-        let converted_ciphertext: Vec<u8> = match crypt_type {
-            CryptType::Encrypt => {
-                let mut buffer = contents.clone();
-                let tag = cipher
-                    .encrypt(&mut buffer, Some(&aad))
-                    .map_err(|_| Error::Encryption)?;
-                buffer.extend(tag);
-                buffer
-            }
-            CryptType::Decrypt => {
-                let mut ciphertext = contents.clone();
-                let ciphertext_len = ciphertext.len();
-                let (mut ciphertext, tag) = ciphertext.split_at_mut(ciphertext_len - 16);
-                cipher
-                    .decrypt(
-                        &mut ciphertext,
-                        tag.try_into().expect("16 byte tag"),
-                        Some(&aad),
-                    )
-                    .map_err(|_| Error::Decryption)?;
-                ciphertext.to_vec()
-            }
-        };
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(&counter_mod);
+        nonce[4..8].copy_from_slice(&counter_div);
+
+        nonce
+    }
+
+    /// Increment the message counter and rekey if necessary.
+    fn rekey(&mut self, aad: &[u8]) -> Result<(), Error> {
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
             let mut rekey_nonce = REKEY_INITIAL_NONCE.to_vec();
             let mut counter_div = (self.message_counter / REKEY_INTERVAL)
@@ -109,20 +80,54 @@ impl FSChaCha20Poly1305 {
                 rekey_nonce.try_into().expect("Nonce is malformed."),
             );
             cipher
-                .encrypt(&mut plaintext, Some(&aad))
+                .encrypt(&mut plaintext, Some(aad))
                 .map_err(|_| Error::Encryption)?;
             self.key = plaintext;
         }
+
         self.message_counter += 1;
-        Ok(converted_ciphertext)
+        Ok(())
     }
 
-    pub fn encrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, Error> {
-        self.crypt(aad, contents, CryptType::Encrypt)
+    /// Encrypt the contents in place and return the 16-byte authentication tag.
+    ///
+    /// # Arguments
+    ///
+    /// - `content` - Plaintext to be encrypted in place.
+    /// - `aad`     - Optional metadata covered by the authentication tag.
+    ///
+    /// # Returns
+    ///
+    /// The 16-byte authentication tag.
+    pub fn encrypt(&mut self, aad: &[u8], content: &mut [u8]) -> Result<[u8; 16], Error> {
+        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+
+        let tag = cipher
+            .encrypt(content, Some(aad))
+            .map_err(|_| Error::Encryption)?;
+
+        self.rekey(aad)?;
+
+        Ok(tag)
     }
 
-    pub fn decrypt(&mut self, aad: Vec<u8>, contents: Vec<u8>) -> Result<Vec<u8>, Error> {
-        self.crypt(aad, contents, CryptType::Decrypt)
+    /// Decrypt the contents in place.
+    ///
+    /// # Arguments
+    ///
+    /// - `content` - Ciphertext to be decrypted in place.
+    /// - `tag`     - 16-byte authentication tag.
+    /// - `aad`     - Optional metadata covered by the authentication tag.
+    pub fn decrypt(&mut self, aad: &[u8], content: &mut [u8], tag: [u8; 16]) -> Result<(), Error> {
+        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+
+        cipher
+            .decrypt(content, tag, Some(aad))
+            .map_err(|_| Error::Decryption)?;
+
+        self.rekey(aad)?;
+
+        Ok(())
     }
 }
 
@@ -147,6 +152,7 @@ impl FSChaCha20 {
         }
     }
 
+    /// Encrypt or decrypt the 3-byte length encodings.
     pub fn crypt(&mut self, chunk: &mut [u8; 3]) -> Result<(), Error> {
         let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
         let mut nonce = [0u8; 12];
