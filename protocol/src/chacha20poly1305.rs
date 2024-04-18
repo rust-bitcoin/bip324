@@ -13,7 +13,6 @@ const ZEROES: [u8; 16] = [0u8; 16];
 pub enum Error {
     UnauthenticatedAdditionalData,
     CiphertextTooShort,
-    IncorrectBuffer,
 }
 
 impl fmt::Display for Error {
@@ -21,7 +20,6 @@ impl fmt::Display for Error {
         match self {
             Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
             Error::CiphertextTooShort => write!(f, "Ciphertext must be at least 16 bytes."),
-            Error::IncorrectBuffer => write!(f, "The buffer provided was incorrect. Ensure the buffer is 16 bytes longer than the message."),
         }
     }
 }
@@ -32,7 +30,6 @@ impl std::error::Error for Error {
         match self {
             Error::UnauthenticatedAdditionalData => None,
             Error::CiphertextTooShort => None,
-            Error::IncorrectBuffer => None,
         }
     }
 }
@@ -110,7 +107,7 @@ impl ChaCha20Poly1305 {
             if aad_overflow > 0 {
                 poly.add(&ZEROES[0..(16 - aad_overflow)]);
             }
-            poly.add(&ciphertext);
+            poly.add(ciphertext);
             let msg_overflow = ciphertext.len() % 16;
             if msg_overflow > 0 {
                 poly.add(&ZEROES[0..(16 - msg_overflow)]);

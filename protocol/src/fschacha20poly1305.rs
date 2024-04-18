@@ -73,14 +73,13 @@ impl FSChaCha20Poly1305 {
             let mut nonce = counter_mod.to_vec();
             nonce.extend(counter_div);
             rekey_nonce.extend(nonce[4..].to_vec());
-            let mut buffer = [0u8; 48];
             let mut plaintext = [0u8; 32];
             let cipher = ChaCha20Poly1305::new(
                 self.key,
                 rekey_nonce.try_into().expect("Nonce is malformed."),
             );
             cipher
-                .encrypt(&mut plaintext, Some(&aad))
+                .encrypt(&mut plaintext, Some(aad))
                 .map_err(|_| Error::Encryption)?;
             self.key = plaintext;
         }
@@ -94,7 +93,7 @@ impl FSChaCha20Poly1305 {
         let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
 
         let tag = cipher
-            .encrypt(contents, Some(&aad))
+            .encrypt(contents, Some(aad))
             .map_err(|_| Error::Encryption)?;
 
         self.rekey(aad)?;
