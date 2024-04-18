@@ -177,17 +177,20 @@ impl PacketReader {
     pub fn decrypt_contents(
         &mut self,
         contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
+        aad: Option<&[u8]>,
     ) -> Result<ReceivedMessage, Error> {
         let auth = aad.unwrap_or_default();
-        let plaintext = self.packet_decoding_cipher.decrypt(auth, contents)?;
-        let header = *plaintext
-            .first()
-            .expect("All contents should include a header.");
+        let (mut msg, tag) = contents.split_at(contents.len() - 16);
+        self.packet_decoding_cipher.decrypt(
+            auth,
+            &mut msg,
+            tag.try_into().expect("16 byte tag"),
+        )?;
+        let header = *msg.first().expect("All contents should include a header.");
         if header.eq(&DECOY) {
             return Ok(ReceivedMessage { message: None });
         }
-        let message = plaintext[1..].to_vec();
+        let message = msg[1..].to_vec();
         Ok(ReceivedMessage {
             message: Some(message),
         })
@@ -358,7 +361,7 @@ impl PacketHandler {
     pub fn decrypt_contents(
         &mut self,
         contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
+        aad: Option<&[u8]>,
     ) -> Result<ReceivedMessage, Error> {
         self.packet_reader.decrypt_contents(contents, aad)
     }
@@ -388,7 +391,7 @@ impl PacketHandler {
         let mut start_index: Option<usize> = Some(0);
         while start_index.is_some() {
             let (message, index) =
-                self.decode_packet_from_len(&ciphertext, &auth, start_index.unwrap())?;
+                self.decode_packet_from_len(ciphertext, &auth, start_index.unwrap())?;
             start_index = index;
             messages.push(ReceivedMessage { message })
         }
@@ -397,7 +400,7 @@ impl PacketHandler {
 
     fn decode_packet_from_len(
         &mut self,
-        ciphertext: &[u8],
+        ciphertext: Vec<u8>,
         auth: &[u8],
         start_index: usize,
     ) -> Result<(Option<Vec<u8>>, Option<usize>), Error> {
@@ -418,11 +421,12 @@ impl PacketHandler {
         if start_index as u32 + aead_len + 3 < ciphertext.len() as u32 {
             next_content = Some((start_index as u32 + aead_len + 3) as usize);
         }
-        let aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3].to_vec();
+
+        let aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3];
         let plaintext = self
             .packet_reader
             .packet_decoding_cipher
-            .decrypt(auth.to_vec(), aead)?;
+            .decrypt(auth, &mut ciphertext[], aead.try_into().expect("16 bytes"))?;
         let header = *plaintext
             .first()
             .expect("All contents should include a header.");
@@ -651,7 +655,7 @@ impl<'a> Handshake<'a> {
         // TODO: Support decoy packets.
         // Empty vec is signaling version.
         let version_packet = packet_handler
-            .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
+            .prepare_v2_packet(Vec::new(), self.garbage, false)
             .expect("version packet creation");
         response[16..16 + version_packet.len()].copy_from_slice(&version_packet);
 
@@ -930,7 +934,7 @@ mod tests {
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let auth_garbage = gen_garbage(200, &mut rng);
         let enc_packet = alice_packet_handler
-            .prepare_v2_packet(Vec::new(), Some(auth_garbage.clone()), false)
+            .prepare_v2_packet(Vec::new(), Some(&auth_garbage), false)
             .unwrap();
         let _ = bob_packet_handler
             .receive_v2_packets(enc_packet, Some(auth_garbage))
