@@ -144,16 +144,13 @@ impl FSChaCha20 {
         }
     }
 
-    pub fn crypt(&mut self, chunk: Vec<u8>) -> Vec<u8> {
-        let zeroes = (0u32).to_le_bytes().to_vec();
+    pub fn crypt(&mut self, chunk: &mut [u8; 3]) -> Result<(), Error> {
         let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
-        let mut nonce = zeroes.clone();
-        nonce.extend(counter_mod);
-        nonce.extend(zeroes);
-        let mut cipher = ChaCha20::new(self.key, nonce.try_into().expect("Nonce is malformed."), 0);
-        let mut buffer = chunk.clone();
+        let mut nonce = [0u8; 12];
+        nonce[4..8].copy_from_slice(&counter_mod);
+        let mut cipher = ChaCha20::new(self.key, nonce, 0);
         cipher.seek(self.block_counter);
-        cipher.apply_keystream(&mut buffer);
+        cipher.apply_keystream(chunk);
         self.block_counter += CHACHA_BLOCKS_USED;
         if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
             let mut key_buffer = [0u8; 32];
@@ -163,6 +160,6 @@ impl FSChaCha20 {
             self.key = key_buffer;
         }
         self.chunk_counter += 1;
-        buffer
+        Ok(())
     }
 }
