@@ -221,7 +221,7 @@ impl PacketWriter {
     pub fn prepare_v2_packet(
         &mut self,
         contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
+        aad: Option<&[u8]>,
         decoy: bool,
     ) -> Result<Vec<u8>, Error> {
         let mut packet: Vec<u8> = Vec::new();
@@ -237,9 +237,10 @@ impl PacketWriter {
         self.length_encoding_cipher
             .crypt(&mut content_len)
             .expect("encrypt length");
-        let enc_packet = self.packet_encoding_cipher.encrypt(auth, plaintext)?;
+        let tag = self.packet_encoding_cipher.encrypt(auth, &mut plaintext)?;
         packet.extend(&content_len);
-        packet.extend(enc_packet);
+        packet.extend(&plaintext);
+        packet.extend(&tag);
         Ok(packet)
     }
 }
@@ -318,7 +319,7 @@ impl PacketHandler {
     pub fn prepare_v2_packet(
         &mut self,
         contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
+        aad: Option<&[u8]>,
         decoy: bool,
     ) -> Result<Vec<u8>, Error> {
         self.packet_writer.prepare_v2_packet(contents, aad, decoy)

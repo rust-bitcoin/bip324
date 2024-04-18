@@ -117,7 +117,7 @@ impl ChaCha20Poly1305 {
             }
 
             let aad_len = aad.len().to_le_bytes();
-            let msg_len = received_msg.len().to_le_bytes();
+            let msg_len = ciphertext.len().to_le_bytes();
             let mut len_buffer = [0u8; 16];
             len_buffer[..aad_len.len()].copy_from_slice(&aad_len[..]);
             for i in 0..msg_len.len() {
