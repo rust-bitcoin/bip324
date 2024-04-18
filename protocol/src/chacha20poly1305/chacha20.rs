@@ -359,9 +359,9 @@ mod tests {
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 3];
         let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         assert_eq!([8; 3], to);
     }
 
@@ -376,9 +376,9 @@ mod tests {
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 64];
         let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         assert_eq!([8; 64], to);
     }
 
@@ -393,10 +393,10 @@ mod tests {
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         assert_eq!(binding, to);
     }
@@ -412,10 +412,10 @@ mod tests {
         let mut chacha = ChaCha20::new_from_block(key, nonce, block);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         chacha.block(block);
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(to).unwrap();
         let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
         assert_eq!(binding, to);
     }
@@ -441,11 +441,11 @@ mod tests {
                 let message = gen_garbage(129);
                 let mut message2 = message.clone();
                 let msg = message2.as_mut_slice();
-                chacha.apply_keystream(msg);
+                chacha.apply_keystream(msg).unwrap();
                 let mut cipher = ChaCha20::new(key, nonce, 0);
                 let mut buffer = message;
                 cipher.seek(count);
-                cipher.apply_keystream(&mut buffer);
+                cipher.apply_keystream(&mut buffer).unwrap();
                 assert_eq!(buffer.as_slice(), msg);
             }
         }
