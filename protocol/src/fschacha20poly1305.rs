@@ -65,20 +65,12 @@ impl FSChaCha20Poly1305 {
     /// Increment the message counter and rekey if necessary.
     fn rekey(&mut self, aad: &[u8]) -> Result<(), Error> {
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
-            let mut rekey_nonce = REKEY_INITIAL_NONCE.to_vec();
-            let mut counter_div = (self.message_counter / REKEY_INTERVAL)
-                .to_le_bytes()
-                .to_vec();
-            counter_div.extend([0u8; 4]);
-            let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
-            let mut nonce = counter_mod.to_vec();
-            nonce.extend(counter_div);
-            rekey_nonce.extend(nonce[4..].to_vec());
+            let mut rekey_nonce = [0u8; 12];
+            rekey_nonce[0..4].copy_from_slice(&REKEY_INITIAL_NONCE);
+            rekey_nonce[4..].copy_from_slice(&self.nonce()[4..]);
+
             let mut plaintext = [0u8; 32];
-            let cipher = ChaCha20Poly1305::new(
-                self.key,
-                rekey_nonce.try_into().expect("Nonce is malformed."),
-            );
+            let cipher = ChaCha20Poly1305::new(self.key, rekey_nonce);
             cipher
                 .encrypt(&mut plaintext, Some(aad))
                 .map_err(|_| Error::Encryption)?;
