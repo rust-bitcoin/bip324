@@ -1,6 +1,6 @@
 [package]
 name = "bip324"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Encrypted messaging over the Bitcoin P2P Protocol as specified by BIP 324"
@@ -13,9 +13,9 @@ default = ["std"]
 std = ["secp256k1/std", "rand/std", "rand/std_rng"]
 
 [dependencies]
-secp256k1 = { version="0.28.2", default-features = false}
-rand = { version = "0.8.4", default-features = false }
-bitcoin_hashes = { version = "0.13.0", default-features = false }
+secp256k1 = { version="0.29.0", default-features = false}
+rand = { version = "0.8.0", default-features = false }
+bitcoin_hashes = { version = "0.14.0", default-features = false }
 
 [dev-dependencies]
 hex = { package = "hex-conservative", version = "0.2.0" }

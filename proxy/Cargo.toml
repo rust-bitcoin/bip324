@@ -1,6 +1,6 @@
 [package]
 name = "bip324-proxy"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "BIP324 proxy enabling v1-only clients to use the v2 Bitcoin P2P Protocol"
@@ -12,4 +12,4 @@ rust-version = "1.56.1"
 bitcoin = "0.31.1"
 tokio = { version = "1.36.0", features = ["full"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
-bip324 = { path = "../protocol", version = "0.1.0" }
+bip324 = { path = "../protocol", version = "0.2.0" }
