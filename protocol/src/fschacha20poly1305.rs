@@ -10,17 +10,19 @@ const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 /// Errors encrypting and decrypting with FSChaCha20Poly1305.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    Encryption,
-    Decryption,
+    Encryption(crate::chacha20poly1305::Error),
+    Decryption(crate::chacha20poly1305::Error),
+    Rekey(crate::chacha20poly1305::Error),
     Cipher(crate::chacha20poly1305::chacha20::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Encryption => write!(f, "Unable to encrypt"),
-            Error::Decryption => write!(f, "Unable to dycrypt"),
+            Error::Encryption(e) => write!(f, "Unable to encrypt {}", e),
+            Error::Decryption(e) => write!(f, "Unable to dycrypt {}", e),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
+            Error::Rekey(e) => write!(f, "Unable to rekey {}", e),
         }
     }
 }
@@ -29,9 +31,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Encryption => None,
-            Error::Decryption => None,
+            Error::Encryption(e) => Some(e),
+            Error::Decryption(e) => Some(e),
             Error::Cipher(e) => Some(e),
+            Error::Rekey(e) => Some(e),
         }
     }
 }
@@ -82,7 +85,7 @@ impl FSChaCha20Poly1305 {
             let cipher = ChaCha20Poly1305::new(self.key, rekey_nonce);
             cipher
                 .encrypt(&mut plaintext, Some(aad))
-                .map_err(|_| Error::Encryption)?;
+                .map_err(Error::Rekey)?;
             self.key = plaintext;
         }
 
@@ -105,7 +108,7 @@ impl FSChaCha20Poly1305 {
 
         let tag = cipher
             .encrypt(content, Some(aad))
-            .map_err(|_| Error::Encryption)?;
+            .map_err(Error::Encryption)?;
 
         self.rekey(aad)?;
 
@@ -124,7 +127,7 @@ impl FSChaCha20Poly1305 {
 
         cipher
             .decrypt(content, tag, Some(aad))
-            .map_err(|_| Error::Decryption)?;
+            .map_err(Error::Decryption)?;
 
         self.rekey(aad)?;
 

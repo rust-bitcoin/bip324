@@ -14,6 +14,7 @@ const ZEROES: [u8; 16] = [0u8; 16];
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     UnauthenticatedAdditionalData,
+    KeystreamMismatch,
     Cipher(chacha20::Error),
     AuthenticationTag(poly1305::Error),
 }
@@ -24,6 +25,7 @@ impl fmt::Display for Error {
             Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
             Error::AuthenticationTag(e) => write!(f, "Authentication tag error {}", e),
+            Error::KeystreamMismatch => write!(f, "Keystream is out of whack."),
         }
     }
 }
@@ -35,6 +37,7 @@ impl std::error::Error for Error {
             Error::UnauthenticatedAdditionalData => None,
             Error::Cipher(e) => Some(e),
             Error::AuthenticationTag(e) => Some(e),
+            Error::KeystreamMismatch => None,
         }
     }
 }
@@ -80,7 +83,7 @@ impl ChaCha20Poly1305 {
         let mut poly = Poly1305::new(
             keystream[..32]
                 .try_into()
-                .expect("32 is a valid subset of 64."),
+                .map_err(|_| Error::KeystreamMismatch)?,
         )?;
         let aad = aad.unwrap_or(&[]);
         // AAD and ciphertext are padded if not 16-byte aligned.
@@ -127,7 +130,7 @@ impl ChaCha20Poly1305 {
         let mut poly = Poly1305::new(
             keystream[..32]
                 .try_into()
-                .expect("32 is a valid subset of 64."),
+                .map_err(|_| Error::KeystreamMismatch)?,
         )?;
         let aad = aad.unwrap_or(&[]);
         poly.add(aad);
