@@ -1,3 +1,4 @@
+// ChaCha20 is used directly by the length cipher.
 pub(crate) mod chacha20;
 mod poly1305;
 
@@ -9,19 +10,16 @@ use alloc::fmt;
 /// Zero array for padding slices.
 const ZEROES: [u8; 16] = [0u8; 16];
 
+/// Errors encrypting and decrypting messages with ChaCha20 and Poly1305 authentication tags.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     UnauthenticatedAdditionalData,
-    CiphertextTooShort,
-    IncorrectBuffer,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UnauthenticatedAdditionalData => write!(f, "Unauthenticated aad."),
-            Error::CiphertextTooShort => write!(f, "Ciphertext must be at least 16 bytes."),
-            Error::IncorrectBuffer => write!(f, "The buffer provided was incorrect. Ensure the buffer is 16 bytes longer than the message."),
         }
     }
 }
@@ -31,12 +29,11 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::UnauthenticatedAdditionalData => None,
-            Error::CiphertextTooShort => None,
-            Error::IncorrectBuffer => None,
         }
     }
 }
 
+/// Encrypt and decrypt content along with a authentication tag.
 #[derive(Debug)]
 pub struct ChaCha20Poly1305 {
     key: [u8; 32],
@@ -48,17 +45,19 @@ impl ChaCha20Poly1305 {
         ChaCha20Poly1305 { key, nonce }
     }
 
-    pub fn encrypt<'a>(
-        self,
-        plaintext: &'a mut [u8],
-        aad: Option<&'a [u8]>,
-        buffer: &'a mut [u8],
-    ) -> Result<&'a [u8], Error> {
-        if plaintext.len() + 16 != buffer.len() {
-            return Err(Error::IncorrectBuffer);
-        }
+    /// Encrypt content in place and return the poly1305 16-byte authentication tag.
+    ///
+    /// # Arguments
+    ///
+    /// - `content` - Plaintext to be encrypted in place.
+    /// - `aad`     - Optional metadata covered by the authentication tag.
+    ///
+    /// # Returns
+    ///
+    /// The 16-byte authentication tag.
+    pub fn encrypt(self, content: &mut [u8], aad: Option<&[u8]>) -> Result<[u8; 16], Error> {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
-        chacha.apply_keystream(plaintext);
+        chacha.apply_keystream(content);
         let keystream = chacha.get_keystream(0);
         let mut poly = Poly1305::new(
             keystream[..32]
@@ -73,14 +72,14 @@ impl ChaCha20Poly1305 {
             poly.add(&ZEROES[0..(16 - aad_overflow)]);
         }
 
-        poly.add(plaintext);
-        let text_overflow = plaintext.len() % 16;
+        poly.add(content);
+        let text_overflow = content.len() % 16;
         if text_overflow > 0 {
             poly.add(&ZEROES[0..(16 - text_overflow)]);
         }
 
         let aad_len = aad.len().to_le_bytes();
-        let msg_len = plaintext.len().to_le_bytes();
+        let msg_len = content.len().to_le_bytes();
         let mut len_buffer = [0u8; 16];
         len_buffer[..aad_len.len()].copy_from_slice(&aad_len[..]);
         for i in 0..msg_len.len() {
@@ -88,24 +87,23 @@ impl ChaCha20Poly1305 {
         }
         poly.add(&len_buffer);
         let tag = poly.tag();
-        for i in 0..plaintext.len() {
-            if i < plaintext.len() {
-                buffer[i] = plaintext[i]
-            }
-        }
-        for i in 0..tag.len() {
-            if i < tag.len() {
-                buffer[plaintext.len() + i] = tag[i]
-            }
-        }
-        Ok(&buffer[..plaintext.len() + tag.len()])
+
+        Ok(tag)
     }
 
-    pub fn decrypt<'a>(
+    /// Decrypt the ciphertext in place if authentication tag is correct.
+    ///
+    /// # Arguments
+    ///
+    /// - `content` - Ciphertext to be decrypted in place.
+    /// - `tag`     - 16-byte authentication tag.
+    /// - `aad`     - Optional metadata covered by the authentication tag.
+    pub fn decrypt(
         self,
-        ciphertext: &'a mut [u8],
-        aad: Option<&'a [u8]>,
-    ) -> Result<&'a [u8], Error> {
+        content: &mut [u8],
+        tag: [u8; 16],
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error> {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 0);
         let keystream = chacha.get_keystream(0);
         let mut poly = Poly1305::new(
@@ -114,38 +112,33 @@ impl ChaCha20Poly1305 {
                 .expect("32 is a valid subset of 64."),
         );
         let aad = aad.unwrap_or(&[]);
-        if ciphertext.len() >= 16 {
-            let (received_msg, received_tag) = ciphertext.split_at_mut(ciphertext.len() - 16);
-            poly.add(aad);
-            // AAD and ciphertext are padded if not 16-byte aligned.
-            let aad_overflow = aad.len() % 16;
-            if aad_overflow > 0 {
-                poly.add(&ZEROES[0..(16 - aad_overflow)]);
-            }
-            poly.add(received_msg);
-            let msg_overflow = received_msg.len() % 16;
-            if msg_overflow > 0 {
-                poly.add(&ZEROES[0..(16 - msg_overflow)]);
-            }
+        poly.add(aad);
+        // AAD and ciphertext are padded if not 16-byte aligned.
+        let aad_overflow = aad.len() % 16;
+        if aad_overflow > 0 {
+            poly.add(&ZEROES[0..(16 - aad_overflow)]);
+        }
+        poly.add(content);
+        let msg_overflow = content.len() % 16;
+        if msg_overflow > 0 {
+            poly.add(&ZEROES[0..(16 - msg_overflow)]);
+        }
 
-            let aad_len = aad.len().to_le_bytes();
-            let msg_len = received_msg.len().to_le_bytes();
-            let mut len_buffer = [0u8; 16];
-            len_buffer[..aad_len.len()].copy_from_slice(&aad_len[..]);
-            for i in 0..msg_len.len() {
-                len_buffer[i + aad_len.len()] = msg_len[i]
-            }
-            poly.add(&len_buffer);
-            let tag = poly.tag();
-            if tag.eq(received_tag) {
-                let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
-                chacha.apply_keystream(received_msg);
-                Ok(received_msg)
-            } else {
-                Err(Error::UnauthenticatedAdditionalData)
-            }
+        let aad_len = aad.len().to_le_bytes();
+        let msg_len = content.len().to_le_bytes();
+        let mut len_buffer = [0u8; 16];
+        len_buffer[..aad_len.len()].copy_from_slice(&aad_len[..]);
+        for i in 0..msg_len.len() {
+            len_buffer[i + aad_len.len()] = msg_len[i]
+        }
+        poly.add(&len_buffer);
+        let derived_tag = poly.tag();
+        if derived_tag.eq(&tag) {
+            let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
+            chacha.apply_keystream(content);
+            Ok(())
         } else {
-            Err(Error::CiphertextTooShort)
+            Err(Error::UnauthenticatedAdditionalData)
         }
     }
 }
@@ -171,11 +164,12 @@ mod tests {
             .as_slice()
             .try_into()
             .unwrap();
-        let mut buffer = [0u8; 130];
         let cipher = ChaCha20Poly1305::new(key, nonce);
-        cipher
-            .encrypt(message.as_mut_slice(), Some(&aad), buffer.as_mut_slice())
-            .unwrap();
+        let tag = cipher.encrypt(&mut message, Some(&aad)).unwrap();
+
+        let mut buffer = [0u8; 130];
+        buffer[..message.len()].copy_from_slice(&message);
+        buffer[message.len()..].copy_from_slice(&tag);
 
         assert_eq!(&buffer.to_lower_hex_string(), "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691");
     }

@@ -58,7 +58,7 @@ impl FSChaCha20Poly1305 {
     fn crypt(
         &mut self,
         aad: Vec<u8>,
-        mut contents: Vec<u8>,
+        contents: Vec<u8>,
         crypt_type: CryptType,
     ) -> Result<Vec<u8>, Error> {
         let mut counter_div = (self.message_counter / REKEY_INTERVAL)
@@ -73,18 +73,24 @@ impl FSChaCha20Poly1305 {
         let converted_ciphertext: Vec<u8> = match crypt_type {
             CryptType::Encrypt => {
                 let mut buffer = contents.clone();
-                buffer.extend([0u8; 16]);
-                cipher
-                    .encrypt(&mut contents, Some(&aad), &mut buffer)
+                let tag = cipher
+                    .encrypt(&mut buffer, Some(&aad))
                     .map_err(|_| Error::Encryption)?;
-                buffer.to_vec()
+                buffer.extend(tag);
+                buffer
             }
             CryptType::Decrypt => {
                 let mut ciphertext = contents.clone();
+                let ciphertext_len = ciphertext.len();
+                let (mut ciphertext, tag) = ciphertext.split_at_mut(ciphertext_len - 16);
                 cipher
-                    .decrypt(&mut ciphertext, Some(&aad))
+                    .decrypt(
+                        &mut ciphertext,
+                        tag.try_into().expect("16 byte tag"),
+                        Some(&aad),
+                    )
                     .map_err(|_| Error::Decryption)?;
-                ciphertext[..ciphertext.len() - 16].to_vec()
+                ciphertext.to_vec()
             }
         };
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
@@ -97,18 +103,15 @@ impl FSChaCha20Poly1305 {
             let mut nonce = counter_mod.to_vec();
             nonce.extend(counter_div);
             rekey_nonce.extend(nonce[4..].to_vec());
-            let mut buffer = [0u8; 48];
             let mut plaintext = [0u8; 32];
             let cipher = ChaCha20Poly1305::new(
                 self.key,
                 rekey_nonce.try_into().expect("Nonce is malformed."),
             );
             cipher
-                .encrypt(&mut plaintext, Some(&aad), &mut buffer)
+                .encrypt(&mut plaintext, Some(&aad))
                 .map_err(|_| Error::Encryption)?;
-            self.key = buffer[0..32]
-                .try_into()
-                .expect("Cipher should be at least 32 bytes.");
+            self.key = plaintext;
         }
         self.message_counter += 1;
         Ok(converted_ciphertext)
