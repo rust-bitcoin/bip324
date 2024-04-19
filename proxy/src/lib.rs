@@ -226,7 +226,7 @@ pub async fn write_v2<T: AsyncWrite + Unpin>(
 
     contents.extend_from_slice(msg.payload.as_slice());
     let write_bytes = encrypter
-        .prepare_v2_packet(contents, None, false)
+        .prepare_packet_with_alloc(&contents, None, false)
         .expect("encryption");
     Ok(output.write_all(&write_bytes).await?)
 }
