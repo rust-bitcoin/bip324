@@ -41,7 +41,7 @@ pub enum Error {
     MessageLengthTooSmall,
     IncompatableV1Message,
     MaxGarbageLength,
-    InitiateFlow,
+    HandshakeOutOfOrder,
     SecretMaterialsGeneration(secp256k1::Error),
     Cipher(fschacha20poly1305::Error),
     OutOfSync,
@@ -56,7 +56,7 @@ impl fmt::Display for Error {
             Error::MessageLengthTooSmall => write!(f, "Message length too small allocation"),
             Error::IncompatableV1Message => write!(f, "Incompatable V1 message"),
             Error::MaxGarbageLength => write!(f, "Max garabage length"),
-            Error::InitiateFlow => write!(f, "Initate flow out of sequence"),
+            Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence"),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
             Error::OutOfSync => write!(f, "Ciphers are out of sync"),
         }
@@ -71,7 +71,7 @@ impl std::error::Error for Error {
             Error::MessageLengthTooSmall => None,
             Error::IncompatableV1Message => None,
             Error::MaxGarbageLength => None,
-            Error::InitiateFlow => None,
+            Error::HandshakeOutOfOrder => None,
             Error::Cipher(e) => Some(e),
             Error::OutOfSync => None,
         }
@@ -136,7 +136,8 @@ impl PacketReader {
     /// Decode the length, in bytes, of the of the rest imbound message.
     ///
     /// Intended for use with `TcpStream` and `read_exact`. Note that this does not decode to the
-    /// length of contents described in BIP324, and is meant to represent the entire imbound message.
+    /// length of contents described in BIP324, and is meant to represent the entire imbound message
+    /// which includes the 16-byte authentication tag.
     ///
     /// # Arguments
     ///
@@ -155,6 +156,8 @@ impl PacketReader {
         let mut content_slice = [0u8; 4];
         content_slice[0..3].copy_from_slice(&enc_content_len);
         let content_len = u32::from_le_bytes(content_slice);
+
+        // Include 1-byte decoy and 16-byte tag.
         content_len as usize + 17
     }
 
@@ -348,9 +351,8 @@ impl PacketHandler {
     ///
     /// # Arguments
     ///
-    /// `contents` - The message from the peer.
-    ///
-    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `contents` - The message from the peer.
+    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Returns
     ///
@@ -414,6 +416,7 @@ impl PacketHandler {
         let mut content_slice = [0u8; 4];
         content_slice[0..LENGTH_FIELD_LEN].copy_from_slice(&content_len);
         let content_len = u32::from_le_bytes(content_slice);
+        // Include 1-byte decoy and 16-byte tag.
         let aead_len = 1 + content_len + 16;
         let mut next_content: Option<usize> = None;
         if aead_len > ciphertext.len() as u32 {
@@ -525,8 +528,9 @@ fn initialize_session_key_material(
 /// channel between an *initiator* and a *responder*. The next step is to call `complete_materials`
 /// no matter if initiator or responder, however the responder should already have the
 /// necessary materials from their peers request. `complete_materials` creates the response
-/// messasge to be sent from each peer and `authenticate_garbage_and_version` is then used
-/// to verify and finalize the handshake.
+/// message to be sent from each peer and `authenticate_garbage_and_version` is then used
+/// to verify the handshake. Finally, the `finalized` method is used to consumer the handshake
+/// and return a packet handler for further communication on the channel.
 pub struct Handshake<'a> {
     /// Bitcoin network both peers are operating on.
     network: Network,
@@ -665,6 +669,7 @@ impl<'a> Handshake<'a> {
         let version_packet = packet_handler
             .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
             .expect("version packet creation");
+
         response[16..16 + version_packet.len()].copy_from_slice(&version_packet);
 
         self.packet_handler = Some(packet_handler);
@@ -672,55 +677,79 @@ impl<'a> Handshake<'a> {
         Ok(())
     }
 
-    /// Finalizes handshake and returns a handler for further communication on the channel.
+    /// Authenticate the channel.
     ///
-    /// Designed to be called multiple times until succesful. Might need a way to signal
-    /// if some bytes were not consumed. Ideally, this function would consume itself and
-    /// return the package handler, but since there could be an error not dealing with re-setting
-    /// self.
+    /// Designed to be called multiple times until succesful in order to flush
+    /// garbage and decoy packets from channel.
     ///
     /// # Arguments
     ///
-    /// - `message` - Buffer should contain all garbage, the garbage terminator, and the version
-    /// packet received from peer.    
-    pub fn authenticate_garbage_and_version(
-        &mut self,
-        message: &[u8],
-    ) -> Result<PacketHandler, Error> {
-        let garbage_and_version = split_garbage_and_version(
-            message,
-            self.remote_garbage_terminator.expect("must have materials"),
+    /// - `buffer` - Should contain all garbage, the garbage terminator, and the version packet received from peer.
+    ///
+    /// # Error    
+    ///
+    /// - `MessageLengthTooSmall` - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
+    /// - `HandshakeOutOfOrder`   - The handshake sequence is in a bad state and should be restarted.
+    pub fn authenticate_garbage_and_version(&mut self, buffer: &[u8]) -> Result<(), Error> {
+        // Find the end of the garbage
+        let (garbage, message) = split_garbage_and_message(
+            buffer,
+            self.remote_garbage_terminator
+                .ok_or(Error::HandshakeOutOfOrder)?,
         )?;
 
-        // TODO: Drain decoy packets.
-        // Assuming no decoy packets so AAD is set on version packet.
-        let mut packet_handler = self
+        // Quickly fail if the message doesn't even have enough bytes for a length packet.
+        if message.len() < 3 {
+            return Err(Error::MessageLengthTooSmall);
+        }
+
+        let packet_handler = self
             .packet_handler
-            .take()
-            .expect("must have handler before verification");
+            .as_mut()
+            .ok_or(Error::HandshakeOutOfOrder)?;
+
+        // TODO: Drain decoy packets.
+
+        let packet_length = packet_handler.decypt_len(
+            message[0..LENGTH_FIELD_LEN]
+                .try_into()
+                .map_err(|_| Error::MessageLengthTooSmall)?,
+        );
+
+        // TODO: Store some state so that the length cipher isn't used again on re-attempting authentication.
+
+        // Fail if there is not enough bytes to parse the message.
+        if message.len() < LENGTH_FIELD_LEN + packet_length {
+            return Err(Error::MessageLengthTooSmall);
+        }
+
         // Authenticate received garbage and get version packet.
+        // Assuming no decoy packets so AAD is set on version packet.
         // The version packet is ignored in this version of the protocol, but
         // moves along state in the ciphers.
-        // TODO: Allow this to handle different sized buffers (too small, too large).
-        let packet_length = packet_handler.decypt_len(
-            garbage_and_version.1[0..LENGTH_FIELD_LEN]
-                .try_into()
-                .expect("at least 3 version bytes"),
-        );
-        packet_handler
-            .decrypt_contents(
-                garbage_and_version.1[LENGTH_FIELD_LEN..packet_length + LENGTH_FIELD_LEN].to_vec(),
-                Some(garbage_and_version.0.to_vec()),
-            )
-            .expect("find version packet");
+        packet_handler.decrypt_contents(
+            message[LENGTH_FIELD_LEN..packet_length + LENGTH_FIELD_LEN].to_vec(),
+            Some(garbage.to_vec()),
+        )?;
 
+        Ok(())
+    }
+
+    /// Complete the handshake and return the packet handler for further communication.
+    ///
+    /// # Error    
+    ///
+    /// - `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
+    pub fn finalize(self) -> Result<PacketHandler, Error> {
+        let packet_handler = self.packet_handler.ok_or(Error::HandshakeOutOfOrder)?;
         Ok(packet_handler)
     }
 }
 
 /// Split a message on the garbage terminator returning the garbage itself
-/// and the remaing message, expected to be the version packet.
-fn split_garbage_and_version(
+/// and the remaing message. The message is expected to be the version packet,
+/// but could be decoy packets.
+fn split_garbage_and_message(
     message: &[u8],
     garbage_term: [u8; 16],
 ) -> Result<(&[u8], &[u8]), Error> {
@@ -730,7 +759,7 @@ fn split_garbage_and_version(
     {
         Ok((&message[..index], &message[(index + garbage_term.len())..]))
     } else {
-        Err(Error::InitiateFlow)
+        Err(Error::MessageLengthTooSmall)
     }
 }
 
@@ -984,15 +1013,18 @@ mod tests {
 
         // The initiator verifies the second half of the responders message which
         // includes the garbage terminator and version packet.
-        let mut alice = init_handshake
+        init_handshake
             .authenticate_garbage_and_version(&resp_message[64..])
             .unwrap();
 
         // The responder verifies the second message from the initiator which
         // includes the garbage terminator and version packet.
-        let mut bob = resp_handshake
+        resp_handshake
             .authenticate_garbage_and_version(&init_message_2)
             .unwrap();
+
+        let mut alice = init_handshake.finalize().unwrap();
+        let mut bob = resp_handshake.finalize().unwrap();
 
         let message = b"Hello world".to_vec();
         let encrypted_message_to_alice =
@@ -1035,12 +1067,15 @@ mod tests {
             )
             .unwrap();
 
-        let mut alice = init_handshake
+        init_handshake
             .authenticate_garbage_and_version(&resp_message[64..])
             .unwrap();
-        let mut bob = resp_handshake
+        resp_handshake
             .authenticate_garbage_and_version(&init_finalize_message)
             .unwrap();
+
+        let mut alice = init_handshake.finalize().unwrap();
+        let mut bob = resp_handshake.finalize().unwrap();
 
         let message = b"Hello world".to_vec();
         let mut first_message_to_alice =
@@ -1076,12 +1111,15 @@ mod tests {
             )
             .unwrap();
 
-        let mut alice = init_handshake
+        init_handshake
             .authenticate_garbage_and_version(&resp_message[64..])
             .unwrap();
-        let mut bob = resp_handshake
+        resp_handshake
             .authenticate_garbage_and_version(&init_finalize_message)
             .unwrap();
+
+        let mut alice = init_handshake.finalize().unwrap();
+        let mut bob = resp_handshake.finalize().unwrap();
 
         let mut message_to_bob = Vec::new();
         // Force a rekey under the hood.
@@ -1119,12 +1157,16 @@ mod tests {
             )
             .unwrap();
 
-        let mut alice = init_handshake
+        init_handshake
             .authenticate_garbage_and_version(&resp_message[64..])
             .unwrap();
-        let mut bob = resp_handshake
+        resp_handshake
             .authenticate_garbage_and_version(&init_finalize_message)
             .unwrap();
+
+        let mut alice = init_handshake.finalize().unwrap();
+        let mut bob = resp_handshake.finalize().unwrap();
+
         let mut message_to_bob = Vec::new();
         let message = gen_garbage(420, &mut rng);
         let enc_packet = alice

@@ -45,10 +45,11 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     // TODO: Make this robust.
     let mut remote_garbage_and_version = vec![0u8; 5000];
     remote.read(&mut remote_garbage_and_version).await?;
-    let packet_handler = handshake
+    handshake
         .authenticate_garbage_and_version(&remote_garbage_and_version)
         .expect("authenticated garbage");
     println!("Channel authenticated.");
+    let packet_handler = handshake.finalize().expect("finished handshake");
 
     println!("Splitting channels.");
     let (mut client_reader, mut client_writer) = client.split();
