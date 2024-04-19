@@ -15,7 +15,7 @@ std = ["secp256k1/std", "rand/std", "rand/std_rng"]
 [dependencies]
 secp256k1 = { version="0.29.0", default-features = false}
 rand = { version = "0.8.0", default-features = false }
-bitcoin = { version = "0.31.2", default-features =false, features = ["no-std"] }
+bitcoin = { version = "0.31.2", default-features = false, features = ["no-std"] }
 bitcoin_hashes = { version = "0.14.0", default-features = false }
 
 [dev-dependencies]
