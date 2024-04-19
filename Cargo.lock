@@ -66,6 +66,7 @@ version = "0.2.0"
 dependencies = [
  "bip324",
  "bitcoin",
+ "bytes",
  "hex-conservative 0.2.0",
  "tokio",
 ]

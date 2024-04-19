@@ -549,6 +549,8 @@ pub struct Handshake<'a> {
     remote_garbage_terminator: Option<[u8; 16]>,
     /// Packet handler output.
     packet_handler: Option<PacketHandler>,
+    /// Stored state between authentication attempts, decrypted length for next packet.
+    authentication_packet_bytes: Option<usize>,
 }
 
 impl<'a> Handshake<'a> {
@@ -620,6 +622,7 @@ impl<'a> Handshake<'a> {
             garbage,
             remote_garbage_terminator: None,
             packet_handler: None,
+            authentication_packet_bytes: None,
         })
     }
 
@@ -704,7 +707,7 @@ impl<'a> Handshake<'a> {
         )?;
 
         // Quickly fail if the message doesn't even have enough bytes for a length packet.
-        if message.len() < 3 {
+        if message.len() < LENGTH_BYTES {
             return Err(Error::MessageLengthTooSmall);
         }
 
@@ -713,15 +716,22 @@ impl<'a> Handshake<'a> {
             .as_mut()
             .ok_or(Error::HandshakeOutOfOrder)?;
 
-        // TODO: Drain decoy packets.
+        // TODO: Drain decoy packets, will require some more state to be store between attempts, like a message index.
 
-        let packet_length = packet_handler.decypt_len(
-            message[0..LENGTH_BYTES]
-                .try_into()
-                .map_err(|_| Error::MessageLengthTooSmall)?,
-        );
-
-        // TODO: Store some state so that the length cipher isn't used again on re-attempting authentication.
+        // Grab the packet length from internal statem, else decrypt it and store incase of failure.
+        let packet_length = if self.authentication_packet_bytes.is_some() {
+            self.authentication_packet_bytes
+                .ok_or(Error::HandshakeOutOfOrder)
+        } else {
+            let packet_length = packet_handler.decypt_len(
+                message[0..LENGTH_BYTES]
+                    .try_into()
+                    .map_err(|_| Error::MessageLengthTooSmall)?,
+            );
+            // Hang on to decrypted length incase next steps fail to avoid using the cipher again re-attempting authentication.
+            self.authentication_packet_bytes = Some(packet_length);
+            Ok(packet_length)
+        }?;
 
         // Fail if there is not enough bytes to parse the message.
         if message.len() < LENGTH_BYTES + packet_length {

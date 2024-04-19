@@ -67,6 +67,7 @@ pub enum Error {
     WrongNetwork,
     WrongCommand,
     Network(std::io::Error),
+    Cipher(bip324::Error),
 }
 
 impl fmt::Display for Error {
@@ -75,6 +76,7 @@ impl fmt::Display for Error {
             Error::WrongNetwork => write!(f, "Recieved message on wrong network"),
             Error::Network(e) => write!(f, "Network error {}", e),
             Error::WrongCommand => write!(f, "Recieved message with wrong command"),
+            Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
         }
     }
 }
@@ -85,7 +87,14 @@ impl std::error::Error for Error {
             Error::Network(e) => Some(e),
             Error::WrongNetwork => None,
             Error::WrongCommand => None,
+            Error::Cipher(e) => Some(e),
         }
+    }
+}
+
+impl From<bip324::Error> for Error {
+    fn from(e: bip324::Error) -> Self {
+        Error::Cipher(e)
     }
 }
 
