@@ -1,11 +1,11 @@
 use bip324::{Handshake, Network, Role};
 use bip324_proxy::{read_v1, read_v2, write_v1, write_v2};
+use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 
 /// Validate and bootstrap proxy connection.
-#[allow(clippy::unused_io_amount)]
 async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
@@ -41,17 +41,35 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     println!("Sending garbage terminator and version packet.");
     remote.write_all(&local_garbage_terminator_message).await?;
 
-    println!("Authenticating garbage and version packet.");
-    // TODO: Make this robust.
-    let mut remote_garbage_and_version = vec![0u8; 5000];
-    remote.read(&mut remote_garbage_and_version).await?;
-    handshake
-        .authenticate_garbage_and_version(&remote_garbage_and_version)
-        .expect("authenticated garbage");
+    // Keep pulling bytes from the buffer until the garbage is flushed.
+    // TODO: Fix arbitrary size.
+    let mut remote_garbage_and_version_buffer = BytesMut::with_capacity(4096);
+    loop {
+        println!("Authenticating garbage and version packet...");
+        let read = remote
+            .read_buf(&mut remote_garbage_and_version_buffer)
+            .await;
+        match read {
+            Err(e) => break Err(bip324_proxy::Error::Network(e)),
+            _ => {
+                let auth =
+                    handshake.authenticate_garbage_and_version(&remote_garbage_and_version_buffer);
+                match auth {
+                    Err(e) => match e {
+                        // Read again if too small, other wise surface error.
+                        bip324::Error::MessageLengthTooSmall => continue,
+                        e => break Err(bip324_proxy::Error::Cipher(e)),
+                    },
+                    _ => break Ok(()),
+                }
+            }
+        }
+    }?;
+
     println!("Channel authenticated.");
-    let packet_handler = handshake.finalize().expect("finished handshake");
 
     println!("Splitting channels.");
+    let packet_handler = handshake.finalize().expect("finished handshake");
     let (mut client_reader, mut client_writer) = client.split();
     let (mut remote_reader, mut remote_writer) = remote.split();
     let (mut decrypter, mut encrypter) = packet_handler.split();
