@@ -2,6 +2,7 @@ use bip324::{Handshake, Role};
 use bitcoin::Network;
 
 #[test]
+#[cfg(feature = "std")]
 fn hello_world_happy_path() {
     let mut init_message = vec![0u8; 64];
     let mut init_handshake =

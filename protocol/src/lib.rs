@@ -918,6 +918,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn test_packet_handler() {
         let alice =
             SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
