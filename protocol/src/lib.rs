@@ -361,6 +361,7 @@ impl PacketHandler {
     /// # Errors
     ///
     /// Fails if the packet was not encrypted properly.
+    #[cfg(feature = "std")]
     pub fn prepare_v2_packet(
         &mut self,
         contents: Vec<u8>,
