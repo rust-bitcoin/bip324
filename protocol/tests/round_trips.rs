@@ -21,12 +21,15 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
-    let mut alice = init_handshake
+    init_handshake
         .authenticate_garbage_and_version(&resp_message[64..])
         .unwrap();
-    let mut bob = resp_handshake
+    resp_handshake
         .authenticate_garbage_and_version(&init_finalize_message)
         .unwrap();
+
+    let mut alice = init_handshake.finalize().unwrap();
+    let mut bob = resp_handshake.finalize().unwrap();
 
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
