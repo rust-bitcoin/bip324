@@ -273,6 +273,10 @@ impl PacketWriter {
 
     /// Encrypt plaintext bytes and serialize into a packet to be sent over the wire with
     /// necessary memory allocation.
+    ///
+    /// - `plaintext` - Plaintext content to be encrypted.
+    /// - `aad`       - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `decoy`     - Should the peer ignore this message.
     #[cfg(feature = "std")]
     pub fn prepare_packet_with_alloc(
         &mut self,
