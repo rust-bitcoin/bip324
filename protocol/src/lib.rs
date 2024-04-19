@@ -10,7 +10,6 @@ mod fschacha20poly1305;
 mod hkdf;
 
 use core::fmt;
-use std::println;
 
 use bitcoin_hashes::sha256;
 
@@ -137,7 +136,8 @@ impl PacketReader {
     /// Decode the length, in bytes, of the of the rest imbound message.
     ///
     /// Intended for use with `TcpStream` and `read_exact`. Note that this does not decode to the
-    /// length of contents described in BIP324, and is meant to represent the entire imbound message.
+    /// length of contents described in BIP324, and is meant to represent the entire imbound message
+    /// which includes the 16-byte authentication tag.
     ///
     /// # Arguments
     ///
@@ -156,6 +156,8 @@ impl PacketReader {
         let mut content_slice = [0u8; 4];
         content_slice[0..3].copy_from_slice(&enc_content_len);
         let content_len = u32::from_le_bytes(content_slice);
+
+        // Include 1-byte decoy and 16-byte tag.
         content_len as usize + 17
     }
 
@@ -349,9 +351,8 @@ impl PacketHandler {
     ///
     /// # Arguments
     ///
-    /// `contents` - The message from the peer.
-    ///
-    /// `aad` - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `contents` - The message from the peer.
+    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Returns
     ///
@@ -415,6 +416,7 @@ impl PacketHandler {
         let mut content_slice = [0u8; 4];
         content_slice[0..LENGTH_FIELD_LEN].copy_from_slice(&content_len);
         let content_len = u32::from_le_bytes(content_slice);
+        // Include 1-byte decoy and 16-byte tag.
         let aead_len = 1 + content_len + 16;
         let mut next_content: Option<usize> = None;
         if aead_len > ciphertext.len() as u32 {
@@ -526,8 +528,9 @@ fn initialize_session_key_material(
 /// channel between an *initiator* and a *responder*. The next step is to call `complete_materials`
 /// no matter if initiator or responder, however the responder should already have the
 /// necessary materials from their peers request. `complete_materials` creates the response
-/// messasge to be sent from each peer and `authenticate_garbage_and_version` is then used
-/// to verify and finalize the handshake.
+/// message to be sent from each peer and `authenticate_garbage_and_version` is then used
+/// to verify the handshake. Finally, the `finalized` method is used to consumer the handshake
+/// and return a packet handler for further communication on the channel.
 pub struct Handshake<'a> {
     /// Bitcoin network both peers are operating on.
     network: Network,
@@ -666,6 +669,7 @@ impl<'a> Handshake<'a> {
         let version_packet = packet_handler
             .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
             .expect("version packet creation");
+
         response[16..16 + version_packet.len()].copy_from_slice(&version_packet);
 
         self.packet_handler = Some(packet_handler);
@@ -699,23 +703,30 @@ impl<'a> Handshake<'a> {
             return Err(Error::MessageLengthTooSmall);
         }
 
-        // TODO: Drain decoy packets.
-
         let packet_handler = self
             .packet_handler
             .as_mut()
             .ok_or(Error::HandshakeOutOfOrder)?;
 
-        // Authenticate received garbage and get version packet.
-        // Assuming no decoy packets so AAD is set on version packet.
-        // The version packet is ignored in this version of the protocol, but
-        // moves along state in the ciphers.
+        // TODO: Drain decoy packets.
+
         let packet_length = packet_handler.decypt_len(
             message[0..LENGTH_FIELD_LEN]
                 .try_into()
                 .map_err(|_| Error::MessageLengthTooSmall)?,
         );
 
+        // TODO: Store some state so that the length cipher isn't used again on re-attempting authentication.
+
+        // Fail if there is not enough bytes to parse the message.
+        if message.len() < LENGTH_FIELD_LEN + packet_length {
+            return Err(Error::MessageLengthTooSmall);
+        }
+
+        // Authenticate received garbage and get version packet.
+        // Assuming no decoy packets so AAD is set on version packet.
+        // The version packet is ignored in this version of the protocol, but
+        // moves along state in the ciphers.
         packet_handler.decrypt_contents(
             message[LENGTH_FIELD_LEN..packet_length + LENGTH_FIELD_LEN].to_vec(),
             Some(garbage.to_vec()),
@@ -725,6 +736,10 @@ impl<'a> Handshake<'a> {
     }
 
     /// Complete the handshake and return the packet handler for further communication.
+    ///
+    /// # Error    
+    ///
+    /// - `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
     pub fn finalize(self) -> Result<PacketHandler, Error> {
         let packet_handler = self.packet_handler.ok_or(Error::HandshakeOutOfOrder)?;
         Ok(packet_handler)
