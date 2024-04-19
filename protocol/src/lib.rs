@@ -25,7 +25,12 @@ use secp256k1::{
     PublicKey, Secp256k1, SecretKey,
 };
 
-const LENGTH_FIELD_LEN: usize = 3;
+/// Number of bytes for the decoy flag on a packet.
+const DECOY_BYTES: usize = 1;
+/// Number of bytes for the authentication tag of a packet.
+const TAG_BYTES: usize = 16;
+/// Number of bytes for the length encoding of a packet.
+const LENGTH_BYTES: usize = 3;
 const DECOY: u8 = 128;
 const NETWORK_MAGIC: &[u8] = &[0xF9, 0xBE, 0xB4, 0xD9];
 const SIGNET_NETWORK_MAGIC: &[u8] = &[0x0A, 0x03, 0xCF, 0x40];
@@ -158,7 +163,7 @@ impl PacketReader {
         let content_len = u32::from_le_bytes(content_slice);
 
         // Include 1-byte decoy and 16-byte tag.
-        content_len as usize + 17
+        content_len as usize + DECOY_BYTES + TAG_BYTES
     }
 
     /// Decrypt the rest of the message from the peer, excluding the 3 length bytes. This method should only be called after
@@ -237,7 +242,7 @@ impl PacketWriter {
             header = DECOY;
         }
         let mut content_len = [0u8; 3];
-        content_len.copy_from_slice(&(plaintext.len() as u32).to_le_bytes()[0..LENGTH_FIELD_LEN]);
+        content_len.copy_from_slice(&(plaintext.len() as u32).to_le_bytes()[0..LENGTH_BYTES]);
         let mut content = vec![header];
         content.extend(plaintext);
         let auth = aad.unwrap_or_default();
@@ -408,25 +413,25 @@ impl PacketHandler {
         start_index: usize,
     ) -> Result<(Option<Vec<u8>>, Option<usize>), Error> {
         let mut content_len = [0u8; 3];
-        content_len.copy_from_slice(&ciphertext[start_index..LENGTH_FIELD_LEN + start_index]);
+        content_len.copy_from_slice(&ciphertext[start_index..LENGTH_BYTES + start_index]);
         self.packet_reader
             .length_decoding_cipher
             .crypt(&mut content_len)
             .expect("decrypt length");
         let mut content_slice = [0u8; 4];
-        content_slice[0..LENGTH_FIELD_LEN].copy_from_slice(&content_len);
+        content_slice[0..LENGTH_BYTES].copy_from_slice(&content_len);
         let content_len = u32::from_le_bytes(content_slice);
         // Include 1-byte decoy and 16-byte tag.
-        let aead_len = 1 + content_len + 16;
+        let aead_len = content_len as usize + DECOY_BYTES + TAG_BYTES;
         let mut next_content: Option<usize> = None;
-        if aead_len > ciphertext.len() as u32 {
+        if aead_len > ciphertext.len() {
             return Err(Error::OutOfSync);
         }
-        if start_index as u32 + aead_len + 3 < ciphertext.len() as u32 {
-            next_content = Some((start_index as u32 + aead_len + 3) as usize);
+        if start_index + aead_len + 3 < ciphertext.len() {
+            next_content = Some(start_index + aead_len + 3);
         }
 
-        let mut aead = ciphertext[start_index + 3..start_index + (aead_len as usize) + 3].to_vec();
+        let mut aead = ciphertext[start_index + 3..start_index + aead_len + 3].to_vec();
         let aead_len = aead.len();
         let (ciphertext, tag) = aead.split_at_mut(aead_len - 16);
 
@@ -711,7 +716,7 @@ impl<'a> Handshake<'a> {
         // TODO: Drain decoy packets.
 
         let packet_length = packet_handler.decypt_len(
-            message[0..LENGTH_FIELD_LEN]
+            message[0..LENGTH_BYTES]
                 .try_into()
                 .map_err(|_| Error::MessageLengthTooSmall)?,
         );
@@ -719,7 +724,7 @@ impl<'a> Handshake<'a> {
         // TODO: Store some state so that the length cipher isn't used again on re-attempting authentication.
 
         // Fail if there is not enough bytes to parse the message.
-        if message.len() < LENGTH_FIELD_LEN + packet_length {
+        if message.len() < LENGTH_BYTES + packet_length {
             return Err(Error::MessageLengthTooSmall);
         }
 
@@ -728,7 +733,7 @@ impl<'a> Handshake<'a> {
         // The version packet is ignored in this version of the protocol, but
         // moves along state in the ciphers.
         packet_handler.decrypt_contents(
-            message[LENGTH_FIELD_LEN..packet_length + LENGTH_FIELD_LEN].to_vec(),
+            message[LENGTH_BYTES..packet_length + LENGTH_BYTES].to_vec(),
             Some(garbage.to_vec()),
         )?;
 
