@@ -11,6 +11,7 @@ mod hkdf;
 
 use core::fmt;
 
+use bitcoin::Network;
 use bitcoin_hashes::sha256;
 
 use alloc::vec;
@@ -31,15 +32,8 @@ const DECOY_BYTES: usize = 1;
 const TAG_BYTES: usize = 16;
 /// Number of bytes for the length encoding of a packet.
 const LENGTH_BYTES: usize = 3;
+/// Value for decoy flag.
 const DECOY: u8 = 128;
-const NETWORK_MAGIC: &[u8] = &[0xF9, 0xBE, 0xB4, 0xD9];
-const SIGNET_NETWORK_MAGIC: &[u8] = &[0x0A, 0x03, 0xCF, 0x40];
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Network {
-    Mainnet,
-    Signet,
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -482,11 +476,8 @@ fn initialize_session_key_material(
     network: Network,
 ) -> Result<SessionKeyMaterial, Error> {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-    let magic = match network {
-        Network::Mainnet => NETWORK_MAGIC,
-        Network::Signet => SIGNET_NETWORK_MAGIC,
-    };
-    let salt = [ikm_salt, magic].concat();
+    let magic = network.magic().to_bytes();
+    let salt = [ikm_salt, &magic].concat();
     let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
     let session_info = "session_id".as_bytes();
@@ -807,7 +798,7 @@ mod tests {
 
         let mut message = [0u8; 64];
         let handshake =
-            Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
         let message = message.to_lower_hex_string();
         let es = handshake.point.elligator_swift.to_string();
         assert!(message.contains(&es))
@@ -817,11 +808,11 @@ mod tests {
     #[cfg(feature = "std")]
     fn test_message_response() {
         let mut message = [0u8; 64];
-        Handshake::new(Network::Mainnet, Role::Initiator, None, &mut message).unwrap();
+        Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
 
         let mut response_message = [0u8; 100];
         let mut response = Handshake::new(
-            Network::Mainnet,
+            Network::Bitcoin,
             Role::Responder,
             None,
             &mut response_message,
@@ -838,7 +829,7 @@ mod tests {
     fn test_expand_extract() {
         let ikm = Vec::from_hex("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
             .unwrap();
-        let session_keys = initialize_session_key_material(&ikm, Network::Mainnet).unwrap();
+        let session_keys = initialize_session_key_material(&ikm, Network::Bitcoin).unwrap();
         assert_eq!(
             session_keys.session_id.to_lower_hex_string(),
             "ce72dffb015da62b0d0f5474cab8bc72605225b0cee3f62312ec680ec5f41ba5"
@@ -857,7 +848,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         assert_eq!(
@@ -902,7 +893,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
@@ -941,7 +932,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
@@ -983,7 +974,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
@@ -1003,13 +994,13 @@ mod tests {
         // The initiator's handshake writes its 64 byte elligator swift key to the buffer to send to the responder.
         let mut init_message = vec![0u8; 64];
         let mut init_handshake =
-            Handshake::new(Network::Mainnet, Role::Initiator, None, &mut init_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
 
         // The responder also writes its 64 byte elligator swift key, but will also write 36 bytes for the
         // garbage terminator and version packet.
         let mut resp_message = vec![0u8; 100];
         let mut resp_handshake =
-            Handshake::new(Network::Mainnet, Role::Responder, None, &mut resp_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
         // The responder already has the initiator's material so can complete the secrets.
         // With the secrets calculated, the responder can send along the garbage terminator
@@ -1065,11 +1056,11 @@ mod tests {
     fn test_decode_multiple_messages() {
         let mut init_message = vec![0u8; 64];
         let mut init_handshake =
-            Handshake::new(Network::Mainnet, Role::Initiator, None, &mut init_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
 
         let mut resp_message = vec![0u8; 100];
         let mut resp_handshake =
-            Handshake::new(Network::Mainnet, Role::Responder, None, &mut resp_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
         resp_handshake
             .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
@@ -1109,11 +1100,11 @@ mod tests {
 
         let mut init_message = vec![0u8; 64];
         let mut init_handshake =
-            Handshake::new(Network::Mainnet, Role::Initiator, None, &mut init_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
 
         let mut resp_message = vec![0u8; 100];
         let mut resp_handshake =
-            Handshake::new(Network::Mainnet, Role::Responder, None, &mut resp_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
         resp_handshake
             .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
@@ -1155,11 +1146,11 @@ mod tests {
 
         let mut init_message = vec![0u8; 64];
         let mut init_handshake =
-            Handshake::new(Network::Mainnet, Role::Initiator, None, &mut init_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
 
         let mut resp_message = vec![0u8; 100];
         let mut resp_handshake =
-            Handshake::new(Network::Mainnet, Role::Responder, None, &mut resp_message).unwrap();
+            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
         resp_handshake
             .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
@@ -1211,7 +1202,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
@@ -1246,7 +1237,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let id = session_keys.session_id;
@@ -1285,7 +1276,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
@@ -1312,7 +1303,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let id = session_keys.session_id;
@@ -1349,7 +1340,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Mainnet,
+            Network::Bitcoin,
         )
         .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
