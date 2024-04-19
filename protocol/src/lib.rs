@@ -681,7 +681,7 @@ impl<'a> Handshake<'a> {
     ///
     /// # Arguments
     ///
-    /// * `message` - Buffer should contain all garbage, the garbage terminator, and the version
+    /// - `message` - Buffer should contain all garbage, the garbage terminator, and the version
     /// packet received from peer.    
     pub fn authenticate_garbage_and_version(
         &mut self,
@@ -690,8 +690,7 @@ impl<'a> Handshake<'a> {
         let garbage_and_version = split_garbage_and_version(
             message,
             self.remote_garbage_terminator.expect("must have materials"),
-        )
-        .expect("to find garbage terminator");
+        )?;
 
         // TODO: Drain decoy packets.
         // Assuming no decoy packets so AAD is set on version packet.
