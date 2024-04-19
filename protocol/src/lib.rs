@@ -443,18 +443,18 @@ impl PacketHandler {
     }
 }
 
-fn gen_key(rng: &mut impl Rng) -> Result<SecretKey, secp256k1::Error> {
+fn gen_key(rng: &mut impl Rng) -> Result<SecretKey, Error> {
     let mut buffer: Vec<u8> = vec![0; 32];
     rng.fill(&mut buffer[..]);
     let sk = SecretKey::from_slice(&buffer)?;
     Ok(sk)
 }
 
-fn new_elligator_swift(sk: SecretKey) -> ElligatorSwift {
+fn new_elligator_swift(sk: SecretKey) -> Result<ElligatorSwift, Error> {
     let mut buf_ful = vec![AlignedType::zeroed(); Secp256k1::preallocate_size()];
-    let curve = Secp256k1::preallocated_new(&mut buf_ful).unwrap();
+    let curve = Secp256k1::preallocated_new(&mut buf_ful)?;
     let pk = PublicKey::from_secret_key(&curve, &sk);
-    ElligatorSwift::from_pubkey(pk)
+    Ok(ElligatorSwift::from_pubkey(pk))
 }
 
 fn get_shared_secrets(
@@ -463,13 +463,16 @@ fn get_shared_secrets(
     secret: SecretKey,
     party: ElligatorSwiftParty,
     network: Network,
-) -> SessionKeyMaterial {
+) -> Result<SessionKeyMaterial, Error> {
     let data = "bip324_ellswift_xonly_ecdh".as_bytes();
     let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
     initialize_session_key_material(ecdh_sk.as_secret_bytes(), network)
 }
 
-fn initialize_session_key_material(ikm: &[u8], network: Network) -> SessionKeyMaterial {
+fn initialize_session_key_material(
+    ikm: &[u8],
+    network: Network,
+) -> Result<SessionKeyMaterial, Error> {
     let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
     let magic = match network {
         Network::Mainnet => NETWORK_MAGIC,
@@ -505,7 +508,7 @@ fn initialize_session_key_material(ikm: &[u8], network: Network) -> SessionKeyMa
         garbage[..16].try_into().expect("Half of 32 is 16.");
     let responder_garbage_terminator: [u8; 16] =
         garbage[16..].try_into().expect("Half of 32 is 16.");
-    SessionKeyMaterial {
+    Ok(SessionKeyMaterial {
         session_id,
         initiator_length_key,
         initiator_packet_key,
@@ -513,7 +516,7 @@ fn initialize_session_key_material(ikm: &[u8], network: Network) -> SessionKeyMa
         responder_packet_key,
         initiator_garbage_terminator,
         responder_garbage_terminator,
-    }
+    })
 }
 
 /// Handshake state-machine to establish the secret material in the communication channel.
@@ -561,7 +564,7 @@ impl<'a> Handshake<'a> {
         role: Role,
         garbage: Option<&'a [u8]>,
         buffer: &mut [u8],
-    ) -> Result<Self, secp256k1::Error> {
+    ) -> Result<Self, Error> {
         let mut rng = rand::thread_rng();
         Self::new_with_rng(network, role, garbage, buffer, &mut rng)
     }
@@ -588,9 +591,9 @@ impl<'a> Handshake<'a> {
         garbage: Option<&'a [u8]>,
         buffer: &mut [u8],
         rng: &mut impl Rng,
-    ) -> Result<Self, secp256k1::Error> {
+    ) -> Result<Self, Error> {
         let sk = gen_key(rng)?;
-        let es = new_elligator_swift(sk);
+        let es = new_elligator_swift(sk)?;
         let point = EcdhPoint {
             secret_key: sk,
             elligator_swift: es,
@@ -634,7 +637,7 @@ impl<'a> Handshake<'a> {
                     self.point.secret_key,
                     ElligatorSwiftParty::A,
                     self.network,
-                );
+                )?;
                 response[..16].copy_from_slice(&materials.initiator_garbage_terminator);
                 self.remote_garbage_terminator = Some(materials.responder_garbage_terminator);
 
@@ -647,7 +650,7 @@ impl<'a> Handshake<'a> {
                     self.point.secret_key,
                     ElligatorSwiftParty::B,
                     self.network,
-                );
+                )?;
                 response[..16].copy_from_slice(&materials.responder_garbage_terminator);
                 self.remote_garbage_terminator = Some(materials.initiator_garbage_terminator);
 
@@ -792,7 +795,7 @@ mod tests {
     fn test_expand_extract() {
         let ikm = Vec::from_hex("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
             .unwrap();
-        let session_keys = initialize_session_key_material(&ikm, Network::Mainnet);
+        let session_keys = initialize_session_key_material(&ikm, Network::Mainnet).unwrap();
         assert_eq!(
             session_keys.session_id.to_lower_hex_string(),
             "ce72dffb015da62b0d0f5474cab8bc72605225b0cee3f62312ec680ec5f41ba5"
@@ -812,7 +815,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         assert_eq!(
             "9a6478b5fbab1f4dd2f78994b774c03211c78312786e602da75a0d1767fb55cf",
             session_keys.initiator_length_key.to_lower_hex_string()
@@ -856,7 +860,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let message = b"Bitcoin rox!".to_vec();
@@ -894,7 +899,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         // Force a rekey under the hood.
@@ -935,7 +941,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let auth_garbage = gen_garbage(200, &mut rng);
@@ -1149,7 +1156,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let first = gen_garbage(100, &mut rng);
@@ -1183,7 +1191,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::B,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let id = session_keys.session_id;
         assert_eq!(
             id.to_vec(),
@@ -1221,7 +1230,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let _bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let contents = Vec::from_hex("054290a6c6ba8d80478172e89d32bf690913ae9835de6dcf206ff1f4d652286fe0ddf74deba41d55de3edc77c42a32af79bbea2c00bae7492264c60866ae5a").unwrap();
@@ -1247,7 +1257,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::B,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let id = session_keys.session_id;
         assert_eq!(
             id.to_vec(),
@@ -1283,7 +1294,8 @@ mod tests {
             alice,
             ElligatorSwiftParty::A,
             Network::Mainnet,
-        );
+        )
+        .unwrap();
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let _bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let contents = Vec::from_hex("00cf68f8f7ac49ffaa02c4864fdf6dfe7bbf2c740b88d98c50ebafe32c92f3427f57601ffcb21a3435979287db8fee6c302926741f9d5e464c647eeb9b7acaeda46e00abd7506fc9a719847e9a7328215801e96198dac141a15c7c2f68e0690dd1176292a0dded04d1f548aad88f1aebdc0a8f87da4bb22df32dd7c160c225b843e83f6525d6d484f502f16d923124fc538794e21da2eb689d18d87406ecced5b9f92137239ed1d37bcfa7836641a83cf5e0a1cf63f51b06f158e499a459ede41c").unwrap();
