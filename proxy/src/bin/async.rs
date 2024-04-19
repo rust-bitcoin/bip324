@@ -1,5 +1,6 @@
-use bip324::{Handshake, Network, Role};
+use bip324::{Handshake, Role};
 use bip324_proxy::{read_v1, read_v2, write_v1, write_v2};
+use bitcoin::Network;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -15,7 +16,7 @@ async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
     println!("Initiating handshake.");
     let mut local_material_message = vec![0u8; 64];
     let mut handshake = Handshake::new(
-        Network::Mainnet,
+        Network::Bitcoin,
         Role::Initiator,
         None,
         &mut local_material_message,
