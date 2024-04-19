@@ -11,7 +11,7 @@ mod hkdf;
 
 use core::fmt;
 
-use bitcoin::Network;
+pub use bitcoin::Network;
 use bitcoin_hashes::sha256;
 
 use alloc::vec;
