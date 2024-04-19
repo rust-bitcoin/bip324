@@ -42,6 +42,7 @@ pub enum Error {
     MaxGarbageLength,
     HandshakeOutOfOrder,
     SecretMaterialsGeneration(secp256k1::Error),
+    SecretExpansion,
     Cipher(fschacha20poly1305::Error),
     OutOfSync,
 }
@@ -58,6 +59,7 @@ impl fmt::Display for Error {
             Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence"),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
             Error::OutOfSync => write!(f, "Ciphers are out of sync"),
+            Error::SecretExpansion => write!(f, "Unable to expand key"),
         }
     }
 }
@@ -73,6 +75,7 @@ impl std::error::Error for Error {
             Error::HandshakeOutOfOrder => None,
             Error::Cipher(e) => Some(e),
             Error::OutOfSync => None,
+            Error::SecretExpansion => None,
         }
     }
 }
@@ -86,6 +89,12 @@ impl From<secp256k1::Error> for Error {
 impl From<fschacha20poly1305::Error> for Error {
     fn from(e: fschacha20poly1305::Error) -> Self {
         Error::Cipher(e)
+    }
+}
+
+impl From<hkdf::MaxLengthError> for Error {
+    fn from(_: hkdf::MaxLengthError) -> Self {
+        Error::SecretExpansion
     }
 }
 
@@ -481,32 +490,28 @@ fn initialize_session_key_material(
     let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ikm);
     let mut session_id = [0u8; 32];
     let session_info = "session_id".as_bytes();
-    hk.expand(session_info, &mut session_id)
-        .expect("32 is a valid buffer length.");
+    hk.expand(session_info, &mut session_id)?;
     let mut initiator_length_key = [0u8; 32];
     let intiiator_l_info = "initiator_L".as_bytes();
-    hk.expand(intiiator_l_info, &mut initiator_length_key)
-        .expect("32 is a valid buffer length.");
+    hk.expand(intiiator_l_info, &mut initiator_length_key)?;
     let mut initiator_packet_key = [0u8; 32];
     let intiiator_p_info = "initiator_P".as_bytes();
-    hk.expand(intiiator_p_info, &mut initiator_packet_key)
-        .expect("32 is a valid buffer length.");
+    hk.expand(intiiator_p_info, &mut initiator_packet_key)?;
     let mut responder_length_key = [0u8; 32];
     let responder_l_info = "responder_L".as_bytes();
-    hk.expand(responder_l_info, &mut responder_length_key)
-        .expect("32 is a valid buffer length.");
+    hk.expand(responder_l_info, &mut responder_length_key)?;
     let mut responder_packet_key = [0u8; 32];
     let responder_p_info = "responder_P".as_bytes();
-    hk.expand(responder_p_info, &mut responder_packet_key)
-        .expect("32 is a valid buffer length.");
+    hk.expand(responder_p_info, &mut responder_packet_key)?;
     let mut garbage = [0u8; 32];
     let garbage_info = "garbage_terminators".as_bytes();
-    hk.expand(garbage_info, &mut garbage)
-        .expect("32 is a valid buffer length.");
-    let initiator_garbage_terminator: [u8; 16] =
-        garbage[..16].try_into().expect("Half of 32 is 16.");
-    let responder_garbage_terminator: [u8; 16] =
-        garbage[16..].try_into().expect("Half of 32 is 16.");
+    hk.expand(garbage_info, &mut garbage)?;
+    let initiator_garbage_terminator: [u8; 16] = garbage[..16]
+        .try_into()
+        .map_err(|_| Error::SecretExpansion)?;
+    let responder_garbage_terminator: [u8; 16] = garbage[16..]
+        .try_into()
+        .map_err(|_| Error::SecretExpansion)?;
     Ok(SessionKeyMaterial {
         session_id,
         initiator_length_key,
@@ -664,10 +669,13 @@ impl<'a> Handshake<'a> {
         let mut packet_handler = PacketHandler::new(materials, self.role.clone());
 
         // TODO: Support decoy packets.
+
         // Empty vec is signaling version.
-        let version_packet = packet_handler
-            .prepare_v2_packet(Vec::new(), self.garbage.map(|s| s.to_vec()), false)
-            .expect("version packet creation");
+        let version_packet = packet_handler.prepare_v2_packet(
+            Vec::new(),
+            self.garbage.map(|s| s.to_vec()),
+            false,
+        )?;
 
         response[16..16 + version_packet.len()].copy_from_slice(&version_packet);
 
