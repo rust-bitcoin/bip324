@@ -34,6 +34,8 @@ const TAG_BYTES: usize = 16;
 const LENGTH_BYTES: usize = 3;
 /// Value for decoy flag.
 const DECOY: u8 = 128;
+/// Version content is always empty for the current version of the protocol.
+const VERSION_CONTENT: [u8; 0] = [];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -700,12 +702,15 @@ impl<'a> Handshake<'a> {
 
         let mut packet_handler = PacketHandler::new(materials, self.role.clone());
 
-        // TODO: Support decoy packets.
+        // TODO: Support sending decoy packets before the version packet.
 
         // Empty vec is signaling version.
-        let version_packet = packet_handler.prepare_v2_packet(Vec::new(), self.garbage, false)?;
-
-        response[16..16 + version_packet.len()].copy_from_slice(&version_packet);
+        packet_handler.packet_writer.prepare_packet(
+            &VERSION_CONTENT,
+            self.garbage,
+            &mut response[16..16 + LENGTH_BYTES + DECOY_BYTES + TAG_BYTES],
+            false,
+        )?;
 
         self.packet_handler = Some(packet_handler);
 
