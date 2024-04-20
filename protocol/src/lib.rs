@@ -30,7 +30,7 @@ use secp256k1::{
 const DECOY_BYTES: usize = 1;
 /// Number of bytes for the authentication tag of a packet.
 const TAG_BYTES: usize = 16;
-/// Number of bytes for the length encoding of a packet.
+/// Number of bytes for the length encoding prefix of a packet.
 const LENGTH_BYTES: usize = 3;
 /// Value for decoy flag.
 const DECOY: u8 = 128;
@@ -136,6 +136,19 @@ pub struct ReceivedMessage {
     pub message: Option<Vec<u8>>,
 }
 
+impl ReceivedMessage {
+    pub fn new(msg_bytes: &[u8]) -> Result<Self, Error> {
+        let header = msg_bytes.first().ok_or(Error::MessageLengthTooSmall)?;
+        if header.eq(&DECOY) {
+            Ok(ReceivedMessage { message: None })
+        } else {
+            Ok(ReceivedMessage {
+                message: Some(msg_bytes[1..].to_vec()),
+            })
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PacketReader {
     length_decoding_cipher: FSChaCha20,
@@ -158,7 +171,6 @@ impl PacketReader {
     /// The length to be read into the buffer next to receive the full message from the peer.
     pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
         let mut enc_content_len = [0u8; 3];
-        // TODO: should we just make len_butes mutable?
         enc_content_len.copy_from_slice(&len_bytes);
         self.length_decoding_cipher
             .crypt(&mut enc_content_len)
@@ -176,40 +188,51 @@ impl PacketReader {
     ///
     /// # Arguments
     ///
-    /// - `contents` - The message from the peer.
-    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
-    ///
-    /// # Returns
-    ///
-    /// The message from the peer.
+    /// - `ciphertext` - The message from the peer.
+    /// - `contents`   - Mutable buffer to write plaintext.
+    /// - `aad`        - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Errors
     ///
     /// Fails if the packet was not decrypted or authenticated properly.  
     pub fn decrypt_contents(
         &mut self,
-        contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
-    ) -> Result<ReceivedMessage, Error> {
+        ciphertext: &[u8],
+        contents: &mut [u8],
+        aad: Option<&[u8]>,
+    ) -> Result<(), Error> {
         let auth = aad.unwrap_or_default();
-        let mut contents = contents.clone();
-        let contents_len = contents.len();
-        let (ciphertext, tag) = contents.split_at_mut(contents_len - 16);
+        let (msg, tag) = ciphertext.split_at(ciphertext.len() - TAG_BYTES);
+        contents[0..msg.len()].copy_from_slice(msg);
         self.packet_decoding_cipher.decrypt(
-            &auth,
-            ciphertext,
-            tag.try_into().expect("16 bytes"),
+            auth,
+            &mut contents[0..msg.len()],
+            tag.try_into().map_err(|_| Error::MessageLengthTooSmall)?,
         )?;
-        let header = *ciphertext
-            .first()
-            .expect("All contents should include a header.");
-        if header.eq(&DECOY) {
-            return Ok(ReceivedMessage { message: None });
-        }
-        let message = ciphertext[1..].to_vec();
-        Ok(ReceivedMessage {
-            message: Some(message),
-        })
+
+        Ok(())
+    }
+
+    /// Decrypt the rest of the message from the peer, excluding the 3 length bytes. This method should only be called after
+    /// calling `decrypt_len` on the first three bytes of the buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `ciphertext` - The message from the peer.
+    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet was not decrypted or authenticated properly.
+    #[cfg(feature = "std")]
+    pub fn decrypt_contents_with_alloc(
+        &mut self,
+        ciphertext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Error> {
+        let mut contents = vec![0u8; ciphertext.len() - TAG_BYTES];
+        self.decrypt_contents(ciphertext, &mut contents, aad)?;
+        Ok(contents)
     }
 }
 
@@ -403,12 +426,19 @@ impl PacketHandler {
     /// # Errors
     ///
     /// Fails if the packet was not decrypted or authenticated properly.  
+    #[cfg(feature = "std")]
     pub fn decrypt_contents(
         &mut self,
         contents: Vec<u8>,
-        aad: Option<Vec<u8>>,
+        aad: Option<&[u8]>,
     ) -> Result<ReceivedMessage, Error> {
-        self.packet_reader.decrypt_contents(contents, aad)
+        let contents = self
+            .packet_reader
+            .decrypt_contents_with_alloc(&contents, aad)?;
+
+        let message = ReceivedMessage::new(&contents)?;
+
+        Ok(message)
     }
 
     /// Decrypt the one or more messages from bytes received by a V2 peer.
@@ -774,9 +804,13 @@ impl<'a> Handshake<'a> {
         // Assuming no decoy packets so AAD is set on version packet.
         // The version packet is ignored in this version of the protocol, but
         // moves along state in the ciphers.
-        packet_handler.decrypt_contents(
-            message[LENGTH_BYTES..packet_length + LENGTH_BYTES].to_vec(),
-            Some(garbage.to_vec()),
+
+        // Version packets have 0 contents.
+        let mut version_packet = [0u8; DECOY_BYTES + TAG_BYTES];
+        packet_handler.packet_reader.decrypt_contents(
+            &message[LENGTH_BYTES..packet_length + LENGTH_BYTES],
+            &mut version_packet,
+            Some(garbage),
         )?;
 
         Ok(())
