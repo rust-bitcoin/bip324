@@ -10,7 +10,6 @@ mod fschacha20poly1305;
 mod hkdf;
 
 use core::fmt;
-use std::println;
 
 pub use bitcoin::Network;
 use bitcoin_hashes::sha256;
