@@ -190,8 +190,8 @@ impl PacketReader {
     /// # Arguments
     ///
     /// - `ciphertext` - The message from the peer.
-    /// - `contents` - Mutable buffer to write plaintext.
-    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `contents`   - Mutable buffer to write plaintext.
+    /// - `aad`        - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Errors
     ///
@@ -207,7 +207,7 @@ impl PacketReader {
         contents[0..msg.len()].copy_from_slice(msg);
         self.packet_decoding_cipher.decrypt(
             auth,
-            contents,
+            &mut contents[0..msg.len()],
             tag.try_into().map_err(|_| Error::MessageLengthTooSmall)?,
         )?;
 
