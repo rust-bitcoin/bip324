@@ -6,6 +6,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
+use bip324::ReceivedMessage;
 use bip324::{PacketReader, PacketWriter};
 use bitcoin::consensus::Decodable;
 use bitcoin::hashes::sha256d;
@@ -165,11 +166,14 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
     let packet_bytes_len = decrypter.decypt_len(length_bytes);
     let mut packet_bytes = vec![0u8; packet_bytes_len];
     input.read_exact(&mut packet_bytes).await?;
-    let contents = decrypter
-        .decrypt_contents(packet_bytes, None)
-        .expect("decrypt")
-        .message
+    let raw = decrypter
+        .decrypt_contents_with_alloc(&packet_bytes, None)
         .expect("decrypt");
+
+    let contents = ReceivedMessage::new(&raw)
+        .expect("some bytes")
+        .message
+        .expect("not a decoy");
 
     // If packet is using short or full ID.
     let (cmd, cmd_index) = if contents.starts_with(&[0u8]) {
