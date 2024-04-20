@@ -10,6 +10,7 @@ mod fschacha20poly1305;
 mod hkdf;
 
 use core::fmt;
+use std::println;
 
 pub use bitcoin::Network;
 use bitcoin_hashes::sha256;
@@ -203,7 +204,7 @@ impl PacketReader {
     ) -> Result<(), Error> {
         let auth = aad.unwrap_or_default();
         let (msg, tag) = ciphertext.split_at(ciphertext.len() - TAG_BYTES);
-        contents.copy_from_slice(msg);
+        contents[0..msg.len()].copy_from_slice(msg);
         self.packet_decoding_cipher.decrypt(
             auth,
             contents,
@@ -804,8 +805,12 @@ impl<'a> Handshake<'a> {
         // Assuming no decoy packets so AAD is set on version packet.
         // The version packet is ignored in this version of the protocol, but
         // moves along state in the ciphers.
-        packet_handler.decrypt_contents(
-            message[LENGTH_BYTES..packet_length + LENGTH_BYTES].to_vec(),
+
+        // Version packets have 0 contents.
+        let mut version_packet = [0u8; DECOY_BYTES + TAG_BYTES];
+        packet_handler.packet_reader.decrypt_contents(
+            &message[LENGTH_BYTES..packet_length + LENGTH_BYTES],
+            &mut version_packet,
             Some(garbage),
         )?;
 
