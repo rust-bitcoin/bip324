@@ -22,20 +22,25 @@ jobs:
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
           rustup update ${{ matrix.toolchain }}
       - name: Lint
-        # Lint all packages (proxy, protocol) and all targets (test, etc.).
+        # Lint all packages (proxy, protocol) and all targets (library, test, etc.).
         run: cargo clippy --all --all-targets
       - name: Format
         # Format all packages.
         run: cargo fmt --all -- --check
       - name: Build
-        # Build all packages with default features.
+        # Build all packages with default features, none, all, 
+        # Build the protocol package with specific feature sub-sets.
         run: |
           cargo build --all --verbose
           cargo build --all --verbose --no-default-features
           cargo build --all --verbose --all-features
       - name: Test
-        # Test all packages with default features.
-        run: cargo test --all --verbose
+        # Test all packages with default features, none, all.
+        # Test the protocol package with specific feature sub-sets.
+        run: |
+          cargo test --all --verbose
+          cargo test --all --verbose --no-default-features
+          cargo test --all --verbose --all-features
       - name: Check No Standard Library Support
         run: |
           rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
