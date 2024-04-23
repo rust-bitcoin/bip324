@@ -35,5 +35,5 @@ jobs:
         run: |
           rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
           cargo install cross
-          cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
+          cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
         

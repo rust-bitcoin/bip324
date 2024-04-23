@@ -35,19 +35,19 @@ fn hello_world_happy_path() {
 
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
-    let encrypted_message_to_alice = bob.prepare_v2_packet(message.clone(), None, false).unwrap();
-    let messages = alice
-        .receive_v2_packets(encrypted_message_to_alice, None)
+    let encrypted_message_to_alice = bob
+        .prepare_packet_with_alloc(&message, None, false)
         .unwrap();
-    let secret_message = messages.first().unwrap().message.clone().unwrap();
-    assert_eq!(message, secret_message);
+    let messages = alice
+        .decrypt_contents_with_alloc(&encrypted_message_to_alice[3..], None)
+        .unwrap();
+    assert_eq!(message, messages.message.unwrap());
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice
-        .prepare_v2_packet(message.clone(), None, false)
+        .prepare_packet_with_alloc(&message, None, false)
         .unwrap();
     let messages = bob
-        .receive_v2_packets(encrypted_message_to_bob, None)
+        .decrypt_contents_with_alloc(&encrypted_message_to_bob[3..], None)
         .unwrap();
-    let secret_message = messages.first().unwrap().message.clone().unwrap();
-    assert_eq!(message, secret_message);
+    assert_eq!(message, messages.message.unwrap());
 }

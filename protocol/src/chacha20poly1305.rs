@@ -5,7 +5,7 @@ mod poly1305;
 use chacha20::ChaCha20;
 use poly1305::Poly1305;
 
-use alloc::fmt;
+use core::fmt;
 
 /// Zero array for padding slices.
 const ZEROES: [u8; 16] = [0u8; 16];

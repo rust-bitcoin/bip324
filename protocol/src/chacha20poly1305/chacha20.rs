@@ -1,6 +1,6 @@
 //! The ChaCha20 stream cipher based on RFC7539.
 
-use alloc::fmt;
+use core::fmt;
 
 /// Possible errors using the ChaCha20 cipher.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
