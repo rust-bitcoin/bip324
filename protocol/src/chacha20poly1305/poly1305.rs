@@ -3,7 +3,7 @@
 //! Implementation heavily inspired by [this implementation in C](https://github.com/floodyberry/poly1305-donna/blob/master/poly1305-donna-32.h)
 //! referred to as "Donna". Further reference to [this](https://loup-vaillant.fr/tutorials/poly1305-design) article was used to formulate the multiplication loop.
 
-use alloc::fmt;
+use core::fmt;
 
 /// 2^26 for the 26-bit limbs.
 const BITMASK: u32 = 0x03ffffff;

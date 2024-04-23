@@ -1,6 +1,7 @@
 //! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
@@ -14,7 +15,9 @@ use core::fmt;
 pub use bitcoin::Network;
 use bitcoin_hashes::sha256;
 
+#[cfg(feature = "alloc")]
 use alloc::vec;
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
@@ -224,7 +227,7 @@ impl PacketReader {
     /// # Errors
     ///
     /// Fails if the packet was not decrypted or authenticated properly.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn decrypt_contents_with_alloc(
         &mut self,
         ciphertext: &[u8],
@@ -302,7 +305,7 @@ impl PacketWriter {
     /// - `plaintext` - Plaintext content to be encrypted.
     /// - `aad`       - Optional authentication for the peer, currently only used for the first round of messages.
     /// - `decoy`     - Should the peer ignore this message.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn prepare_packet_with_alloc(
         &mut self,
         plaintext: &[u8],
@@ -384,7 +387,7 @@ impl PacketHandler {
     /// # Errors
     ///
     /// Fails if the packet was not encrypted properly.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn prepare_packet_with_alloc(
         &mut self,
         plaintext: &[u8],
@@ -424,7 +427,7 @@ impl PacketHandler {
     /// # Errors
     ///
     /// Fails if the packet was not decrypted or authenticated properly.  
-    #[cfg(feature = "std")]
+    #[cfg(feature = "alloc")]
     pub fn decrypt_contents_with_alloc(
         &mut self,
         ciphertext: &[u8],

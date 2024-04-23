@@ -2,9 +2,16 @@
 
 Alice and Bob initiate a connection by sending three messages to each other to derive a number of shared secrets. Alice begins the connection by deriving a public/private keypair over `secp256k1`, the typical Bitcoin curve. Alice is known as the *initiator*. She encodes the public key in the [Elligator Swift](https://eprint.iacr.org/2022/759.pdf) format (64-bytes), optionally pads it with some random garbage bytes, and sends the message to Bob. Bob, known as the *responder*, decodes the Elligator Swift public key, and derives an ephemeral public/private keypair himself. Using his public and private keys, as well as Alice's public key, Bob performs a variation of the Elliptic Curve Diffie Hellman algorithm to derive a shared key. From this shared key, Bob derives multiple keys and a session ID using the HKDF algorithm. Next, Bob creates garbage data, and sends his public key, garbage data, an encrypted packet using the garbage data, and a version negotiation to Alice. With Bob's public key, Alice derives the shared secret and ensures the decrypted packet is authenticated with the garbage Bob sent her. Finally, Alice sends a "garbage terminator" and an encrypted packet using her garbage data, so Bob may authenticate she derived the correct secret and he can decode her messages. Alice and Bob may now freely exchange encrypted messages over the Bitcoin P2P protocol.
 
+## Interface
+
 The library exposes two core structures, the `Handshake` and the `PacketHandler`. The handshake is used to generate a packet handler and performs the one-and-a-half roundtrips dance between the peers described above. A successful handshake results in a packet handler which performs the encrypt and decrypt operations for the channel.
 
 Both structures are designed with a bare `no_std` and "Sans I/O" interface to keep them as agnostic as possible to application runtimes. 
+
+## Feature Flags
+
+- `alloc` -- Expose memory allocation dependent features.
+- `std` -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
 
 ## ChaCha20Poly1305
 

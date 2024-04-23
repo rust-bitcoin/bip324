@@ -1,4 +1,4 @@
-use alloc::fmt;
+use core::fmt;
 
 use crate::chacha20poly1305::chacha20::ChaCha20;
 use crate::chacha20poly1305::ChaCha20Poly1305;
