@@ -11,10 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
+        # Minumum supported Rust version is 1.56.1
+        toolchain: [1.56.1, stable, beta, nightly]
+        features: [alloc, std]
     steps:
       - uses: actions/checkout@v3
       - name: Update Toolchain
@@ -23,13 +22,20 @@ jobs:
           rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
           rustup update ${{ matrix.toolchain }}
-      - name: Build
-        run: cargo build --all --verbose
       - name: Lint
+        # Lint all packages (proxy, protocol) and all targets (test, etc.).
         run: cargo clippy --all --all-targets
       - name: Format
+        # Format all packages.
         run: cargo fmt --all -- --check
+      - name: Build
+        # Build all packages with default features.
+        run: |
+          cargo build --all --verbose
+          cargo build --all --verbose --no-default-features
+          cargo build --all --verbose --all-features
       - name: Test
+        # Test all packages with default features.
         run: cargo test --all --verbose
       - name: Check No Standard Library Support
         run: |
