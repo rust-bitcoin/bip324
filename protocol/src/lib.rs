@@ -142,6 +142,7 @@ pub struct ReceivedMessage {
     pub message: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "alloc")]
 impl ReceivedMessage {
     pub fn new(msg_bytes: &[u8]) -> Result<Self, Error> {
         let header = msg_bytes.first().ok_or(Error::MessageLengthTooSmall)?;
