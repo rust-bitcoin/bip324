@@ -1,9 +1,9 @@
-use bip324::{Handshake, Role};
-use bitcoin::Network;
-
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
+    use bip324::{Handshake, Role};
+    use bitcoin::Network;
+
     let mut init_message = vec![0u8; 64];
     let mut init_handshake =
         Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();

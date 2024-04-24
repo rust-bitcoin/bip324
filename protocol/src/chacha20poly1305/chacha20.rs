@@ -227,6 +227,7 @@ fn keystream_at_slice(
 }
 
 #[cfg(test)]
+#[cfg(feature = "alloc")]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
