@@ -7,7 +7,36 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  proxy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Proxy application not as strict as protocol library.
+        toolchain: [stable, beta, nightly]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Update Toolchain
+        run: |
+          rustup default ${{ matrix.toolchain }}
+          rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
+          rustup component add --toolchain ${{ matrix.toolchain }} clippy
+          rustup update ${{ matrix.toolchain }}
+      - name: Lint
+        run: |
+          cargo clippy --package bip324-proxy --all-targets
+      - name: Format
+        run: |
+          cargo fmt --package bip324-proxy -- --check
+      - name: Build
+        run: |
+          cargo build --package bip324-proxy --verbose
+          cargo build --all --verbose --no-default-features
+          cargo build --all --verbose --all-features
+      - name: Test
+        run: |
+          cargo test --package bip324-proxy --verbose
+
+  protocol:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,25 +51,27 @@ jobs:
           rustup component add --toolchain ${{ matrix.toolchain }} clippy
           rustup update ${{ matrix.toolchain }}
       - name: Lint
-        # Lint all packages (proxy, protocol) and all targets (library, test, etc.).
-        run: cargo clippy --all --all-targets
+        run: |
+          cargo clippy --package bip324 --all-targets
       - name: Format
-        # Format all packages.
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --package bip324 -- --check
       - name: Build
-        # Build all packages with default features, none, all, 
-        # Build the protocol package with specific feature sub-sets.
+        # Build with default features, all, and none. 
+        # Then build with specific feature sub-sets.
         run: |
-          cargo build --all --verbose
-          cargo build --all --verbose --no-default-features
-          cargo build --all --verbose --all-features
+          cargo build --package bip324 --verbose
+          cargo build --package bip324 --verbose --all-features
+          cargo build --package bip324 --verbose --no-default-features
+          cargo build --package bip324 --verbose --no-default-features --features alloc
       - name: Test
-        # Test all packages with default features, none, all.
-        # Test the protocol package with specific feature sub-sets.
+        # Test with default features, all, and none. 
+        # Then test with specific feature sub-sets.
         run: |
-          cargo test --all --verbose
-          cargo test --all --verbose --no-default-features
-          cargo test --all --verbose --all-features
+          cargo test --package bip324 --verbose
+          cargo test --package bip324 --verbose --all-features
+          cargo test --package bip324 --verbose --no-default-features
+          cargo test --package bip324 --verbose --no-default-features --features alloc
       - name: Check No Standard Library Support
         run: |
           rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
