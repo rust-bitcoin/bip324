@@ -7,11 +7,11 @@ on:
   pull_request:
 
 jobs:
+  # Proxy application is not as strict as protocol library.
   proxy:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Proxy application not as strict as protocol library.
         toolchain: [stable, beta, nightly]
     steps:
       - uses: actions/checkout@v3

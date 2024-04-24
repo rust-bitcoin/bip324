@@ -3,7 +3,7 @@
 //! Implementation based on RFC5869, but the interface is scoped
 //! to BIP324's requirements.
 
-use bitcoin_hashes::{Hash, HashEngine, Hmac, HmacEngine};
+use bitcoin::hashes::{Hash, HashEngine, Hmac, HmacEngine};
 use core::fmt;
 
 // Output keying material max length multiple.
@@ -89,7 +89,7 @@ impl<T: Hash> Hkdf<T> {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use bitcoin_hashes::sha256;
+    use bitcoin::hashes::sha256;
     use hex::prelude::*;
 
     #[test]
