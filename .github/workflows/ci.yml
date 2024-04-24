@@ -40,8 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Minumum supported Rust version is 1.56.1
-        toolchain: [stable, beta, nightly]
+        # Minumum Supported Rust Version (MSRV) is 1.56.1.
+        toolchain: [1.56.1, stable, beta, nightly]
     steps:
       - uses: actions/checkout@v3
       - name: Update Toolchain
