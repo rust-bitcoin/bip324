@@ -13,21 +13,23 @@ mod hkdf;
 use core::fmt;
 
 pub use bitcoin::Network;
-use bitcoin_hashes::sha256;
 
 #[cfg(feature = "alloc")]
 use alloc::vec;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
+use bitcoin::{
+    hashes::sha256,
+    secp256k1::{
+        self,
+        ellswift::{ElligatorSwift, ElligatorSwiftParty},
+        PublicKey, Secp256k1, SecretKey, Signing,
+    },
+};
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 use hkdf::Hkdf;
 use rand::Rng;
-use secp256k1::{
-    ellswift::{ElligatorSwift, ElligatorSwiftParty},
-    ffi::types::AlignedType,
-    PublicKey, Secp256k1, SecretKey,
-};
 
 /// Number of bytes for the decoy flag on a packet.
 const DECOY_BYTES: usize = 1;
@@ -133,12 +135,14 @@ pub enum Role {
 }
 
 /// A message or decoy packet from a connected peer.
+#[cfg(feature = "alloc")]
 #[derive(Clone, Debug)]
 pub struct ReceivedMessage {
     /// A message to handle or `None` if the peer sent a decoy and the message may be safely ignored.
     pub message: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "alloc")]
 impl ReceivedMessage {
     pub fn new(msg_bytes: &[u8]) -> Result<Self, Error> {
         let header = msg_bytes.first().ok_or(Error::MessageLengthTooSmall)?;
@@ -444,16 +448,17 @@ impl PacketHandler {
 }
 
 fn gen_key(rng: &mut impl Rng) -> Result<SecretKey, Error> {
-    let mut buffer: Vec<u8> = vec![0; 32];
+    let mut buffer = [0u8; 32];
     rng.fill(&mut buffer[..]);
     let sk = SecretKey::from_slice(&buffer)?;
     Ok(sk)
 }
 
-fn new_elligator_swift(sk: SecretKey) -> Result<ElligatorSwift, Error> {
-    let mut buf_ful = vec![AlignedType::zeroed(); Secp256k1::preallocate_size()];
-    let curve = Secp256k1::preallocated_new(&mut buf_ful)?;
-    let pk = PublicKey::from_secret_key(&curve, &sk);
+fn new_elligator_swift<C: Signing>(
+    sk: SecretKey,
+    curve: &Secp256k1<C>,
+) -> Result<ElligatorSwift, Error> {
+    let pk = PublicKey::from_secret_key(curve, &sk);
     Ok(ElligatorSwift::from_pubkey(pk))
 }
 
@@ -562,17 +567,19 @@ impl<'a> Handshake<'a> {
         buffer: &mut [u8],
     ) -> Result<Self, Error> {
         let mut rng = rand::thread_rng();
-        Self::new_with_rng(network, role, garbage, buffer, &mut rng)
+        let curve = Secp256k1::signing_only();
+        Self::new_with_rng(network, role, garbage, buffer, &mut rng, &curve)
     }
 
     /// Initialize a V2 transport handshake with a peer.
     ///
     /// # Arguments
     ///
-    /// * `network` - The bitcoin network which both peers operate on.
-    /// * `garbage` - Optional garbage to send in handshake.    
-    /// * `buffer` - Message buffer to send to peer which will include initial materials for handshake + garbage.
-    /// * `rng` - Supplied Random Number Generator.
+    /// - `network` - The bitcoin network which both peers operate on.
+    /// - `garbage` - Optional garbage to send in handshake.    
+    /// - `buffer`  - Message buffer to send to peer which will include initial materials for handshake + garbage.
+    /// - `rng`     - Supplied Random Number Generator.
+    /// - `curve`   - Supplied secp256k1 context.
     ///
     /// # Returns
     ///
@@ -581,15 +588,16 @@ impl<'a> Handshake<'a> {
     /// # Errors
     ///
     /// Fails if their was an error generating the keypair.
-    pub fn new_with_rng(
+    pub fn new_with_rng<C: Signing>(
         network: Network,
         role: Role,
         garbage: Option<&'a [u8]>,
         buffer: &mut [u8],
         rng: &mut impl Rng,
+        curve: &Secp256k1<C>,
     ) -> Result<Self, Error> {
         let sk = gen_key(rng)?;
-        let es = new_elligator_swift(sk)?;
+        let es = new_elligator_swift(sk, curve)?;
         let point = EcdhPoint {
             secret_key: sk,
             elligator_swift: es,
@@ -615,8 +623,8 @@ impl<'a> Handshake<'a> {
     ///
     /// # Arguments
     ///
-    /// * `their_elliswift` - The key material of the remote peer.
-    /// * `response` - Buffer to write response for remote peer which includes the garbage terminator and version packet.
+    /// - `their_elliswift` - The key material of the remote peer.
+    /// - `response`        - Buffer to write response for remote peer which includes the garbage terminator and version packet.
     pub fn complete_materials(
         &mut self,
         their_elliswift: [u8; 64],

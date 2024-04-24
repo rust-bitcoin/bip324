@@ -165,6 +165,7 @@ impl ChaCha20Poly1305 {
 }
 
 #[cfg(test)]
+#[cfg(feature = "alloc")]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
