@@ -163,7 +163,7 @@ pub struct PacketReader {
 }
 
 impl PacketReader {
-    /// Decode the length, in bytes, of the of the rest imbound message.
+    /// Decode the length, in bytes, of the rest of the inbound message.
     ///
     /// Intended for use with `TcpStream` and `read_exact`. Note that this does not decode to the
     /// length of contents described in BIP324, and is meant to represent the entire imbound message

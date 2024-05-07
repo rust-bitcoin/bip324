@@ -40,9 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Minumum Supported Rust Version (MSRV) is 1.56.1 but
-        # having some weird issues with the memchr dependency.
-        toolchain: [stable, beta, nightly]
+        # Minumum Supported Rust Version (MSRV) is 1.56.1.
+        toolchain: [1.56.1, stable, beta, nightly]
     steps:
       - uses: actions/checkout@v3
       - name: Update Toolchain
@@ -74,8 +73,10 @@ jobs:
           cargo test --package bip324 --verbose --no-default-features
           cargo test --package bip324 --verbose --no-default-features --features alloc
       - name: Check No Standard Library Support
+        # The cross tool used to test in a no standard library environment doesn't play nice with our MSRV, so limiting to just stable toolchain.
+        if: matrix.toolchain == 'stable'
         run: |
           rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
-          cargo install cross
+          cargo install cross --locked
           cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
         
