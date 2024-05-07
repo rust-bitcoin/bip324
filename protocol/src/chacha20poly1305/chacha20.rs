@@ -263,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn test_quater_round_on_block() {
         let a: u32 = 0x879531e0;
         let b: u32 = 0xc5ecf37d;
@@ -286,6 +287,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn test_block_fn() {
         let a: u32 = 0x61707865;
         let b: u32 = 0x3320646e;
@@ -324,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn test_block_serialization() {
         let a: u32 = 0x61707865;
         let b: u32 = 0x3320646e;
@@ -372,11 +375,10 @@ mod tests {
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 3];
-        let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(&mut binding[..]);
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(to);
-        assert_eq!([8; 3], to);
+        chacha.apply_keystream(&mut binding[..]);
+        assert_eq!([8; 3], binding);
     }
 
     #[test]
@@ -389,11 +391,10 @@ mod tests {
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 64];
-        let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(&mut binding[..]);
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(to);
-        assert_eq!([8; 64], to);
+        chacha.apply_keystream(&mut binding[..]);
+        assert_eq!([8; 64], binding);
     }
 
     #[test]
@@ -425,13 +426,12 @@ mod tests {
         let block: u32 = 1;
         let mut chacha = ChaCha20::new_from_block(key, nonce, block);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-        let to = binding.as_mut_slice();
-        chacha.apply_keystream(to);
-        assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
+        chacha.apply_keystream(&mut binding[..]);
+        assert_eq!(binding[..], Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         chacha.block(block);
-        chacha.apply_keystream(to);
+        chacha.apply_keystream(&mut binding[..]);
         let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-        assert_eq!(binding, to);
+        assert_eq!(binding, binding);
     }
 
     #[cfg(feature = "std")]
