@@ -1,30 +1,5 @@
 //! The ChaCha20 stream cipher based on RFC7539.
 
-use core::fmt;
-
-/// Possible errors using the ChaCha20 cipher.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    InvalidKey,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::InvalidKey => write!(f, "Invalid 32-byte key."),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::InvalidKey => None,
-        }
-    }
-}
-
 /// The first four words (32-bit) of the ChaCha stream cipher state are constants.
 const WORD_1: u32 = 0x61707865;
 const WORD_2: u32 = 0x3320646e;
@@ -90,7 +65,7 @@ impl ChaCha20 {
     }
 
     /// Apply the keystream to a message.
-    pub fn apply_keystream(&mut self, to: &mut [u8]) -> Result<(), Error> {
+    pub fn apply_keystream(&mut self, to: &mut [u8]) {
         let num_full_blocks = to.len() / CHACHA_BLOCKSIZE;
         let mut j = 0;
         while j < num_full_blocks {
@@ -99,7 +74,7 @@ impl ChaCha20 {
                 self.nonce,
                 self.block_count,
                 self.seek_offset_bytes,
-            )?;
+            );
             for (c, k) in to[j * CHACHA_BLOCKSIZE..(j + 1) * CHACHA_BLOCKSIZE]
                 .iter_mut()
                 .zip(kstream.iter())
@@ -115,17 +90,16 @@ impl ChaCha20 {
                 self.nonce,
                 self.block_count,
                 self.seek_offset_bytes,
-            )?;
+            );
             for (c, k) in to[j * CHACHA_BLOCKSIZE..].iter_mut().zip(kstream.iter()) {
                 *c ^= *k
             }
             self.block_count += 1;
         }
-        Ok(())
     }
 
     /// Get the keystream block at a specified block.
-    pub(crate) fn get_keystream(&mut self, block: u32) -> Result<[u8; 64], Error> {
+    pub(crate) fn get_keystream(&mut self, block: u32) -> [u8; 64] {
         self.block(block);
         keystream_at_slice(
             self.key,
@@ -175,25 +149,69 @@ fn chacha_block(state: &mut [u32; 16]) {
     }
 }
 
-fn prepare_state(key: [u8; 32], nonce: [u8; 12], count: u32) -> Result<[u32; 16], Error> {
+fn prepare_state(key: [u8; 32], nonce: [u8; 12], count: u32) -> [u32; 16] {
     let mut state: [u32; 16] = [0; 16];
     state[0] = WORD_1;
     state[1] = WORD_2;
     state[2] = WORD_3;
     state[3] = WORD_4;
-    state[4] = u32::from_le_bytes(key[0..4].try_into().map_err(|_| Error::InvalidKey)?);
-    state[5] = u32::from_le_bytes(key[4..8].try_into().map_err(|_| Error::InvalidKey)?);
-    state[6] = u32::from_le_bytes(key[8..12].try_into().map_err(|_| Error::InvalidKey)?);
-    state[7] = u32::from_le_bytes(key[12..16].try_into().map_err(|_| Error::InvalidKey)?);
-    state[8] = u32::from_le_bytes(key[16..20].try_into().map_err(|_| Error::InvalidKey)?);
-    state[9] = u32::from_le_bytes(key[20..24].try_into().map_err(|_| Error::InvalidKey)?);
-    state[10] = u32::from_le_bytes(key[24..28].try_into().map_err(|_| Error::InvalidKey)?);
-    state[11] = u32::from_le_bytes(key[28..32].try_into().map_err(|_| Error::InvalidKey)?);
+    state[4] = u32::from_le_bytes(
+        key[0..4]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[5] = u32::from_le_bytes(
+        key[4..8]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[6] = u32::from_le_bytes(
+        key[8..12]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[7] = u32::from_le_bytes(
+        key[12..16]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[8] = u32::from_le_bytes(
+        key[16..20]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[9] = u32::from_le_bytes(
+        key[20..24]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[10] = u32::from_le_bytes(
+        key[24..28]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[11] = u32::from_le_bytes(
+        key[28..32]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
     state[12] = count;
-    state[13] = u32::from_le_bytes(nonce[0..4].try_into().map_err(|_| Error::InvalidKey)?);
-    state[14] = u32::from_le_bytes(nonce[4..8].try_into().map_err(|_| Error::InvalidKey)?);
-    state[15] = u32::from_le_bytes(nonce[8..12].try_into().map_err(|_| Error::InvalidKey)?);
-    Ok(state)
+    state[13] = u32::from_le_bytes(
+        nonce[0..4]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[14] = u32::from_le_bytes(
+        nonce[4..8]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state[15] = u32::from_le_bytes(
+        nonce[8..12]
+            .try_into()
+            .expect("infalliable conversion to 4 byte array"),
+    );
+    state
 }
 
 fn keystream_from_state(state: &mut [u32; 16]) -> [u8; 64] {
@@ -207,23 +225,18 @@ fn keystream_from_state(state: &mut [u32; 16]) -> [u8; 64] {
     keystream
 }
 
-fn keystream_at_slice(
-    key: [u8; 32],
-    nonce: [u8; 12],
-    count: u32,
-    seek: usize,
-) -> Result<[u8; 64], Error> {
+fn keystream_at_slice(key: [u8; 32], nonce: [u8; 12], count: u32, seek: usize) -> [u8; 64] {
     let mut keystream: [u8; 128] = [0; 128];
-    let mut state = prepare_state(key, nonce, count)?;
+    let mut state = prepare_state(key, nonce, count);
     chacha_block(&mut state);
     let first_half = keystream_from_state(&mut state);
-    let mut state = prepare_state(key, nonce, count + 1)?;
+    let mut state = prepare_state(key, nonce, count + 1);
     chacha_block(&mut state);
     let second_half = keystream_from_state(&mut state);
     keystream[..64].copy_from_slice(&first_half);
     keystream[64..].copy_from_slice(&second_half);
-    let kstream: [u8; 64] = keystream[seek..seek + 64].try_into().expect("msg");
-    Ok(kstream)
+    let kstream: [u8; 64] = keystream[seek..seek + 64].try_into().expect("infallable");
+    kstream
 }
 
 #[cfg(test)]
@@ -341,7 +354,7 @@ mod tests {
         let nonce = Vec::from_hex("000000090000004a00000000").unwrap();
         let nonce: [u8; 12] = nonce.try_into().unwrap();
         let count = 1;
-        let state = prepare_state(key, nonce, count).unwrap();
+        let state = prepare_state(key, nonce, count);
         assert_eq!(state[4].to_be_bytes().to_lower_hex_string(), "03020100");
         assert_eq!(state[10].to_be_bytes().to_lower_hex_string(), "1b1a1918");
         assert_eq!(state[14].to_be_bytes().to_lower_hex_string(), "4a000000");
@@ -359,10 +372,11 @@ mod tests {
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 3];
-        chacha.apply_keystream(&mut binding[..]).unwrap();
+        let to = binding.as_mut_slice();
+        chacha.apply_keystream(to);
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!([8; 3], binding);
+        chacha.apply_keystream(to);
+        assert_eq!([8; 3], to);
     }
 
     #[test]
@@ -375,10 +389,11 @@ mod tests {
         let count = 1;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = [8; 64];
-        chacha.apply_keystream(&mut binding[..]).unwrap();
+        let to = binding.as_mut_slice();
+        chacha.apply_keystream(to);
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!([8; 64], binding);
+        chacha.apply_keystream(to);
+        assert_eq!([8; 64], to);
     }
 
     #[test]
@@ -391,11 +406,13 @@ mod tests {
         let count = 64;
         let mut chacha = ChaCha20::new(key, nonce, count);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!(binding[..], Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
+        let to = binding.as_mut_slice();
+        chacha.apply_keystream(to);
+        assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         let mut chacha = ChaCha20::new(key, nonce, count);
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!(binding, *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.");
+        chacha.apply_keystream(to);
+        let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        assert_eq!(binding, to);
     }
 
     #[test]
@@ -408,11 +425,13 @@ mod tests {
         let block: u32 = 1;
         let mut chacha = ChaCha20::new_from_block(key, nonce, block);
         let mut binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!(binding[..], Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
+        let to = binding.as_mut_slice();
+        chacha.apply_keystream(to);
+        assert_eq!(to, Vec::from_hex("6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d").unwrap());
         chacha.block(block);
-        chacha.apply_keystream(&mut binding[..]).unwrap();
-        assert_eq!(binding, *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.");
+        chacha.apply_keystream(to);
+        let binding = *b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        assert_eq!(binding, to);
     }
 
     #[cfg(feature = "std")]
@@ -436,11 +455,11 @@ mod tests {
                 let message = gen_garbage(129);
                 let mut message2 = message.clone();
                 let msg = message2.as_mut_slice();
-                chacha.apply_keystream(msg).unwrap();
+                chacha.apply_keystream(msg);
                 let mut cipher = ChaCha20::new(key, nonce, 0);
                 let mut buffer = message;
                 cipher.seek(count);
-                cipher.apply_keystream(&mut buffer).unwrap();
+                cipher.apply_keystream(&mut buffer);
                 assert_eq!(buffer.as_slice(), msg);
             }
         }

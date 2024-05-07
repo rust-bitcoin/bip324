@@ -13,7 +13,6 @@ pub enum Error {
     Encryption(crate::chacha20poly1305::Error),
     Decryption(crate::chacha20poly1305::Error),
     Rekey(crate::chacha20poly1305::Error),
-    Cipher(crate::chacha20poly1305::chacha20::Error),
 }
 
 impl fmt::Display for Error {
@@ -21,7 +20,6 @@ impl fmt::Display for Error {
         match self {
             Error::Encryption(e) => write!(f, "Unable to encrypt {}", e),
             Error::Decryption(e) => write!(f, "Unable to dycrypt {}", e),
-            Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
             Error::Rekey(e) => write!(f, "Unable to rekey {}", e),
         }
     }
@@ -33,15 +31,8 @@ impl std::error::Error for Error {
         match self {
             Error::Encryption(e) => Some(e),
             Error::Decryption(e) => Some(e),
-            Error::Cipher(e) => Some(e),
             Error::Rekey(e) => Some(e),
         }
-    }
-}
-
-impl From<crate::chacha20poly1305::chacha20::Error> for Error {
-    fn from(e: crate::chacha20poly1305::chacha20::Error) -> Self {
-        Error::Cipher(e)
     }
 }
 
@@ -163,12 +154,12 @@ impl FSChaCha20 {
         nonce[4..8].copy_from_slice(&counter_mod);
         let mut cipher = ChaCha20::new(self.key, nonce, 0);
         cipher.seek(self.block_counter);
-        cipher.apply_keystream(chunk)?;
+        cipher.apply_keystream(chunk);
         self.block_counter += CHACHA_BLOCKS_USED;
         if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
             let mut key_buffer = [0u8; 32];
             cipher.seek(self.block_counter);
-            cipher.apply_keystream(&mut key_buffer)?;
+            cipher.apply_keystream(&mut key_buffer);
             self.block_counter = 0;
             self.key = key_buffer;
         }
