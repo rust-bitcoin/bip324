@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // ChaCha20 is used directly by the length cipher.
 pub(crate) mod chacha20;
 mod poly1305;

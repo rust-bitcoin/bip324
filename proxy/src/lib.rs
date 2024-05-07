@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Helper functions for bitcoin p2p proxies.
 //!
 //! The V1 and V2 p2p protocols have different header encodings, so a proxy has to do

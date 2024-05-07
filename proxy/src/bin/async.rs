@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use bip324::{Handshake, Role};
 use bip324_proxy::{read_v1, read_v2, write_v1, write_v2};
 use bitcoin::Network;

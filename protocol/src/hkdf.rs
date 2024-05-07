@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! HMAC-based Extract-and-Expand Key Derivation Function (HKDF).
 //!
 //! Implementation based on RFC5869, but the interface is scoped

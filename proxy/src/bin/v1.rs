@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Simple V1 proxy to test hooking things up end to end.
 
 use bip324_proxy::{read_v1, write_v1};

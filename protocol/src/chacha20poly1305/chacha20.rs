@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The ChaCha20 stream cipher based on RFC7539.
 
 /// The first four words (32-bit) of the ChaCha stream cipher state are constants.

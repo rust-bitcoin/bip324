@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
