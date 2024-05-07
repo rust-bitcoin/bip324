@@ -55,7 +55,7 @@ impl ChaCha20Poly1305 {
     /// # Returns
     ///
     /// The 16-byte authentication tag.
-    pub fn encrypt(self, content: &mut [u8], aad: Option<&[u8]>) -> Result<[u8; 16], Error> {
+    pub fn encrypt(self, content: &mut [u8], aad: Option<&[u8]>) -> [u8; 16] {
         let mut chacha = ChaCha20::new_from_block(self.key, self.nonce, 1);
         chacha.apply_keystream(content);
         let keystream = chacha.get_keystream(0);
@@ -82,9 +82,7 @@ impl ChaCha20Poly1305 {
             len_buffer[i + aad_len.len()] = msg_len[i]
         }
         poly.add(&len_buffer);
-        let tag = poly.tag();
-
-        Ok(tag)
+        poly.tag()
     }
 
     /// Decrypt the ciphertext in place if authentication tag is correct.
@@ -158,7 +156,7 @@ mod tests {
             .try_into()
             .unwrap();
         let cipher = ChaCha20Poly1305::new(key, nonce);
-        let tag = cipher.encrypt(&mut message, Some(&aad)).unwrap();
+        let tag = cipher.encrypt(&mut message, Some(&aad));
 
         let mut buffer = [0u8; 130];
         buffer[..message.len()].copy_from_slice(&message);

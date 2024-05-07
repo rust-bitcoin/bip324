@@ -179,9 +179,7 @@ impl PacketReader {
     pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
         let mut enc_content_len = [0u8; 3];
         enc_content_len.copy_from_slice(&len_bytes);
-        self.length_decoding_cipher
-            .crypt(&mut enc_content_len)
-            .expect("crypt");
+        self.length_decoding_cipher.crypt(&mut enc_content_len);
         let mut content_slice = [0u8; 4];
         content_slice[0..3].copy_from_slice(&enc_content_len);
         let content_len = u32::from_le_bytes(content_slice);
@@ -287,14 +285,12 @@ impl PacketWriter {
         let auth = aad.unwrap_or_default();
         let tag = self
             .packet_encoding_cipher
-            .encrypt(auth, &mut packet[decoy_index..plaintext_end_index])?;
+            .encrypt(auth, &mut packet[decoy_index..plaintext_end_index]);
 
         // Encrypt plaintext length.
         let mut content_len = [0u8; 3];
         content_len.copy_from_slice(&(plaintext_length as u32).to_le_bytes()[0..LENGTH_BYTES]);
-        self.length_encoding_cipher
-            .crypt(&mut content_len)
-            .expect("encrypt length");
+        self.length_encoding_cipher.crypt(&mut content_len);
 
         // Copy over encrypted length and the tag to the final packet (plaintext already encrypted).
         packet[0..LENGTH_BYTES].copy_from_slice(&content_len);

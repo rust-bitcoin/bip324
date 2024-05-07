@@ -10,17 +10,13 @@ const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 /// Errors encrypting and decrypting with FSChaCha20Poly1305.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    Encryption(crate::chacha20poly1305::Error),
     Decryption(crate::chacha20poly1305::Error),
-    Rekey(crate::chacha20poly1305::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Encryption(e) => write!(f, "Unable to encrypt {}", e),
             Error::Decryption(e) => write!(f, "Unable to dycrypt {}", e),
-            Error::Rekey(e) => write!(f, "Unable to rekey {}", e),
         }
     }
 }
@@ -29,9 +25,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Encryption(e) => Some(e),
             Error::Decryption(e) => Some(e),
-            Error::Rekey(e) => Some(e),
         }
     }
 }
@@ -66,7 +60,7 @@ impl FSChaCha20Poly1305 {
     }
 
     /// Increment the message counter and rekey if necessary.
-    fn rekey(&mut self, aad: &[u8]) -> Result<(), Error> {
+    fn rekey(&mut self, aad: &[u8]) {
         if (self.message_counter + 1) % REKEY_INTERVAL == 0 {
             let mut rekey_nonce = [0u8; 12];
             rekey_nonce[0..4].copy_from_slice(&REKEY_INITIAL_NONCE);
@@ -74,14 +68,11 @@ impl FSChaCha20Poly1305 {
 
             let mut plaintext = [0u8; 32];
             let cipher = ChaCha20Poly1305::new(self.key, rekey_nonce);
-            cipher
-                .encrypt(&mut plaintext, Some(aad))
-                .map_err(Error::Rekey)?;
+            cipher.encrypt(&mut plaintext, Some(aad));
             self.key = plaintext;
         }
 
         self.message_counter += 1;
-        Ok(())
     }
 
     /// Encrypt the contents in place and return the 16-byte authentication tag.
@@ -94,16 +85,14 @@ impl FSChaCha20Poly1305 {
     /// # Returns
     ///
     /// The 16-byte authentication tag.
-    pub fn encrypt(&mut self, aad: &[u8], content: &mut [u8]) -> Result<[u8; 16], Error> {
+    pub fn encrypt(&mut self, aad: &[u8], content: &mut [u8]) -> [u8; 16] {
         let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
 
-        let tag = cipher
-            .encrypt(content, Some(aad))
-            .map_err(Error::Encryption)?;
+        let tag = cipher.encrypt(content, Some(aad));
 
-        self.rekey(aad)?;
+        self.rekey(aad);
 
-        Ok(tag)
+        tag
     }
 
     /// Decrypt the contents in place.
@@ -120,7 +109,7 @@ impl FSChaCha20Poly1305 {
             .decrypt(content, tag, Some(aad))
             .map_err(Error::Decryption)?;
 
-        self.rekey(aad)?;
+        self.rekey(aad);
 
         Ok(())
     }
@@ -148,7 +137,7 @@ impl FSChaCha20 {
     }
 
     /// Encrypt or decrypt the 3-byte length encodings.
-    pub fn crypt(&mut self, chunk: &mut [u8; 3]) -> Result<(), Error> {
+    pub fn crypt(&mut self, chunk: &mut [u8; 3]) {
         let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
         let mut nonce = [0u8; 12];
         nonce[4..8].copy_from_slice(&counter_mod);
@@ -164,6 +153,5 @@ impl FSChaCha20 {
             self.key = key_buffer;
         }
         self.chunk_counter += 1;
-        Ok(())
     }
 }
