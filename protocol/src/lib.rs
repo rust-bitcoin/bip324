@@ -11,6 +11,8 @@ extern crate std;
 mod chacha20poly1305;
 mod fschacha20poly1305;
 mod hkdf;
+#[cfg(feature = "std")]
+pub mod serde;
 
 use core::fmt;
 
@@ -226,7 +228,7 @@ impl PacketReader {
     /// # Arguments
     ///
     /// - `ciphertext` - The message from the peer.
-    /// - `aad`      - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `aad`        - Optional authentication for the peer, currently only used for the first round of messages.
     ///
     /// # Errors
     ///
@@ -370,7 +372,7 @@ impl PacketHandler {
     }
 
     /// Split the handler into separate reader and a writer.
-    pub fn split(self) -> (PacketReader, PacketWriter) {
+    pub fn into_split(self) -> (PacketReader, PacketWriter) {
         (self.packet_reader, self.packet_writer)
     }
 

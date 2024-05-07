@@ -3,16 +3,19 @@
 //! Helper functions for bitcoin p2p proxies.
 //!
 //! The V1 and V2 p2p protocols have different header encodings, so a proxy has to do
-//! a little more work than just encrypt/decrypt.
+//! a little more work than just encrypt/decrypt. The [NetworkMessage](bitcoin::p2p::message::NetworkMessage)
+//! type is the intermediate state for messages. The V1 side can use the RawNetworkMessage wrapper, but the V2 side
+//! cannot since things like the checksum are not relevant (those responsibilites are pushed
+//! onto the transport in V2).
 
 use std::fmt;
 use std::net::SocketAddr;
 
+use bip324::serde::{deserialize, serialize};
 use bip324::ReceivedMessage;
 use bip324::{PacketReader, PacketWriter};
-use bitcoin::consensus::Decodable;
-use bitcoin::hashes::sha256d;
-use bitcoin::hashes::Hash;
+use bitcoin::consensus::{Decodable, Encodable};
+use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::{Address, Magic};
 use hex::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -28,47 +31,12 @@ const VERSION_COMMAND: [u8; 12] = [
     0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// A subset of commands are represented with a single byte
-/// in V2 instead of the 12-byte ASCII encoding like V1. The
-/// indexes of the commands in the list corresponds to their
-/// ID in the protocol, but needs +1 since the zero indexed
-/// is reserved to indicated a 12-bytes representation.
-const V2_SHORTID_COMMANDS: &[&str] = &[
-    "addr",
-    "block",
-    "blocktxn",
-    "cmpctblock",
-    "feefilter",
-    "filteradd",
-    "filterclear",
-    "filterload",
-    "getblocks",
-    "getblocktxn",
-    "getdata",
-    "getheaders",
-    "headers",
-    "inv",
-    "mempool",
-    "merkleblock",
-    "notfound",
-    "ping",
-    "pong",
-    "sendcmpct",
-    "tx",
-    "getcfilters",
-    "cfilter",
-    "getcfheaders",
-    "cfheaders",
-    "getcfcheckpt",
-    "cfcheckpt",
-    "addrv2",
-];
-
 /// An error occured while establishing the proxy connection or during the main loop.
 #[derive(Debug)]
 pub enum Error {
     WrongNetwork,
     WrongCommand,
+    Serde,
     Network(std::io::Error),
     Cipher(bip324::Error),
 }
@@ -76,10 +44,11 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::WrongNetwork => write!(f, "Recieved message on wrong network"),
-            Error::Network(e) => write!(f, "Network error {}", e),
-            Error::WrongCommand => write!(f, "Recieved message with wrong command"),
-            Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
+            Error::WrongNetwork => write!(f, "recieved message on wrong network"),
+            Error::Network(e) => write!(f, "network {}", e),
+            Error::WrongCommand => write!(f, "recieved message with wrong command"),
+            Error::Cipher(e) => write!(f, "cipher encryption/decrytion error {}", e),
+            Error::Serde => write!(f, "unable to serialize command"),
         }
     }
 }
@@ -91,6 +60,7 @@ impl std::error::Error for Error {
             Error::WrongNetwork => None,
             Error::WrongCommand => None,
             Error::Cipher(e) => Some(e),
+            Error::Serde => None,
         }
     }
 }
@@ -106,12 +76,6 @@ impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Network(e)
     }
-}
-
-/// Parsed message.
-pub struct Message {
-    pub cmd: String,
-    pub payload: Vec<u8>,
 }
 
 /// Peek the input stream and pluck the remote address based on the version message.
@@ -141,28 +105,37 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
     Ok(socket_addr)
 }
 
-/// Read a network message off of the input stream.
-pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<Message, Error> {
-    let mut header_bytes = [0; V1_HEADER_BYTES];
+/// Read a v1 message off of the input stream.
+///
+/// This future is not cancellation safe since state is read multiple times and depends on read_exact.
+pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<NetworkMessage, Error> {
+    let mut header_bytes = [0u8; V1_HEADER_BYTES];
     input.read_exact(&mut header_bytes).await?;
 
-    let cmd = to_ascii(header_bytes[4..16].try_into().expect("12 bytes"));
     let payload_len = u32::from_le_bytes(
         header_bytes[16..20]
             .try_into()
             .expect("4 header length bytes"),
     );
 
-    let mut payload = vec![0u8; payload_len as usize];
-    input.read_exact(&mut payload).await?;
+    let mut full_bytes = vec![0u8; V1_HEADER_BYTES + payload_len as usize];
+    full_bytes[0..V1_HEADER_BYTES].copy_from_slice(&header_bytes[..]);
+    let payload_bytes = &mut full_bytes[V1_HEADER_BYTES..];
+    input.read_exact(payload_bytes).await?;
 
-    Ok(Message { cmd, payload })
+    let message = RawNetworkMessage::consensus_decode(&mut &full_bytes[..]).expect("decode v1");
+
+    // todo: drop this clone?
+    Ok(message.payload().clone())
 }
 
+/// Read a v2 message off the input stream.
+///
+/// This future is not cancellation safe since state is read multiple times and depends on read_exact.
 pub async fn read_v2<T: AsyncRead + Unpin>(
     input: &mut T,
     decrypter: &mut PacketReader,
-) -> Result<Message, Error> {
+) -> Result<NetworkMessage, Error> {
     let mut length_bytes = [0u8; 3];
     input.read_exact(&mut length_bytes).await?;
     let packet_bytes_len = decrypter.decypt_len(length_bytes);
@@ -177,76 +150,35 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
         .message
         .expect("not a decoy");
 
-    // If packet is using short or full ID.
-    let (cmd, cmd_index) = if contents.starts_with(&[0u8]) {
-        (to_ascii(contents[1..13].try_into().expect("12 bytes")), 13)
-    } else {
-        (
-            V2_SHORTID_COMMANDS[(contents[0] as u8 - 1) as usize].to_string(),
-            1,
-        )
-    };
-
-    let payload = contents[cmd_index..].to_vec();
-    Ok(Message { cmd, payload })
+    let message = deserialize(&contents).map_err(|_| Error::Serde)?;
+    Ok(message)
 }
 
-/// Write the message to the output stream as a v1 packet.
-pub async fn write_v1<T: AsyncWrite + Unpin>(output: &mut T, msg: Message) -> Result<(), Error> {
-    let mut write_bytes = vec![];
-    // 4 bytes of network magic.
-    write_bytes.extend_from_slice(DEFAULT_MAGIC.to_bytes().as_slice());
-    // 12 bytes for the command as encoded ascii.
-    write_bytes.extend_from_slice(from_ascii(msg.cmd).as_slice());
-    // 4 bytes for length, little endian.
-    let length_bytes = (msg.payload.len() as u32).to_le_bytes();
-    write_bytes.extend_from_slice(length_bytes.as_slice());
-    // First 4 bytes of double sha256 digest is checksum.
-    let checksum: [u8; 4] = sha256d::Hash::hash(msg.payload.as_slice()).as_byte_array()[..4]
-        .try_into()
-        .expect("4 byte checksum");
-    write_bytes.extend_from_slice(checksum.as_slice());
-    // Finally write the payload.
-    write_bytes.extend_from_slice(msg.payload.as_slice());
-    Ok(output.write_all(&write_bytes).await?)
+/// Write message to the output stream using v1.
+pub async fn write_v1<T: AsyncWrite + Unpin>(
+    output: &mut T,
+    msg: NetworkMessage,
+) -> Result<(), Error> {
+    let raw = RawNetworkMessage::new(DEFAULT_MAGIC, msg);
+    let mut buffer = vec![];
+    raw.consensus_encode(&mut buffer)
+        .map_err(|_| Error::Serde)?;
+    output.write_all(&buffer[..]).await?;
+    output.flush().await?;
+    Ok(())
 }
 
-/// Write the network message to the output stream.
+/// Write the network message to the output stream using v2.
 pub async fn write_v2<T: AsyncWrite + Unpin>(
     output: &mut T,
     encrypter: &mut PacketWriter,
-    msg: Message,
+    msg: NetworkMessage,
 ) -> Result<(), Error> {
-    let mut contents = vec![];
-    let shortid_index = V2_SHORTID_COMMANDS.iter().position(|w| w == &&msg.cmd[..]);
-    match shortid_index {
-        Some(id) => {
-            let encoded_id = (id + 1) as u8;
-            contents.push(encoded_id);
-        }
-        None => {
-            contents.push(0u8);
-            contents.extend_from_slice(from_ascii(msg.cmd).as_slice());
-        }
-    }
-
-    contents.extend_from_slice(msg.payload.as_slice());
+    let payload = serialize(msg).map_err(|_| Error::Serde)?;
     let write_bytes = encrypter
-        .prepare_packet_with_alloc(&contents, None, false)
+        .prepare_packet_with_alloc(&payload, None, false)
         .expect("encryption");
-    Ok(output.write_all(&write_bytes).await?)
-}
-
-fn to_ascii(bytes: [u8; 12]) -> String {
-    String::from_utf8(bytes.to_vec())
-        .expect("ascii")
-        .trim_end_matches("00")
-        .to_string()
-}
-
-fn from_ascii(ascii: String) -> [u8; 12] {
-    let mut output_bytes = [0u8; 12];
-    let cmd_bytes = ascii.as_bytes();
-    output_bytes[0..cmd_bytes.len()].copy_from_slice(cmd_bytes);
-    output_bytes
+    output.write_all(&write_bytes[..]).await?;
+    output.flush().await?;
+    Ok(())
 }

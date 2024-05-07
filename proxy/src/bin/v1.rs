@@ -3,45 +3,51 @@
 
 use bip324_proxy::{read_v1, write_v1};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::select;
 
 /// Validate and bootstrap proxy connection.
-async fn proxy_conn(mut client: TcpStream) -> Result<(), bip324_proxy::Error> {
+async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client).await?;
 
     println!("Initialing remote connection {}.", remote_ip);
-    let mut remote = TcpStream::connect(remote_ip).await?;
+    let remote = TcpStream::connect(remote_ip).await?;
 
-    let (mut client_reader, mut client_writer) = client.split();
-    let (mut remote_reader, mut remote_writer) = remote.split();
+    let (mut client_reader, mut client_writer) = client.into_split();
+    let (mut remote_reader, mut remote_writer) = remote.into_split();
 
     println!("Setting up proxy loop.");
-    loop {
-        select! {
-            res = read_v1(&mut client_reader) => {
-                match res {
-                    Ok(msg) => {
-                         println!("Read {} message from client, writing to remote.", msg.cmd);
-                         write_v1(&mut remote_writer, msg).await?;
-                    },
-                    Err(e) => {
-                         return Err(e);
-                    },
-                }
-            },
-            res = read_v1(&mut remote_reader) => {
-                match res {
-                    Ok(msg) => {
-                         println!("Read {} message from remote, writing to client.", msg.cmd);
-                         write_v1(&mut client_writer, msg).await?;
-                    },
-                    Err(e) => {
-                         return Err(e);
-                    },
-                }
-            },
+
+    // Spawning two threads instead of selecting on one due
+    // to the IO calls not being cancellation safe. A select
+    // drops other futures when one is ready, so it is
+    // possible that it drops one with half read state.
+
+    tokio::spawn(async move {
+        loop {
+            let msg = read_v1(&mut client_reader).await.expect("read from client");
+            println!(
+                "Read {} message from client, writing to remote.",
+                msg.command()
+            );
+            write_v1(&mut remote_writer, msg)
+                .await
+                .expect("write to remote");
         }
-    }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            let msg = read_v1(&mut remote_reader).await.expect("read from remote");
+            println!(
+                "Read {} message from remote, writing to client.",
+                msg.command()
+            );
+            write_v1(&mut client_writer, msg)
+                .await
+                .expect("write to client");
+        }
+    });
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -62,7 +68,7 @@ async fn main() {
         tokio::spawn(async move {
             match proxy_conn(stream).await {
                 Ok(_) => {
-                    println!("Ended connection with no errors.");
+                    println!("Proxy establilshed.");
                 }
                 Err(e) => {
                     println!("Ended connection with error: {e}.");
