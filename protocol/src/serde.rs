@@ -232,7 +232,7 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
         12u8 => Ok(NetworkMessage::GetHeaders(
             Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
         )),
-        // Getting WEIRD.
+        // This one gets a little weird and needs a bit of love in the future.
         13u8 => Ok(NetworkMessage::Headers(
             HeaderDeserializationWrapper::consensus_decode(&mut payload_buffer)
                 .map_err(|_| Error::Deserialize)?
@@ -288,6 +288,9 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
 }
 
 // Copied from rust-bitcoin internals.
+//
+// Only the deserialized side needs to be copied over since
+// the serialize side is applied at the NetworkMessage level.
 struct HeaderDeserializationWrapper(Vec<block::Header>);
 
 impl Decodable for HeaderDeserializationWrapper {
