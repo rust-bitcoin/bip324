@@ -4,7 +4,7 @@ A proxy process which allows V1-only clients to communicate over a V2 protocol. 
 
 ## Running the Proxy
 
-`cargo run --bin async`
+`cargo run --bin proxy`
 
 ## Testing with Nakamoto
 

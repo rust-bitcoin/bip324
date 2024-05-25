@@ -533,7 +533,7 @@ fn initialize_session_key_material(
 
 /// Handshake state-machine to establish the secret material in the communication channel.
 ///
-/// A handshake is first initialized to creat local materials needed to setup communication
+/// A handshake is first initialized to create local materials needed to setup communication
 /// channel between an *initiator* and a *responder*. The next step is to call `complete_materials`
 /// no matter if initiator or responder, however the responder should already have the
 /// necessary materials from their peers request. `complete_materials` creates the response
