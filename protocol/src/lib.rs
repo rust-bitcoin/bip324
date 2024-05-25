@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
+//! BIP 324 encrypted transport for exchanging Bitcoin P2P messages. Much like TLS, a connection begins by exchanging ephimeral
+//! elliptic curve public keys and performing a Diffie-Hellman handshake. Thereafter, each participant derives shared session secrets, and may
+//! freely exchange encrypted messages. Under the new V2 specification, messages are encoded slightly differently than V1.
+//! Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
 #![no_std]
 
 #[cfg(feature = "alloc")]
@@ -35,26 +38,35 @@ use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 use hkdf::Hkdf;
 use rand::Rng;
 
-/// Number of bytes for the decoy flag on a packet.
+// Number of bytes for the decoy flag on a packet.
 const DECOY_BYTES: usize = 1;
-/// Number of bytes for the authentication tag of a packet.
+// Number of bytes for the authentication tag of a packet.
 const TAG_BYTES: usize = 16;
-/// Number of bytes for the length encoding prefix of a packet.
+// Number of bytes for the length encoding prefix of a packet.
 const LENGTH_BYTES: usize = 3;
-/// Value for decoy flag.
+// Value for decoy flag.
 const DECOY: u8 = 128;
-/// Version content is always empty for the current version of the protocol.
+// Version content is always empty for the current version of the protocol.
 const VERSION_CONTENT: [u8; 0] = [];
 
+/// Errors encountered throughout the lifetime of a V2 connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
+    /// The message decoded is smaller than expected
     MessageLengthTooSmall,
+    /// There is a mismatch in the encoding of a message
     IncompatableV1Message,
+    /// The message exceeded the maximum allowable length
     MaxGarbageLength,
+    /// A handshake step was not completed in the proper order
     HandshakeOutOfOrder,
+    /// A curve function could not be executed
     SecretMaterialsGeneration(secp256k1::Error),
+    /// Deriving the shared secrets was unsuccessful
     SecretExpansion,
+    /// The authentication data was not correct when decoding a message
     Cipher(fschacha20poly1305::Error),
+    /// The internal counters of the ciphers are not in sync
     OutOfSync,
 }
 
@@ -160,6 +172,7 @@ impl ReceivedMessage {
     }
 }
 
+/// Read packets off of a byte stream from a peer.
 #[derive(Clone, Debug)]
 pub struct PacketReader {
     length_decoding_cipher: FSChaCha20,
@@ -245,6 +258,7 @@ impl PacketReader {
     }
 }
 
+/// Prepare messages to be sent over a byte stream.
 #[derive(Clone, Debug)]
 pub struct PacketWriter {
     length_encoding_cipher: FSChaCha20,

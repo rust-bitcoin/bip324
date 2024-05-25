@@ -15,7 +15,7 @@ alloc = []
 
 [dependencies]
 rand = { version = "0.8.0", default-features = false }
-bitcoin = { version = "0.31.2", default-features = false, features = ["no-std"] }
+bitcoin = { version = "0.32.0", default-features = false }
 
 [dev-dependencies]
 hex = { package = "hex-conservative", version = "0.2.0" }

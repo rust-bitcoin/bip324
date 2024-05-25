@@ -9,7 +9,7 @@ const CHACHA_BLOCKS_USED: u32 = 3;
 const REKEY_INTERVAL: u32 = 224;
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 
-/// Errors encrypting and decrypting with FSChaCha20Poly1305.
+/// Errors encrypting and decrypting with [`FSChaCha20Poly1305`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Decryption(crate::chacha20poly1305::Error),
