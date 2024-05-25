@@ -3,7 +3,7 @@
 //! Helper functions for bitcoin p2p proxies.
 //!
 //! The V1 and V2 p2p protocols have different header encodings, so a proxy has to do
-//! a little more work than just encrypt/decrypt. The [NetworkMessage](bitcoin::p2p::message::NetworkMessage)
+//! a little more work than just encrypt/decrypt. The [`NetworkMessage`]
 //! type is the intermediate state for messages. The V1 side can use the RawNetworkMessage wrapper, but the V2 side
 //! cannot since things like the checksum are not relevant (those responsibilites are pushed
 //! onto the transport in V2).
@@ -124,7 +124,6 @@ pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<NetworkMessa
     input.read_exact(payload_bytes).await?;
 
     let message = RawNetworkMessage::consensus_decode(&mut &full_bytes[..]).expect("decode v1");
-
     // todo: drop this clone?
     Ok(message.payload().clone())
 }

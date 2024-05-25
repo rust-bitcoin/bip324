@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A subset of commands are represented with a single byte in V2 instead of the 12-byte ASCII encoding like V1.
+//! Serialize and deserialize V2 messages over the wire.
 //!
-//! ID mappings defined in [BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki#user-content-v2_Bitcoin_P2P_message_structure).
+//! A subset of commands are represented with a single byte in V2 instead of the 12-byte ASCII encoding like V1. Message ID mappings are defined in [BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki#user-content-v2_Bitcoin_P2P_message_structure).
 
 use core::fmt;
-use std::io;
 
 use alloc::vec::Vec;
 use bitcoin::{
     block,
     consensus::{encode, Decodable, Encodable},
-    p2p::message::{CommandString, NetworkMessage},
+    io::BufRead,
     VarInt,
 };
+
+pub use bitcoin::p2p::message::{CommandString, NetworkMessage};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -40,7 +41,7 @@ impl std::error::Error for Error {
     }
 }
 
-/// Serialize message in v2 format to buffer.
+/// Serialize a [`NetworkMessage`] into a buffer.
 pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
     let mut buffer = Vec::new();
     match &msg {
@@ -159,7 +160,7 @@ pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
     Ok(buffer)
 }
 
-/// Deserialize v2 message into NetworkMessage.
+/// Deserialize v2 message into [`NetworkMessage`].
 pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
     let short_id = buffer[0];
     let mut payload_buffer = &buffer[1..];
@@ -295,7 +296,7 @@ struct HeaderDeserializationWrapper(Vec<block::Header>);
 
 impl Decodable for HeaderDeserializationWrapper {
     #[inline]
-    fn consensus_decode_from_finite_reader<R: io::Read + ?Sized>(
+    fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(
         r: &mut R,
     ) -> Result<Self, encode::Error> {
         let len = VarInt::consensus_decode(r)?.0;
