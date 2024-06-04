@@ -1,10 +1,10 @@
 [package]
 name = "bip324"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license-file = "LICENSE"
 description = "Encrypted messaging over the Bitcoin P2P Protocol as specified by BIP 324"
-repository = "https://github.com/rustaceanrob/bip324"
+repository = "https://github.com/rust-bitcoin/bip324"
 readme = "README.md"
 rust-version = "1.56.1"
 
