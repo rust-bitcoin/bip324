@@ -1180,18 +1180,19 @@ mod tests {
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Responder);
         let _bob_packet_handler = PacketHandler::new(session_keys, Role::Initiator);
         let message: Vec<u8> = Vec::from_hex("3eb1d4e98035cfd8eeb29bac969ed3824a").unwrap();
-        let mut found = 0;
-        for i in 0..1000 {
-            let enc = alice_packet_handler
+        let mut enc: Vec<u8> = Vec::new();
+        for _ in 0..1000 {
+            enc = alice_packet_handler
                 .prepare_packet_with_alloc(&message, None, false)
                 .unwrap();
-            if (enc.to_lower_hex_string())
-                .eq("1da1bcf589f9b61872f45b7fa5371dd3f8bdf5d515b0c5f9fe9f0044afb8dc0aa1cd39a8c4")
-            {
-                found = i;
-            }
         }
-        assert!(found > 0);
+        assert_eq!(
+            enc,
+            Vec::from_hex(
+                "1da1bcf589f9b61872f45b7fa5371dd3f8bdf5d515b0c5f9fe9f0044afb8dc0aa1cd39a8c4"
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -1246,16 +1247,16 @@ mod tests {
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Responder);
         let _bob_packet_handler = PacketHandler::new(session_keys, Role::Initiator);
         let message: Vec<u8> = Vec::from_hex("7e0e78eb6990b059e6cf0ded66ea93ef82e72aa2f18ac24f2fc6ebab561ae557420729da103f64cecfa20527e15f9fb669a49bbbf274ef0389b3e43c8c44e5f60bf2ac38e2b55e7ec4273dba15ba41d21f8f5b3ee1688b3c29951218caf847a97fb50d75a86515d445699497d968164bf740012679b8962de573be941c62b7ef").unwrap();
-        let mut found = 0;
-        for i in 0..224 {
-            let enc = alice_packet_handler
+        let mut enc: Vec<u8> = Vec::new();
+        for _ in 0..224 {
+            enc = alice_packet_handler
                 .prepare_packet_with_alloc(&message, None, true)
                 .unwrap();
-            if enc.to_lower_hex_string().contains("729847a3e9eba7a5bff454b5de3b393431ee360736b6c030d7a5bd01d1203d2e98f528543fd2bf886ccaa1ada5e215a730a36b3f4abfc4e252c89eb01d9512f94916dae8a76bf16e4da28986ffe159090fe5267ee3394300b7ccf4dfad389a26321b3a3423e4594a82ccfbad16d6561ecb8772b0cb040280ff999a29e3d9d4fd") {
-                found = i;
-            }
         }
-        assert!(found > 0);
+        assert_eq!(
+            enc.to_lower_hex_string().ends_with("729847a3e9eba7a5bff454b5de3b393431ee360736b6c030d7a5bd01d1203d2e98f528543fd2bf886ccaa1ada5e215a730a36b3f4abfc4e252c89eb01d9512f94916dae8a76bf16e4da28986ffe159090fe5267ee3394300b7ccf4dfad389a26321b3a3423e4594a82ccfbad16d6561ecb8772b0cb040280ff999a29e3d9d4fd"),
+            true,
+        );
     }
 
     #[test]
@@ -1277,15 +1278,15 @@ mod tests {
         let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
         let _bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
         let contents = Vec::from_hex("00cf68f8f7ac49ffaa02c4864fdf6dfe7bbf2c740b88d98c50ebafe32c92f3427f57601ffcb21a3435979287db8fee6c302926741f9d5e464c647eeb9b7acaeda46e00abd7506fc9a719847e9a7328215801e96198dac141a15c7c2f68e0690dd1176292a0dded04d1f548aad88f1aebdc0a8f87da4bb22df32dd7c160c225b843e83f6525d6d484f502f16d923124fc538794e21da2eb689d18d87406ecced5b9f92137239ed1d37bcfa7836641a83cf5e0a1cf63f51b06f158e499a459ede41c").unwrap();
-        let mut found = 0;
-        for i in 0..449 {
-            let enc = alice_packet_handler
+        let mut enc: Vec<u8> = Vec::new();
+        for _ in 0..449 {
+            enc = alice_packet_handler
                 .prepare_packet_with_alloc(&contents, None, false)
                 .unwrap();
-            if enc.to_lower_hex_string().contains("77b4656934a82de1a593d8481f020194ddafd8cac441f9d72aeb8721e6a14f49698ca6d9b2b6d59d07a01aa552fd4d5b68d0d1617574c77dea10bfadbaa31b83885b7ceac2fd45e3e4a331c51a74e7b1698d81b64c87c73c5b9258b4d83297f9debc2e9aa07f8572ff434dc792b83ecf07b3197de8dc9cf7be56acb59c66cff5") {
-                found = i;
-            }
         }
-        assert!(found > 0);
+        assert_eq!(
+            enc.to_lower_hex_string().ends_with("77b4656934a82de1a593d8481f020194ddafd8cac441f9d72aeb8721e6a14f49698ca6d9b2b6d59d07a01aa552fd4d5b68d0d1617574c77dea10bfadbaa31b83885b7ceac2fd45e3e4a331c51a74e7b1698d81b64c87c73c5b9258b4d83297f9debc2e9aa07f8572ff434dc792b83ecf07b3197de8dc9cf7be56acb59c66cff5"),
+            true,
+        );
     }
 }

@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Wrap ciphers with automatic re-keying in order to provide [forward secrecy](https://eprint.iacr.org/2001/035.pdf) within a session.
+//! Logic is covered by the BIP324 test vectors.
+
 use core::fmt;
 
 use crate::chacha20poly1305::chacha20::ChaCha20;
 use crate::chacha20poly1305::ChaCha20Poly1305;
 
-const CHACHA_BLOCKS_USED: u32 = 3;
+/// Message lengths are encoded in three bytes.
+const LENGTH_BYTES: u32 = 3;
+/// Ciphers are re-keyed after 224 messages (or chunks).
 const REKEY_INTERVAL: u32 = 224;
+/// Static four byte prefix used on every re-key.
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 
 /// Errors encrypting and decrypting with [`FSChaCha20Poly1305`].
@@ -33,7 +39,7 @@ impl std::error::Error for Error {
 }
 
 /// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
-/// nonces and re-keying.
+/// nonces and re-keying, providing forward secrecy within the session.
 ///
 /// FSChaCha20Poly1305 is used for message packets in BIP324.
 #[derive(Clone, Debug)]
@@ -118,7 +124,7 @@ impl FSChaCha20Poly1305 {
 }
 
 /// A wrapper over ChaCha20 (unauthenticated) stream cipher which handles automatically changing
-/// nonces and re-keying.
+/// nonces and re-keying, providing forward secrecy within the session.
 ///
 /// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
 /// implicitly authenticated by the message packets.
@@ -139,14 +145,14 @@ impl FSChaCha20 {
     }
 
     /// Encrypt or decrypt the 3-byte length encodings.
-    pub fn crypt(&mut self, chunk: &mut [u8; 3]) {
+    pub fn crypt(&mut self, chunk: &mut [u8; LENGTH_BYTES as usize]) {
         let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
         let mut nonce = [0u8; 12];
         nonce[4..8].copy_from_slice(&counter_mod);
         let mut cipher = ChaCha20::new(self.key, nonce, 0);
         cipher.seek(self.block_counter);
         cipher.apply_keystream(chunk);
-        self.block_counter += CHACHA_BLOCKS_USED;
+        self.block_counter += LENGTH_BYTES;
         if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
             let mut key_buffer = [0u8; 32];
             cipher.seek(self.block_counter);
