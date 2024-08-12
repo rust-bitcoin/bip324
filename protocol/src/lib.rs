@@ -38,14 +38,14 @@ use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 use hkdf::Hkdf;
 use rand::Rng;
 
-// Number of bytes for the decoy flag on a packet.
-const DECOY_BYTES: usize = 1;
+/// Number of bytes for the decoy flag on a packet.
+pub const NUM_DECOY_BYTES: usize = 1;
 // Number of bytes for the authentication tag of a packet.
 const TAG_BYTES: usize = 16;
-// Number of bytes for the length encoding prefix of a packet.
-const LENGTH_BYTES: usize = 3;
-// Value for decoy flag.
-const DECOY: u8 = 128;
+/// Number of bytes for the length encoding prefix of a packet.
+pub const LENGTH_BYTES: usize = 3;
+/// Value for decoy flag.
+pub const DECOY_BYTE: u8 = 128;
 // Version content is always empty for the current version of the protocol.
 const VERSION_CONTENT: [u8; 0] = [];
 
@@ -162,7 +162,7 @@ pub struct ReceivedMessage {
 impl ReceivedMessage {
     pub fn new(msg_bytes: &[u8]) -> Result<Self, Error> {
         let header = msg_bytes.first().ok_or(Error::MessageLengthTooSmall)?;
-        if header.eq(&DECOY) {
+        if header.eq(&DECOY_BYTE) {
             Ok(ReceivedMessage { message: None })
         } else {
             Ok(ReceivedMessage {
@@ -202,7 +202,7 @@ impl PacketReader {
         let content_len = u32::from_le_bytes(content_slice);
 
         // Include 1-byte decoy and 16-byte tag.
-        content_len as usize + DECOY_BYTES + TAG_BYTES
+        content_len as usize + NUM_DECOY_BYTES + TAG_BYTES
     }
 
     /// Decrypt the rest of the message from the peer, excluding the 3 length bytes. This method should only be called after
@@ -286,17 +286,17 @@ impl PacketWriter {
         decoy: bool,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet.len() < plaintext.len() + LENGTH_BYTES + DECOY_BYTES + TAG_BYTES {
+        if packet.len() < plaintext.len() + LENGTH_BYTES + NUM_DECOY_BYTES + TAG_BYTES {
             return Err(Error::MessageLengthTooSmall);
         }
 
         let plaintext_length = plaintext.len();
-        let decoy_index = LENGTH_BYTES + DECOY_BYTES - 1;
+        let decoy_index = LENGTH_BYTES + NUM_DECOY_BYTES - 1;
         let plaintext_start_index = decoy_index + 1;
         let plaintext_end_index = plaintext_start_index + plaintext_length;
 
         // Set decoy byte.
-        packet[decoy_index] = if decoy { DECOY } else { 0 };
+        packet[decoy_index] = if decoy { DECOY_BYTE } else { 0 };
         packet[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
 
         // Encrypt decoy byte and plaintext in place and produce tag.
@@ -330,7 +330,7 @@ impl PacketWriter {
         aad: Option<&[u8]>,
         decoy: bool,
     ) -> Result<Vec<u8>, Error> {
-        let mut packet = vec![0u8; plaintext.len() + LENGTH_BYTES + DECOY_BYTES + TAG_BYTES];
+        let mut packet = vec![0u8; plaintext.len() + LENGTH_BYTES + NUM_DECOY_BYTES + TAG_BYTES];
         self.prepare_packet(plaintext, aad, &mut packet, decoy)?;
         Ok(packet)
     }
@@ -685,7 +685,7 @@ impl<'a> Handshake<'a> {
         packet_handler.packet_writer.prepare_packet(
             &VERSION_CONTENT,
             self.garbage,
-            &mut response[16..16 + LENGTH_BYTES + DECOY_BYTES + TAG_BYTES],
+            &mut response[16..16 + LENGTH_BYTES + NUM_DECOY_BYTES + TAG_BYTES],
             false,
         )?;
 
@@ -753,7 +753,7 @@ impl<'a> Handshake<'a> {
         // moves along state in the ciphers.
 
         // Version packets have 0 contents.
-        let mut version_packet = [0u8; DECOY_BYTES + TAG_BYTES];
+        let mut version_packet = [0u8; NUM_DECOY_BYTES + TAG_BYTES];
         packet_handler.packet_reader.decrypt_contents(
             &message[LENGTH_BYTES..packet_length + LENGTH_BYTES],
             &mut version_packet,
