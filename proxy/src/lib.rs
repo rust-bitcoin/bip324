@@ -144,7 +144,7 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
         .decrypt_contents_with_alloc(&packet_bytes, None)
         .expect("decrypt");
 
-    let contents = ReceivedMessage::new(&raw)
+    let contents = ReceivedMessage::new(raw)
         .expect("some bytes")
         .message
         .expect("not a decoy");

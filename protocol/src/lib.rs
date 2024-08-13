@@ -160,13 +160,15 @@ pub struct ReceivedMessage {
 
 #[cfg(feature = "alloc")]
 impl ReceivedMessage {
-    pub fn new(msg_bytes: &[u8]) -> Result<Self, Error> {
+    pub fn new(mut msg_bytes: Vec<u8>) -> Result<Self, Error> {
         let header = msg_bytes.first().ok_or(Error::MessageLengthTooSmall)?;
         if header.eq(&DECOY_BYTE) {
             Ok(ReceivedMessage { message: None })
         } else {
+            // This is an O(N) in the worst case call, but I do not know of any alternatives
+            msg_bytes.remove(0);
             Ok(ReceivedMessage {
-                message: Some(msg_bytes[1..].to_vec()),
+                message: Some(msg_bytes),
             })
         }
     }
@@ -455,7 +457,7 @@ impl PacketHandler {
             .packet_reader
             .decrypt_contents_with_alloc(ciphertext, aad)?;
 
-        let message = ReceivedMessage::new(&contents)?;
+        let message = ReceivedMessage::new(contents)?;
 
         Ok(message)
     }
