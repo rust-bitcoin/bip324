@@ -11,7 +11,7 @@ use crate::chacha20poly1305::ChaCha20Poly1305;
 /// Message lengths are encoded in three bytes.
 const LENGTH_BYTES: u32 = 3;
 /// Ciphers are re-keyed after 224 messages (or chunks).
-const REKEY_INTERVAL: u32 = 224;
+const REKEY_INTERVAL: u64 = 224;
 /// Static four byte prefix used on every re-key.
 const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 
@@ -45,7 +45,7 @@ impl std::error::Error for Error {
 #[derive(Clone, Debug)]
 pub struct FSChaCha20Poly1305 {
     key: [u8; 32],
-    message_counter: u32,
+    message_counter: u64,
 }
 
 impl FSChaCha20Poly1305 {
@@ -58,11 +58,13 @@ impl FSChaCha20Poly1305 {
 
     /// Derive current nonce.
     fn nonce(&self) -> [u8; 12] {
-        let counter_div = (self.message_counter / REKEY_INTERVAL).to_le_bytes();
-        let counter_mod = (self.message_counter % REKEY_INTERVAL).to_le_bytes();
         let mut nonce = [0u8; 12];
+        // The 32-bit little-endian encoding of the number of messages with the current key.
+        let counter_mod = ((self.message_counter % REKEY_INTERVAL) as u32).to_le_bytes();
         nonce[0..4].copy_from_slice(&counter_mod);
-        nonce[4..8].copy_from_slice(&counter_div);
+        // The 64-bit little-endian encoding of the number of rekeyings performed.
+        let counter_div = (self.message_counter / REKEY_INTERVAL).to_le_bytes();
+        nonce[4..12].copy_from_slice(&counter_div);
 
         nonce
     }
@@ -146,14 +148,14 @@ impl FSChaCha20 {
 
     /// Encrypt or decrypt the 3-byte length encodings.
     pub fn crypt(&mut self, chunk: &mut [u8; LENGTH_BYTES as usize]) {
-        let counter_mod = (self.chunk_counter / REKEY_INTERVAL).to_le_bytes();
+        let counter_mod = (self.chunk_counter / REKEY_INTERVAL as u32).to_le_bytes();
         let mut nonce = [0u8; 12];
         nonce[4..8].copy_from_slice(&counter_mod);
         let mut cipher = ChaCha20::new(self.key, nonce, 0);
         cipher.seek(self.block_counter);
         cipher.apply_keystream(chunk);
         self.block_counter += LENGTH_BYTES;
-        if (self.chunk_counter + 1) % REKEY_INTERVAL == 0 {
+        if (self.chunk_counter + 1) % REKEY_INTERVAL as u32 == 0 {
             let mut key_buffer = [0u8; 32];
             cipher.seek(self.block_counter);
             cipher.apply_keystream(&mut key_buffer);
