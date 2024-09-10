@@ -8,9 +8,16 @@ repository = "https://github.com/rust-bitcoin/bip324"
 readme = "README.md"
 rust-version = "1.63.0"
 
+[package.metadata.configure_me]
+spec = "config_spec.toml"
+
 [dependencies]
 bitcoin = { version = "0.32.0" }
 tokio = { version = "1.37.0", features = ["full"] }
 bytes = "1.6.0"
 hex = { package = "hex-conservative", version = "0.2.0" }
 bip324 = { path = "../protocol" }
+configure_me = "0.4.0"
+
+[build-dependencies]
+configure_me_codegen = { version = "0.4.8", default-features = false }

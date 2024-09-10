@@ -1,0 +1,16 @@
+[general]
+env_prefix = "BIP324_PROXY"
+conf_file_param = "conf"
+conf_dir_param = "conf_dir"
+
+[[param]]
+name = "bind_port"
+type = "u16"
+default = "1324"
+doc = "The port to listen on"
+
+[[param]]
+name = "bind_host"
+type = "String"
+default = "\"127.0.0.1\".into()"
+doc = "The address to listen on"
