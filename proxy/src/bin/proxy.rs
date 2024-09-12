@@ -9,6 +9,8 @@ use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+configure_me::include_config!();
+
 /// Validate and bootstrap proxy connection.
 async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client)
@@ -135,12 +137,14 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
 
 #[tokio::main]
 async fn main() {
-    let proxy = TcpListener::bind(bip324_proxy::DEFAULT_PROXY)
+    let (config, _) = Config::including_optional_config_files::<&[&str]>(&[]).unwrap_or_exit();
+
+    let proxy = TcpListener::bind((&*config.bind_host, config.bind_port))
         .await
         .expect("Failed to bind to proxy port.");
     println!(
-        "Listening for connections on {}",
-        bip324_proxy::DEFAULT_PROXY
+        "Listening for connections on {}:{}",
+        config.bind_host, config.bind_port,
     );
     loop {
         let (stream, _) = proxy
