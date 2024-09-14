@@ -339,6 +339,8 @@ impl PacketWriter {
 /// Encrypt and decrypt messages with a peer.
 #[derive(Clone, Debug)]
 pub struct PacketHandler {
+    /// A unique identifier for the communication session.
+    pub session_id: [u8; 32],
     packet_reader: PacketReader,
     packet_writer: PacketWriter,
 }
@@ -354,6 +356,7 @@ impl PacketHandler {
                 let packet_decoding_cipher =
                     FSChaCha20Poly1305::new(materials.responder_packet_key);
                 PacketHandler {
+                    session_id: materials.session_id,
                     packet_reader: PacketReader {
                         length_decoding_cipher,
                         packet_decoding_cipher,
@@ -372,6 +375,7 @@ impl PacketHandler {
                 let packet_decoding_cipher =
                     FSChaCha20Poly1305::new(materials.initiator_packet_key);
                 PacketHandler {
+                    session_id: materials.session_id,
                     packet_reader: PacketReader {
                         length_decoding_cipher,
                         packet_decoding_cipher,
