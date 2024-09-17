@@ -40,14 +40,19 @@ use rand::Rng;
 
 /// Number of bytes for the decoy flag on a packet.
 pub const NUM_DECOY_BYTES: usize = 1;
-// Number of bytes for the authentication tag of a packet.
-const TAG_BYTES: usize = 16;
 /// Number of bytes for the length encoding prefix of a packet.
 pub const LENGTH_BYTES: usize = 3;
 /// Value for decoy flag.
 pub const DECOY_BYTE: u8 = 128;
+
 // Version content is always empty for the current version of the protocol.
 const VERSION_CONTENT: [u8; 0] = [];
+// Number of bytes for the authentication tag of a packet.
+const TAG_BYTES: usize = 16;
+// Maximum number of garbage bytes to read before the terminator.
+const MAX_GARBAGE_BYTES: usize = 4095;
+// Number of bytes for the garbage terminator.
+const GARBAGE_TERMINTOR_BYTES: usize = 16;
 
 /// Errors encountered throughout the lifetime of a V2 connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -56,7 +61,7 @@ pub enum Error {
     MessageLengthTooSmall,
     /// There is a mismatch in the encoding of a message
     IncompatableV1Message,
-    /// The message exceeded the maximum allowable length
+    /// The maximum amount of garbage bytes was exceeded in the handshake.
     MaxGarbageLength,
     /// A handshake step was not completed in the proper order
     HandshakeOutOfOrder,
@@ -78,7 +83,9 @@ impl fmt::Display for Error {
             }
             Error::MessageLengthTooSmall => write!(f, "Message length too small allocation"),
             Error::IncompatableV1Message => write!(f, "Incompatable V1 message"),
-            Error::MaxGarbageLength => write!(f, "Max garabage length"),
+            Error::MaxGarbageLength => {
+                write!(f, "More than 4095 bytes of garbage in the handshake")
+            }
             Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence"),
             Error::Cipher(e) => write!(f, "Cipher encryption/decrytion error {}", e),
             Error::OutOfSync => write!(f, "Ciphers are out of sync"),
@@ -711,6 +718,7 @@ impl<'a> Handshake<'a> {
     ///
     /// - `MessageLengthTooSmall` - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
     /// - `HandshakeOutOfOrder`   - The handshake sequence is in a bad state and should be restarted.
+    /// - `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
     pub fn authenticate_garbage_and_version(&mut self, buffer: &[u8]) -> Result<(), Error> {
         // Find the end of the garbage
         let (garbage, message) = split_garbage_and_message(
@@ -781,6 +789,11 @@ impl<'a> Handshake<'a> {
 /// Split a message on the garbage terminator returning the garbage itself
 /// and the remaing message. The message is expected to be the version packet,
 /// but could be decoy packets.
+///
+/// # Error
+///
+/// - `MessageLengthTooSmall` - Buffer did not contain a garbage terminator.
+/// - `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
 fn split_garbage_and_message(
     message: &[u8],
     garbage_term: [u8; 16],
@@ -790,6 +803,8 @@ fn split_garbage_and_message(
         .position(|window| window == garbage_term)
     {
         Ok((&message[..index], &message[(index + garbage_term.len())..]))
+    } else if message.len() >= (MAX_GARBAGE_BYTES + GARBAGE_TERMINTOR_BYTES) {
+        Err(Error::MaxGarbageLength)
     } else {
         Err(Error::MessageLengthTooSmall)
     }
@@ -905,6 +920,15 @@ mod tests {
                 .responder_garbage_terminator
                 .to_lower_hex_string()
         );
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_max_garbage() {
+        let too_much_garbage = vec![0; 4111];
+        let garbage_terminator = [1; 16];
+        let result = split_garbage_and_message(&too_much_garbage, garbage_terminator);
+        assert!(matches!(result, Err(Error::MaxGarbageLength)));
     }
 
     #[test]
