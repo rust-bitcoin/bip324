@@ -31,10 +31,10 @@ fn hello_world_happy_path() {
         .unwrap();
 
     init_handshake
-        .authenticate_garbage_and_version(&resp_message[64..])
+        .authenticate_garbage_and_version_with_alloc(&resp_message[64..])
         .unwrap();
     resp_handshake
-        .authenticate_garbage_and_version(&init_finalize_message)
+        .authenticate_garbage_and_version_with_alloc(&init_finalize_message)
         .unwrap();
 
     let mut alice = init_handshake.finalize().unwrap();
@@ -111,7 +111,7 @@ fn regtest_handshake() {
     let response = &mut max_response[..size];
     dbg!("Authenticating the handshake");
     handshake
-        .authenticate_garbage_and_version(response)
+        .authenticate_garbage_and_version_with_alloc(response)
         .unwrap();
     dbg!("Finalizing the handshake");
     let packet_handler = handshake.finalize().unwrap();
