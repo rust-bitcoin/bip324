@@ -24,7 +24,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Decryption(e) => write!(f, "Unable to dycrypt {}", e),
+            Error::Decryption(e) => write!(f, "Unable to dycrypt: {}.", e),
         }
     }
 }
@@ -42,7 +42,7 @@ impl std::error::Error for Error {
 /// nonces and re-keying, providing forward secrecy within the session.
 ///
 /// FSChaCha20Poly1305 is used for message packets in BIP324.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FSChaCha20Poly1305 {
     key: [u8; 32],
     message_counter: u64,
@@ -89,8 +89,8 @@ impl FSChaCha20Poly1305 {
     ///
     /// # Arguments
     ///
-    /// - `content` - Plaintext to be encrypted in place.
-    /// - `aad`     - Optional metadata covered by the authentication tag.
+    /// * `content` - Plaintext to be encrypted in place.
+    /// * `aad`     - Optional associated authenticated data covered by the authentication tag.
     ///
     /// # Returns
     ///
@@ -109,9 +109,9 @@ impl FSChaCha20Poly1305 {
     ///
     /// # Arguments
     ///
-    /// - `content` - Ciphertext to be decrypted in place.
-    /// - `tag`     - 16-byte authentication tag.
-    /// - `aad`     - Optional metadata covered by the authentication tag.
+    /// * `content` - Ciphertext to be decrypted in place.
+    /// * `tag`     - 16-byte authentication tag.
+    /// * `aad`     - Optional associated authenticated data covered by the authentication tag.
     pub fn decrypt(&mut self, aad: &[u8], content: &mut [u8], tag: [u8; 16]) -> Result<(), Error> {
         let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
 
@@ -130,7 +130,7 @@ impl FSChaCha20Poly1305 {
 ///
 /// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
 /// implicitly authenticated by the message packets.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FSChaCha20 {
     key: [u8; 32],
     block_counter: u32,

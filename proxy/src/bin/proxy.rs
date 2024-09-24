@@ -87,7 +87,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
                 println!("Channel authenticated.");
                 break;
             }
-            Err(bip324::Error::MessageLengthTooSmall) => {
+            Err(bip324::Error::CiphertextTooSmall) => {
                 // Attempt to pull more from the buffer and retry.
                 continue;
             }
