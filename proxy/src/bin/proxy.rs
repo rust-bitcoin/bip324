@@ -11,6 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 configure_me::include_config!();
 
+const HANDSHAKE_BUFFER_BYTES: usize = 4096;
+
 /// Validate and bootstrap proxy connection.
 async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client)
@@ -63,30 +65,33 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
         .expect("send garbage and version");
 
     // Keep pulling bytes from the buffer until the garbage is flushed.
-    // Capacity is arbitrary, could use some tuning.
-    let mut remote_garbage_and_version_buffer = BytesMut::with_capacity(4096);
+    let mut remote_garbage_and_version_buffer = BytesMut::with_capacity(HANDSHAKE_BUFFER_BYTES);
     loop {
         println!("Authenticating garbage and version packet...");
-        let read = remote
+
+        // Read from the remote, hopefully contains all garbage, decoy packets, and version packet.
+        // BytesMut is keeping track of its internal posistion, so this read should only ever
+        // extend the buffer on retries. Not overwrite it. The buffer will grow if required.
+        if let Err(e) = remote
             .read_buf(&mut remote_garbage_and_version_buffer)
-            .await;
-        match read {
-            Err(e) => panic!("unable to read garbage {}", e),
-            _ => {
-                let auth =
-                    handshake.authenticate_garbage_and_version(&remote_garbage_and_version_buffer);
-                match auth {
-                    Err(e) => match e {
-                        // Read again if too small, other wise surface error.
-                        bip324::Error::MessageLengthTooSmall => continue,
-                        e => panic!("unable to authenticate garbage {}", e),
-                    },
-                    _ => {
-                        println!("Channel authenticated.");
-                        break;
-                    }
-                }
+            .await
+        {
+            panic!("unable to read garbage {}", e)
+        }
+
+        // Attempt to authenticate the channel.
+        match handshake
+            .authenticate_garbage_and_version_with_alloc(&remote_garbage_and_version_buffer)
+        {
+            Ok(()) => {
+                println!("Channel authenticated.");
+                break;
             }
+            Err(bip324::Error::MessageLengthTooSmall) => {
+                // Attempt to pull more from the buffer and retry.
+                continue;
+            }
+            Err(e) => panic!("unable to authenticate garbage and version {}", e),
         }
     }
 

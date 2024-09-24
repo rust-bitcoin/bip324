@@ -44,6 +44,10 @@ pub const NUM_DECOY_BYTES: usize = 1;
 pub const LENGTH_BYTES: usize = 3;
 /// Value for decoy flag.
 pub const DECOY_BYTE: u8 = 128;
+/// Initial buffer for decoy and version packets in the handshake.
+/// The buffer may have to be expanded if a party is sending large
+/// decoy packets.
+pub const INITIAL_HANDSHAKE_BUFFER_BYTES: usize = 4096;
 
 // Version content is always empty for the current version of the protocol.
 const VERSION_CONTENT: [u8; 0] = [];
@@ -57,8 +61,12 @@ const GARBAGE_TERMINTOR_BYTES: usize = 16;
 /// Errors encountered throughout the lifetime of a V2 connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The message decoded is smaller than expected
+    /// The given message does not contain enough information.
     MessageLengthTooSmall,
+    /// Allocated memory is too small for packet, returns
+    /// total required bytes for the failed packet so the
+    /// caller can re-allocate and re-attempt.
+    BufferTooSmall { required_bytes: usize },
     /// There is a mismatch in the encoding of a message
     IncompatableV1Message,
     /// The maximum amount of garbage bytes was exceeded in the handshake.
@@ -81,7 +89,17 @@ impl fmt::Display for Error {
             Error::SecretMaterialsGeneration(e) => {
                 write!(f, "Unable to generate secret materials {}", e)
             }
-            Error::MessageLengthTooSmall => write!(f, "Message length too small allocation"),
+            Error::MessageLengthTooSmall => {
+                write!(
+                    f,
+                    "Message does not contain entire information, should be extended"
+                )
+            }
+            Error::BufferTooSmall { required_bytes } => write!(
+                f,
+                "Buffer memory allocation too small, need at least {} bytes",
+                required_bytes
+            ),
             Error::IncompatableV1Message => write!(f, "Incompatable V1 message"),
             Error::MaxGarbageLength => {
                 write!(f, "More than 4095 bytes of garbage in the handshake")
@@ -106,6 +124,7 @@ impl std::error::Error for Error {
             Error::Cipher(e) => Some(e),
             Error::OutOfSync => None,
             Error::SecretExpansion => None,
+            Error::BufferTooSmall { required_bytes: _ } => None,
         }
     }
 }
@@ -219,7 +238,7 @@ impl PacketReader {
     ///
     /// - `ciphertext` - The message from the peer.
     /// - `contents`   - Mutable buffer to write plaintext.
-    /// - `aad`        - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `aad`        - Optional authentication for the peer.
     ///
     /// # Errors
     ///
@@ -231,12 +250,22 @@ impl PacketReader {
         aad: Option<&[u8]>,
     ) -> Result<(), Error> {
         let auth = aad.unwrap_or_default();
+        // Check minimum size of ciphertext.
+        if ciphertext.len() < TAG_BYTES {
+            return Err(Error::MessageLengthTooSmall);
+        }
         let (msg, tag) = ciphertext.split_at(ciphertext.len() - TAG_BYTES);
+        // Check that the contents buffer is large enough.
+        if contents.len() < msg.len() {
+            return Err(Error::BufferTooSmall {
+                required_bytes: msg.len(),
+            });
+        }
         contents[0..msg.len()].copy_from_slice(msg);
         self.packet_decoding_cipher.decrypt(
             auth,
             &mut contents[0..msg.len()],
-            tag.try_into().map_err(|_| Error::MessageLengthTooSmall)?,
+            tag.try_into().expect("16 byte tag"),
         )?;
 
         Ok(())
@@ -248,7 +277,7 @@ impl PacketReader {
     /// # Arguments
     ///
     /// - `ciphertext` - The message from the peer.
-    /// - `aad`        - Optional authentication for the peer, currently only used for the first round of messages.
+    /// - `aad`        - Optional authentication for the peer.
     ///
     /// # Errors
     ///
@@ -294,7 +323,9 @@ impl PacketWriter {
     ) -> Result<(), Error> {
         // Validate buffer capacity.
         if packet.len() < plaintext.len() + LENGTH_BYTES + NUM_DECOY_BYTES + TAG_BYTES {
-            return Err(Error::MessageLengthTooSmall);
+            return Err(Error::BufferTooSmall {
+                required_bytes: plaintext.len() + LENGTH_BYTES + NUM_DECOY_BYTES + TAG_BYTES,
+            });
         }
 
         let plaintext_length = plaintext.len();
@@ -564,8 +595,10 @@ pub struct Handshake<'a> {
     remote_garbage_terminator: Option<[u8; 16]>,
     /// Packet handler output.
     packet_handler: Option<PacketHandler>,
-    /// Stored state between authentication attempts, decrypted length for next packet.
-    authentication_packet_bytes: Option<usize>,
+    /// Decrypted length for next packet. Store state between authentication attempts to avoid resetting ciphers.
+    current_packet_length_bytes: Option<usize>,
+    /// Processesed message index. Store state between authentication attempts to avoid resetting ciphers.
+    current_message_index: usize,
 }
 
 impl<'a> Handshake<'a> {
@@ -640,7 +673,8 @@ impl<'a> Handshake<'a> {
             garbage,
             remote_garbage_terminator: None,
             packet_handler: None,
-            authentication_packet_bytes: None,
+            current_packet_length_bytes: None,
+            current_message_index: 0,
         })
     }
 
@@ -705,74 +739,146 @@ impl<'a> Handshake<'a> {
         Ok(())
     }
 
-    /// Authenticate the channel.
+    /// Authenticate the channel and manage the memory allocation required.
     ///
-    /// Designed to be called multiple times until succesful in order to flush
-    /// garbage and decoy packets from channel.
+    /// This function wraps [`authenticate_garbage_and_version`] and handles buffer allocation.
     ///
     /// # Arguments
     ///
-    /// - `buffer` - Should contain all garbage, the garbage terminator, and the version packet received from peer.
+    /// * `buffer` - The input buffer
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors of [`authenticate_garbage_and_version`], except `BufferTooSmall` is managed internally.
+    #[cfg(feature = "alloc")]
+    pub fn authenticate_garbage_and_version_with_alloc(
+        &mut self,
+        buffer: &[u8],
+    ) -> Result<(), Error> {
+        let mut packet_buffer = vec![0u8; INITIAL_HANDSHAKE_BUFFER_BYTES];
+
+        loop {
+            match self.authenticate_garbage_and_version(buffer, &mut packet_buffer) {
+                Ok(()) => return Ok(()),
+                Err(Error::BufferTooSmall { required_bytes }) => {
+                    packet_buffer.resize(required_bytes, 0);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Authenticate the channel.
+    ///
+    /// Designed to be called multiple times until succesful in order to flush
+    /// garbage and decoy packets from channel. If a `BufferTooSmall ` is
+    /// returned, the buffer should be extended until `BufferTooSmall ` is
+    /// not returned. All other errors are fatal for the handshake and it should
+    /// be completely restarted.
+    ///
+    /// # Arguments
+    ///
+    /// - `buffer`        - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
+    /// - `packet_buffer` - Required memory allocation for decrypting decoy and version packets.
     ///
     /// # Error    
     ///
     /// - `MessageLengthTooSmall` - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
+    /// - `BufferTooSmall`        - The supplied packet_buffer is not large enough for decrypting the decoy and version packets.
     /// - `HandshakeOutOfOrder`   - The handshake sequence is in a bad state and should be restarted.
-    /// - `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
-    pub fn authenticate_garbage_and_version(&mut self, buffer: &[u8]) -> Result<(), Error> {
-        // Find the end of the garbage
+    /// - `MaxGarbageLength`      - Buffer did not contain the garbage terminator, should not be retried.
+    pub fn authenticate_garbage_and_version(
+        &mut self,
+        buffer: &[u8],
+        packet_buffer: &mut [u8],
+    ) -> Result<(), Error> {
+        // Find the end of the garbage.
         let (garbage, message) = split_garbage_and_message(
             buffer,
             self.remote_garbage_terminator
                 .ok_or(Error::HandshakeOutOfOrder)?,
         )?;
 
-        // Quickly fail if the message doesn't even have enough bytes for a length packet.
-        if message.len() < LENGTH_BYTES {
-            return Err(Error::MessageLengthTooSmall);
+        // Flag to track if the version packet has been received to signal the end of the handshake.
+        let mut found_version_packet = false;
+
+        // The first packet, even if it is a decoy packet,
+        // is used to authenticate the received garbage through
+        // the AAD.
+        if self.current_message_index == 0 {
+            found_version_packet = self.decrypt_packet(message, packet_buffer, Some(garbage))?;
         }
 
+        // If the first packet is a decoy, or if this is a follow up
+        // authentication attempt, the decoys need to be flushed and
+        // the version packet found.
+        //
+        // The version packet is essentially ignored in the current
+        // version of the protocol, but it does move the cipher
+        // states forward. It could be extended in the future.
+        while !found_version_packet {
+            found_version_packet = self.decrypt_packet(message, packet_buffer, None)?;
+        }
+
+        Ok(())
+    }
+
+    /// Decrypt the next packet in the message buffer while
+    /// book keeping relevant lengths and indexes. This allows
+    /// the buffer to be re-processed without throwing off
+    /// the state of the ciphers.
+    ///
+    /// # Returns
+    ///
+    /// True if the decrypted packet is the version packet.
+    fn decrypt_packet(
+        &mut self,
+        message: &[u8],
+        packet_buffer: &mut [u8],
+        garbage: Option<&[u8]>,
+    ) -> Result<bool, Error> {
         let packet_handler = self
             .packet_handler
             .as_mut()
             .ok_or(Error::HandshakeOutOfOrder)?;
 
-        // TODO: Drain decoy packets, will require some more state to be store between attempts, like a message index.
-
-        // Grab the packet length from internal statem, else decrypt it and store incase of failure.
-        let packet_length = if self.authentication_packet_bytes.is_some() {
-            self.authentication_packet_bytes
-                .ok_or(Error::HandshakeOutOfOrder)
-        } else {
+        if self.current_packet_length_bytes.is_none() {
+            // Bounds check on the input buffer.
+            if message.len() < self.current_message_index + LENGTH_BYTES {
+                return Err(Error::MessageLengthTooSmall);
+            }
             let packet_length = packet_handler.decypt_len(
-                message[0..LENGTH_BYTES]
+                message[self.current_message_index..LENGTH_BYTES]
                     .try_into()
-                    .map_err(|_| Error::MessageLengthTooSmall)?,
+                    .expect("Buffer slice must be exactly 3 bytes long"),
             );
-            // Hang on to decrypted length incase next steps fail to avoid using the cipher again re-attempting authentication.
-            self.authentication_packet_bytes = Some(packet_length);
-            Ok(packet_length)
-        }?;
-
-        // Fail if there is not enough bytes to parse the message.
-        if message.len() < LENGTH_BYTES + packet_length {
-            return Err(Error::MessageLengthTooSmall);
+            // Hang on to decrypted length incase follow up steps fail
+            // and another authentication attempt is required. Avoids
+            // throwing off the cipher state.
+            self.current_packet_length_bytes = Some(packet_length);
         }
 
-        // Authenticate received garbage and get version packet.
-        // Assuming no decoy packets so AAD is set on version packet.
-        // The version packet is ignored in this version of the protocol, but
-        // moves along state in the ciphers.
+        let packet_length = self
+            .current_packet_length_bytes
+            .ok_or(Error::HandshakeOutOfOrder)?;
 
-        // Version packets have 0 contents.
-        let mut version_packet = [0u8; NUM_DECOY_BYTES + TAG_BYTES];
+        // Bounds check on input buffer.
+        if message.len() < self.current_message_index + LENGTH_BYTES + packet_length {
+            return Err(Error::MessageLengthTooSmall);
+        }
         packet_handler.packet_reader.decrypt_contents(
-            &message[LENGTH_BYTES..packet_length + LENGTH_BYTES],
-            &mut version_packet,
-            Some(garbage),
+            &message[self.current_message_index + LENGTH_BYTES
+                ..self.current_message_index + LENGTH_BYTES + packet_length],
+            packet_buffer,
+            garbage,
         )?;
 
-        Ok(())
+        // Mark current decryption point in the buffer.
+        self.current_message_index = self.current_message_index + LENGTH_BYTES + packet_length + 1;
+        self.current_packet_length_bytes = None;
+
+        // The version packet is currently just an empty packet.
+        Ok(packet_buffer[0] != DECOY_BYTE)
     }
 
     /// Complete the handshake and return the packet handler for further communication.
@@ -806,6 +912,7 @@ fn split_garbage_and_message(
     } else if message.len() >= (MAX_GARBAGE_BYTES + GARBAGE_TERMINTOR_BYTES) {
         Err(Error::MaxGarbageLength)
     } else {
+        // Terminator not found, the message needs more information.
         Err(Error::MessageLengthTooSmall)
     }
 }
@@ -1067,13 +1174,13 @@ mod tests {
         // The initiator verifies the second half of the responders message which
         // includes the garbage terminator and version packet.
         init_handshake
-            .authenticate_garbage_and_version(&resp_message[64..])
+            .authenticate_garbage_and_version_with_alloc(&resp_message[64..])
             .unwrap();
 
         // The responder verifies the second message from the initiator which
         // includes the garbage terminator and version packet.
         resp_handshake
-            .authenticate_garbage_and_version(&init_message_2)
+            .authenticate_garbage_and_version_with_alloc(&init_message_2)
             .unwrap();
 
         let mut alice = init_handshake.finalize().unwrap();
@@ -1122,10 +1229,10 @@ mod tests {
             .unwrap();
 
         init_handshake
-            .authenticate_garbage_and_version(&resp_message[64..])
+            .authenticate_garbage_and_version_with_alloc(&resp_message[64..])
             .unwrap();
         resp_handshake
-            .authenticate_garbage_and_version(&init_finalize_message)
+            .authenticate_garbage_and_version_with_alloc(&init_finalize_message)
             .unwrap();
 
         let mut alice = init_handshake.finalize().unwrap();
