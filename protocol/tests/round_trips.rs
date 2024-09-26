@@ -20,13 +20,18 @@ fn hello_world_happy_path() {
         Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
     resp_handshake
-        .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
+        .complete_materials(
+            init_message.try_into().unwrap(),
+            &mut resp_message[64..],
+            None,
+        )
         .unwrap();
     let mut init_finalize_message = vec![0u8; 36];
     init_handshake
         .complete_materials(
             resp_message[0..64].try_into().unwrap(),
             &mut init_finalize_message,
+            None,
         )
         .unwrap();
 
@@ -105,7 +110,11 @@ fn regtest_handshake() {
     let mut local_garbage_terminator_message = [0u8; 36];
     dbg!("Sending our garbage terminator");
     handshake
-        .complete_materials(remote_public_key, &mut local_garbage_terminator_message)
+        .complete_materials(
+            remote_public_key,
+            &mut local_garbage_terminator_message,
+            None,
+        )
         .unwrap();
     stream.write_all(&local_garbage_terminator_message).unwrap();
     stream.flush().unwrap();

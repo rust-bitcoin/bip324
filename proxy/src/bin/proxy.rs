@@ -55,6 +55,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
         .complete_materials(
             remote_material_message,
             &mut local_garbage_terminator_message,
+            None,
         )
         .expect("complete materials");
 

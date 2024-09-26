@@ -69,6 +69,10 @@ const NUM_TAG_BYTES: usize = 16;
 const MAX_NUM_GARBAGE_BYTES: usize = 4095;
 // Number of bytes for the garbage terminator.
 const NUM_GARBAGE_TERMINTOR_BYTES: usize = 16;
+// Number of bytes per packet for static layout, everything not including contents.
+const NUM_PACKET_OVERHEAD_BYTES: usize = NUM_LENGTH_BYTES + NUM_HEADER_BYTES + NUM_TAG_BYTES;
+// Number of bytes in elligator swift key.
+const NUM_ELLIGATOR_SWIFT_BYTES: usize = 64;
 
 /// Errors encountered throughout the lifetime of a V2 connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -381,12 +385,9 @@ impl PacketWriter {
         packet_type: PacketType,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet.len() < plaintext.len() + NUM_LENGTH_BYTES + NUM_HEADER_BYTES + NUM_TAG_BYTES {
+        if packet.len() < plaintext.len() + NUM_PACKET_OVERHEAD_BYTES {
             return Err(Error::BufferTooSmall {
-                required_bytes: plaintext.len()
-                    + NUM_LENGTH_BYTES
-                    + NUM_HEADER_BYTES
-                    + NUM_TAG_BYTES,
+                required_bytes: plaintext.len() + NUM_PACKET_OVERHEAD_BYTES,
             });
         }
 
@@ -430,8 +431,7 @@ impl PacketWriter {
         aad: Option<&[u8]>,
         packet_type: PacketType,
     ) -> Result<Vec<u8>, Error> {
-        let mut packet =
-            vec![0u8; plaintext.len() + NUM_LENGTH_BYTES + NUM_HEADER_BYTES + NUM_TAG_BYTES];
+        let mut packet = vec![0u8; plaintext.len() + NUM_PACKET_OVERHEAD_BYTES];
         self.encrypt_packet(plaintext, aad, &mut packet, packet_type)?;
         Ok(packet)
     }
@@ -587,7 +587,7 @@ pub struct Handshake<'a> {
     /// Optional garbage bytes to send along in handshake.
     garbage: Option<&'a [u8]>,
     /// Peers expected garbage terminator.
-    remote_garbage_terminator: Option<[u8; 16]>,
+    remote_garbage_terminator: Option<[u8; NUM_GARBAGE_TERMINTOR_BYTES]>,
     /// Packet handler output.
     packet_handler: Option<PacketHandler>,
     /// Decrypted length for next packet. Store state between authentication attempts to avoid resetting ciphers.
@@ -678,11 +678,13 @@ impl<'a> Handshake<'a> {
     /// # Arguments
     ///
     /// * `their_elliswift` - The key material of the remote peer.
-    /// * `response`        - Buffer to write response for remote peer which includes the garbage terminator and version packet.
+    /// * `response_buffer` - Buffer to write response for remote peer which includes the garbage terminator and version packet.
+    /// * `decoys`          - Contents for decoy packets sent before version packet.
     pub fn complete_materials(
         &mut self,
-        their_elliswift: [u8; 64],
-        response: &mut [u8],
+        their_elliswift: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
+        response_buffer: &mut [u8],
+        decoys: Option<&[&[u8]]>,
     ) -> Result<(), Error> {
         let theirs = ElligatorSwift::from_array(their_elliswift);
 
@@ -697,7 +699,8 @@ impl<'a> Handshake<'a> {
                     ElligatorSwiftParty::A,
                     self.network,
                 )?;
-                response[..16].copy_from_slice(&materials.initiator_garbage_terminator);
+                response_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
+                    .copy_from_slice(&materials.initiator_garbage_terminator);
                 self.remote_garbage_terminator = Some(materials.responder_garbage_terminator);
 
                 materials
@@ -710,7 +713,8 @@ impl<'a> Handshake<'a> {
                     ElligatorSwiftParty::B,
                     self.network,
                 )?;
-                response[..16].copy_from_slice(&materials.responder_garbage_terminator);
+                response_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
+                    .copy_from_slice(&materials.responder_garbage_terminator);
                 self.remote_garbage_terminator = Some(materials.initiator_garbage_terminator);
 
                 materials
@@ -718,14 +722,30 @@ impl<'a> Handshake<'a> {
         };
 
         let mut packet_handler = PacketHandler::new(materials, self.role);
+        let mut start_index = NUM_GARBAGE_TERMINTOR_BYTES;
 
-        // TODO: Support sending decoy packets before the version packet.
+        // Write any decoy packets and then the version packet.
+        // The first packet, no matter if decoy or genuinie version packet, needs
+        // to authenticate the garbage previously sent.
+        if let Some(decoys) = decoys {
+            for (i, decoy) in decoys.iter().enumerate() {
+                let end_index = start_index + decoy.len() + NUM_PACKET_OVERHEAD_BYTES;
+                packet_handler.packet_writer.encrypt_packet(
+                    decoy,
+                    if i == 0 { self.garbage } else { None },
+                    &mut response_buffer[start_index..end_index],
+                    PacketType::Decoy,
+                )?;
 
-        // Empty vec is signaling version.
+                start_index = end_index;
+            }
+        }
+
         packet_handler.packet_writer.encrypt_packet(
             &VERSION_CONTENT,
-            self.garbage,
-            &mut response[16..16 + NUM_LENGTH_BYTES + NUM_HEADER_BYTES + NUM_TAG_BYTES],
+            if decoys.is_none() { self.garbage } else { None },
+            &mut response_buffer
+                [start_index..start_index + VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES],
             PacketType::Genuine,
         )?;
 
@@ -740,7 +760,7 @@ impl<'a> Handshake<'a> {
     ///
     /// # Arguments
     ///
-    /// * `buffer` - The input buffer
+    /// * `buffer` - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
     ///
     /// # Errors
     ///
@@ -843,7 +863,7 @@ impl<'a> Handshake<'a> {
                 return Err(Error::CiphertextTooSmall);
             }
             let packet_length = packet_handler.packet_reader.decypt_len(
-                ciphertext[self.current_buffer_index..NUM_LENGTH_BYTES]
+                ciphertext[self.current_buffer_index..self.current_buffer_index + NUM_LENGTH_BYTES]
                     .try_into()
                     .expect("Buffer slice must be exactly 3 bytes long"),
             );
@@ -869,8 +889,7 @@ impl<'a> Handshake<'a> {
         )?;
 
         // Mark current decryption point in the buffer.
-        self.current_buffer_index =
-            self.current_buffer_index + NUM_LENGTH_BYTES + packet_length + 1;
+        self.current_buffer_index = self.current_buffer_index + NUM_LENGTH_BYTES + packet_length;
         self.current_packet_length_bytes = None;
 
         // The version packet is currently just an empty packet.
@@ -901,7 +920,10 @@ impl<'a> Handshake<'a> {
 ///
 /// * `CiphertextTooSmall`    - Buffer did not contain a garbage terminator.
 /// * `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
-fn split_garbage(buffer: &[u8], garbage_term: [u8; 16]) -> Result<(&[u8], &[u8]), Error> {
+fn split_garbage(
+    buffer: &[u8],
+    garbage_term: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
+) -> Result<(&[u8], &[u8]), Error> {
     if let Some(index) = buffer
         .windows(garbage_term.len())
         .position(|window| window == garbage_term)
@@ -966,7 +988,7 @@ mod tests {
         .unwrap();
 
         response
-            .complete_materials(message, &mut response_message[64..])
+            .complete_materials(message, &mut response_message[64..], None)
             .unwrap();
     }
 
@@ -1152,47 +1174,105 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
-    fn test_full_handshake() {
-        // The initiator's handshake writes its 64 byte elligator swift key to the buffer to send to the responder.
-        let mut init_message = vec![0u8; 64];
-        let mut init_handshake =
-            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
+    fn test_full_handshake_with_garbage_and_decoys() {
+        // Define the garbage and decoys that the initiator is sending to the responder.
+        let initiator_garbage = vec![1u8, 2u8, 3u8];
+        let initiator_decoys: Vec<&[u8]> = vec![&[6u8, 7u8], &[8u8, 0u8]];
+        let num_initiator_decoys_bytes = initiator_decoys
+            .iter()
+            .map(|slice| slice.len())
+            .sum::<usize>()
+            + NUM_PACKET_OVERHEAD_BYTES * initiator_decoys.len();
+        let num_initiator_version_bytes = VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES;
+        // Buffer for initiator to write to and responder to read from.
+        let mut initiator_buffer = vec![
+            0u8;
+            NUM_ELLIGATOR_SWIFT_BYTES
+                + initiator_garbage.len()
+                + NUM_GARBAGE_TERMINTOR_BYTES
+                + num_initiator_decoys_bytes
+                + num_initiator_version_bytes
+        ];
 
-        // The responder also writes its 64 byte elligator swift key, but will also write 36 bytes for the
-        // garbage terminator and version packet.
-        let mut resp_message = vec![0u8; 100];
-        let mut resp_handshake =
-            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
+        // Define the garbage and decoys that the responder is sending to the initiator.
+        let responder_garbage = vec![4u8, 5u8];
+        let responder_decoys: Vec<&[u8]> = vec![&[10u8, 11u8], &[12u8], &[13u8, 14u8, 15u8]];
+        let num_responder_decoys_bytes = responder_decoys
+            .iter()
+            .map(|slice| slice.len())
+            .sum::<usize>()
+            + NUM_PACKET_OVERHEAD_BYTES * responder_decoys.len();
+        let num_responder_version_bytes = VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES;
+        // Buffer for responder to write to and initiator to read from.
+        let mut responder_buffer = vec![
+            0u8;
+            NUM_ELLIGATOR_SWIFT_BYTES
+                + responder_garbage.len()
+                + NUM_GARBAGE_TERMINTOR_BYTES
+                + num_responder_decoys_bytes
+                + num_responder_version_bytes
+        ];
 
-        // The responder already has the initiator's material so can complete the secrets.
-        // With the secrets calculated, the responder can send along the garbage terminator
-        // and version packet in one go.
-        resp_handshake
-            .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
+        // The initiator's handshake writes its 64 byte elligator swift key and garbage to their buffer to send to the responder.
+        let mut initiator_handshake = Handshake::new(
+            Network::Bitcoin,
+            Role::Initiator,
+            Some(&initiator_garbage),
+            &mut initiator_buffer[..NUM_ELLIGATOR_SWIFT_BYTES + initiator_garbage.len()],
+        )
+        .unwrap();
+
+        // The responder also writes its 64 byte elligator swift key and garbage to their buffer to send to the initiator.
+        let mut responder_handshake = Handshake::new(
+            Network::Bitcoin,
+            Role::Responder,
+            Some(&responder_garbage),
+            &mut responder_buffer[..NUM_ELLIGATOR_SWIFT_BYTES + responder_garbage.len()],
+        )
+        .unwrap();
+
+        // The responder has received the initiator's initial material so can complete the secrets.
+        // With the secrets calculated, the responder can send along the garbage terminator, decoys, and version packet.
+        responder_handshake
+            .complete_materials(
+                initiator_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
+                    .try_into()
+                    .unwrap(),
+                &mut responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES + responder_garbage.len()..],
+                Some(&responder_decoys),
+            )
             .unwrap();
 
         // Once the initiator receives the responder's response it can also complete the secrets.
-        // The initiator then needs to send along the recently calculated garbage terminator as well
-        // as the version packet.
-        let mut init_message_2 = vec![0u8; 36];
-        init_handshake
-            .complete_materials(resp_message[0..64].try_into().unwrap(), &mut init_message_2)
+        // The initiator then needs to send along their recently calculated garbage terminator, decoys, and the version packet.
+        initiator_handshake
+            .complete_materials(
+                responder_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
+                    .try_into()
+                    .unwrap(),
+                &mut initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES + initiator_garbage.len()..],
+                Some(&initiator_decoys),
+            )
             .unwrap();
 
         // The initiator verifies the second half of the responders message which
-        // includes the garbage terminator and version packet.
-        init_handshake
-            .authenticate_garbage_and_version_with_alloc(&resp_message[64..])
+        // includes the garbage, garbage terminator, decoys, and version packet.
+        initiator_handshake
+            .authenticate_garbage_and_version_with_alloc(
+                &responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
+            )
             .unwrap();
 
         // The responder verifies the second message from the initiator which
-        // includes the garbage terminator and version packet.
-        resp_handshake
-            .authenticate_garbage_and_version_with_alloc(&init_message_2)
+        // includes the garbage, garbage terminator, decoys, and version packet.
+        responder_handshake
+            .authenticate_garbage_and_version_with_alloc(
+                &initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
+            )
             .unwrap();
 
-        let mut alice = init_handshake.finalize().unwrap();
-        let mut bob = resp_handshake.finalize().unwrap();
+        let mut alice = initiator_handshake.finalize().unwrap();
+        let mut bob = responder_handshake.finalize().unwrap();
 
         let message = b"Hello world".to_vec();
         let encrypted_message_to_alice = bob
@@ -1230,13 +1310,18 @@ mod tests {
             Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
         resp_handshake
-            .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
+            .complete_materials(
+                init_message.try_into().unwrap(),
+                &mut resp_message[64..],
+                None,
+            )
             .unwrap();
         let mut init_finalize_message = vec![0u8; 36];
         init_handshake
             .complete_materials(
                 resp_message[0..64].try_into().unwrap(),
                 &mut init_finalize_message,
+                None,
             )
             .unwrap();
 
