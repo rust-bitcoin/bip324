@@ -53,9 +53,9 @@ fn hello_world_happy_path() {
         .unwrap();
     let messages = alice
         .packet_reader
-        .decrypt_contents_with_alloc(&encrypted_message_to_alice[3..], None)
+        .decrypt_payload_with_alloc(&encrypted_message_to_alice[3..], None)
         .unwrap();
-    assert_eq!(message, messages.unwrap());
+    assert_eq!(message, messages.contents());
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice
         .packet_writer
@@ -63,9 +63,9 @@ fn hello_world_happy_path() {
         .unwrap();
     let messages = bob
         .packet_reader
-        .decrypt_contents_with_alloc(&encrypted_message_to_bob[3..], None)
+        .decrypt_payload_with_alloc(&encrypted_message_to_bob[3..], None)
         .unwrap();
-    assert_eq!(message, messages.unwrap());
+    assert_eq!(message, messages.contents());
 }
 
 #[test]
@@ -159,9 +159,9 @@ fn regtest_handshake() {
     let mut response_message = vec![0; message_len];
     stream.read_exact(&mut response_message).unwrap();
     let msg = decrypter
-        .decrypt_contents_with_alloc(&response_message, None)
+        .decrypt_payload_with_alloc(&response_message, None)
         .unwrap();
-    let message = deserialize(&msg.unwrap()).unwrap();
+    let message = deserialize(msg.contents()).unwrap();
     dbg!("{}", message.cmd());
     assert_eq!(message.cmd(), "version");
     rpc.stop().unwrap();
