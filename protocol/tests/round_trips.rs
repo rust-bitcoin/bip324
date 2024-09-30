@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-const RPC_USER: &str = "test";
-const RPC_PASSWORD: &str = "b324";
-const HOST: &str = "http://localhost:18443";
 const PORT: u16 = 18444;
 
 #[test]
@@ -70,28 +67,20 @@ fn hello_world_happy_path() {
 
 #[test]
 #[cfg(feature = "std")]
-#[ignore = "CI"]
+#[ignore = "Requires a running bitcoin daemon."]
 fn regtest_handshake() {
     use std::{
         io::{Read, Write},
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use bip324::{
         serde::{deserialize, serialize, NetworkMessage},
         Handshake, PacketType,
     };
-    use bitcoincore_rpc::{
-        bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags},
-        RpcApi,
-    };
+    use bitcoincore_rpc::bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
 
-    let rpc = bitcoincore_rpc::Client::new(
-        HOST,
-        bitcoincore_rpc::Auth::UserPass(RPC_USER.into(), RPC_PASSWORD.into()),
-    )
-    .unwrap();
     let mut stream = TcpStream::connect(format!("127.0.0.1:{PORT}")).unwrap();
     let mut public_key = [0u8; 64];
     let mut handshake = Handshake::new(
@@ -101,14 +90,14 @@ fn regtest_handshake() {
         &mut public_key,
     )
     .unwrap();
-    dbg!("Writing public key to the remote node");
+    println!("Writing public key to the remote node");
     stream.write_all(&public_key).unwrap();
     stream.flush().unwrap();
     let mut remote_public_key = [0u8; 64];
-    dbg!("Reading the remote node public key");
+    println!("Reading the remote node public key");
     stream.read_exact(&mut remote_public_key).unwrap();
     let mut local_garbage_terminator_message = [0u8; 36];
-    dbg!("Sending our garbage terminator");
+    println!("Sending our garbage terminator");
     handshake
         .complete_materials(
             remote_public_key,
@@ -119,14 +108,14 @@ fn regtest_handshake() {
     stream.write_all(&local_garbage_terminator_message).unwrap();
     stream.flush().unwrap();
     let mut max_response = [0; 4096];
-    dbg!("Reading the response buffer");
+    println!("Reading the response buffer");
     let size = stream.read(&mut max_response).unwrap();
     let response = &mut max_response[..size];
-    dbg!("Authenticating the handshake");
+    println!("Authenticating the handshake");
     handshake
         .authenticate_garbage_and_version_with_alloc(response)
         .unwrap();
-    dbg!("Finalizing the handshake");
+    println!("Finalizing the handshake");
     let packet_handler = handshake.finalize().unwrap();
     let (mut decrypter, mut encrypter) = packet_handler.into_split();
     let now = SystemTime::now()
@@ -150,9 +139,9 @@ fn regtest_handshake() {
     let packet = encrypter
         .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
-    dbg!("Serializing and writing version message");
+    println!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
-    dbg!("Reading the response length buffer");
+    println!("Reading the response length buffer");
     let mut response_len = [0; 3];
     stream.read_exact(&mut response_len).unwrap();
     let message_len = decrypter.decypt_len(response_len);
@@ -162,8 +151,5 @@ fn regtest_handshake() {
         .decrypt_payload_with_alloc(&response_message, None)
         .unwrap();
     let message = deserialize(msg.contents()).unwrap();
-    dbg!("{}", message.cmd());
     assert_eq!(message.cmd(), "version");
-    rpc.stop().unwrap();
-    std::thread::sleep(Duration::from_secs(1));
 }
