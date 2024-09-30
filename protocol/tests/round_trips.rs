@@ -79,7 +79,7 @@ fn regtest_handshake() {
         serde::{deserialize, serialize, NetworkMessage},
         Handshake, PacketType,
     };
-    use bitcoincore_rpc::bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{PORT}")).unwrap();
     let mut public_key = [0u8; 64];
