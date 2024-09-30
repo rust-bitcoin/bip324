@@ -12,8 +12,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use bip324::serde::{deserialize, serialize};
-use bip324::ReceivedMessage;
-use bip324::{PacketReader, PacketWriter};
+use bip324::{PacketReader, PacketType, PacketWriter};
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::{Address, Magic};
@@ -133,21 +132,21 @@ pub async fn read_v2<T: AsyncRead + Unpin>(
     input: &mut T,
     decrypter: &mut PacketReader,
 ) -> Result<NetworkMessage, Error> {
-    let mut length_bytes = [0u8; 3];
-    input.read_exact(&mut length_bytes).await?;
-    let packet_bytes_len = decrypter.decypt_len(length_bytes);
-    let mut packet_bytes = vec![0u8; packet_bytes_len];
-    input.read_exact(&mut packet_bytes).await?;
-    let raw = decrypter
-        .decrypt_contents_with_alloc(&packet_bytes, None)
-        .expect("decrypt");
+    // Ignore any decoy packets.
+    let payload = loop {
+        let mut length_bytes = [0u8; 3];
+        input.read_exact(&mut length_bytes).await?;
+        let packet_bytes_len = decrypter.decypt_len(length_bytes);
+        let mut packet_bytes = vec![0u8; packet_bytes_len];
+        input.read_exact(&mut packet_bytes).await?;
+        let payload = decrypter.decrypt_payload_with_alloc(&packet_bytes, None)?;
 
-    let contents = ReceivedMessage::new(&raw)
-        .expect("some bytes")
-        .message
-        .expect("not a decoy");
+        if payload.packet_type() == PacketType::Genuine {
+            break payload;
+        }
+    };
 
-    let message = deserialize(&contents).map_err(|_| Error::Serde)?;
+    let message = deserialize(payload.contents()).map_err(|_| Error::Serde)?;
     Ok(message)
 }
 
@@ -173,7 +172,7 @@ pub async fn write_v2<T: AsyncWrite + Unpin>(
 ) -> Result<(), Error> {
     let payload = serialize(msg).map_err(|_| Error::Serde)?;
     let write_bytes = encrypter
-        .prepare_packet_with_alloc(&payload, None, false)
+        .encrypt_packet_with_alloc(&payload, None, PacketType::Genuine)
         .expect("encryption");
     output.write_all(&write_bytes[..]).await?;
     output.flush().await?;

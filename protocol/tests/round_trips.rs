@@ -8,7 +8,7 @@ const PORT: u16 = 18444;
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
-    use bip324::{Handshake, Role};
+    use bip324::{Handshake, PacketType, Role};
     use bitcoin::Network;
 
     let mut init_message = vec![0u8; 64];
@@ -20,13 +20,18 @@ fn hello_world_happy_path() {
         Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
 
     resp_handshake
-        .complete_materials(init_message.try_into().unwrap(), &mut resp_message[64..])
+        .complete_materials(
+            init_message.try_into().unwrap(),
+            &mut resp_message[64..],
+            None,
+        )
         .unwrap();
     let mut init_finalize_message = vec![0u8; 36];
     init_handshake
         .complete_materials(
             resp_message[0..64].try_into().unwrap(),
             &mut init_finalize_message,
+            None,
         )
         .unwrap();
 
@@ -43,20 +48,24 @@ fn hello_world_happy_path() {
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob
-        .prepare_packet_with_alloc(&message, None, false)
+        .packet_writer
+        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = alice
-        .decrypt_contents_with_alloc(&encrypted_message_to_alice[3..], None)
+        .packet_reader
+        .decrypt_payload_with_alloc(&encrypted_message_to_alice[3..], None)
         .unwrap();
-    assert_eq!(message, messages.message.unwrap());
+    assert_eq!(message, messages.contents());
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice
-        .prepare_packet_with_alloc(&message, None, false)
+        .packet_writer
+        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = bob
-        .decrypt_contents_with_alloc(&encrypted_message_to_bob[3..], None)
+        .packet_reader
+        .decrypt_payload_with_alloc(&encrypted_message_to_bob[3..], None)
         .unwrap();
-    assert_eq!(message, messages.message.unwrap());
+    assert_eq!(message, messages.contents());
 }
 
 #[test]
@@ -71,7 +80,7 @@ fn regtest_handshake() {
 
     use bip324::{
         serde::{deserialize, serialize, NetworkMessage},
-        Handshake, ReceivedMessage,
+        Handshake, PacketType,
     };
     use bitcoincore_rpc::{
         bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags},
@@ -101,7 +110,11 @@ fn regtest_handshake() {
     let mut local_garbage_terminator_message = [0u8; 36];
     dbg!("Sending our garbage terminator");
     handshake
-        .complete_materials(remote_public_key, &mut local_garbage_terminator_message)
+        .complete_materials(
+            remote_public_key,
+            &mut local_garbage_terminator_message,
+            None,
+        )
         .unwrap();
     stream.write_all(&local_garbage_terminator_message).unwrap();
     stream.flush().unwrap();
@@ -135,7 +148,7 @@ fn regtest_handshake() {
     };
     let message = serialize(NetworkMessage::Version(msg)).unwrap();
     let packet = encrypter
-        .prepare_packet_with_alloc(&message, None, false)
+        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
     dbg!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
@@ -146,10 +159,9 @@ fn regtest_handshake() {
     let mut response_message = vec![0; message_len];
     stream.read_exact(&mut response_message).unwrap();
     let msg = decrypter
-        .decrypt_contents_with_alloc(&response_message, None)
+        .decrypt_payload_with_alloc(&response_message, None)
         .unwrap();
-    let message = ReceivedMessage::new(&msg.clone()).unwrap();
-    let message = deserialize(&message.message.unwrap()).unwrap();
+    let message = deserialize(msg.contents()).unwrap();
     dbg!("{}", message.cmd());
     assert_eq!(message.cmd(), "version");
     rpc.stop().unwrap();
