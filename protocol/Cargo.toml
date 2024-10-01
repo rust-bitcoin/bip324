@@ -10,10 +10,12 @@ rust-version = "1.63.0"
 
 [features]
 default = ["std"]
+async = ["std", "futures/std"]
 std = ["alloc", "bitcoin/std", "rand/std", "rand/std_rng"]
 alloc = []
 
 [dependencies]
+futures = { version = "0.3.30", default-features = false }
 rand = { version = "0.8.0", default-features = false }
 bitcoin = { version = "0.32.0", default-features = false }
 

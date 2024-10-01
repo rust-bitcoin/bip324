@@ -10,8 +10,9 @@ Both structures are designed with a bare `no_std` and "Sans I/O" interface to ke
 
 ## Feature Flags
 
-- `alloc` -- Expose memory allocation dependent features.
-- `std` -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
+* `alloc` -- Expose memory allocation dependent features.
+* `std`   -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
+* `async` -- High level wrappers for asynchronous read and write runtimes.
 
 ## ChaCha20Poly1305
 

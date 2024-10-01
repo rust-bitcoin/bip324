@@ -14,9 +14,9 @@ spec = "config_spec.toml"
 [dependencies]
 bitcoin = { version = "0.32.0" }
 tokio = { version = "1.37.0", features = ["full"] }
-bytes = "1.6.0"
+tokio-util = { version = "0.7.12", features = ["compat"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
-bip324 = { path = "../protocol" }
+bip324 = { path = "../protocol", features = ["async"] }
 configure_me = "0.4.0"
 
 [build-dependencies]

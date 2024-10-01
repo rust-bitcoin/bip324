@@ -11,8 +11,6 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use bip324::serde::{deserialize, serialize};
-use bip324::{PacketReader, PacketType, PacketWriter};
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::{Address, Magic};
@@ -34,44 +32,34 @@ pub enum Error {
     WrongNetwork,
     WrongCommand,
     Serde,
-    Network(std::io::Error),
-    Cipher(bip324::Error),
+    Io(std::io::Error),
+    Protocol(bip324::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::WrongNetwork => write!(f, "recieved message on wrong network"),
-            Error::Network(e) => write!(f, "network {}", e),
+            Error::Io(e) => write!(f, "network {:?}", e),
             Error::WrongCommand => write!(f, "recieved message with wrong command"),
-            Error::Cipher(e) => write!(f, "cipher encryption/decrytion error {}", e),
+            Error::Protocol(e) => write!(f, "protocol error {:?}", e),
             Error::Serde => write!(f, "unable to serialize command"),
         }
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Network(e) => Some(e),
-            Error::WrongNetwork => None,
-            Error::WrongCommand => None,
-            Error::Cipher(e) => Some(e),
-            Error::Serde => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<bip324::Error> for Error {
     fn from(e: bip324::Error) -> Self {
-        Error::Cipher(e)
+        Error::Protocol(e)
     }
 }
 
 // Convert IO errors.
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        Error::Network(e)
+        Error::Io(e)
     }
 }
 
@@ -125,31 +113,6 @@ pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<NetworkMessa
     Ok(message.payload().clone())
 }
 
-/// Read a v2 message off the input stream.
-///
-/// This future is not cancellation safe since state is read multiple times and depends on read_exact.
-pub async fn read_v2<T: AsyncRead + Unpin>(
-    input: &mut T,
-    decrypter: &mut PacketReader,
-) -> Result<NetworkMessage, Error> {
-    // Ignore any decoy packets.
-    let payload = loop {
-        let mut length_bytes = [0u8; 3];
-        input.read_exact(&mut length_bytes).await?;
-        let packet_bytes_len = decrypter.decypt_len(length_bytes);
-        let mut packet_bytes = vec![0u8; packet_bytes_len];
-        input.read_exact(&mut packet_bytes).await?;
-        let payload = decrypter.decrypt_payload_with_alloc(&packet_bytes, None)?;
-
-        if payload.packet_type() == PacketType::Genuine {
-            break payload;
-        }
-    };
-
-    let message = deserialize(payload.contents()).map_err(|_| Error::Serde)?;
-    Ok(message)
-}
-
 /// Write message to the output stream using v1.
 pub async fn write_v1<T: AsyncWrite + Unpin>(
     output: &mut T,
@@ -160,21 +123,6 @@ pub async fn write_v1<T: AsyncWrite + Unpin>(
     raw.consensus_encode(&mut buffer)
         .map_err(|_| Error::Serde)?;
     output.write_all(&buffer[..]).await?;
-    output.flush().await?;
-    Ok(())
-}
-
-/// Write the network message to the output stream using v2.
-pub async fn write_v2<T: AsyncWrite + Unpin>(
-    output: &mut T,
-    encrypter: &mut PacketWriter,
-    msg: NetworkMessage,
-) -> Result<(), Error> {
-    let payload = serialize(msg).map_err(|_| Error::Serde)?;
-    let write_bytes = encrypter
-        .encrypt_packet_with_alloc(&payload, None, PacketType::Genuine)
-        .expect("encryption");
-    output.write_all(&write_bytes[..]).await?;
     output.flush().await?;
     Ok(())
 }
