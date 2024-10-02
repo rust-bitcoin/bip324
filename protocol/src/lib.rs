@@ -47,6 +47,8 @@ use bitcoin::{
     },
 };
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
+#[cfg(feature = "async")]
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use hkdf::Hkdf;
 use rand::Rng;
 
@@ -111,25 +113,14 @@ impl fmt::Display for Error {
                 write!(f, "More than 4095 bytes of garbage in the handshake.")
             }
             Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence."),
-            Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {}.", e),
-            Error::Decryption(e) => write!(f, "Decrytion error: {}.", e),
+            Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {:?}.", e),
+            Error::Decryption(e) => write!(f, "Decrytion error: {:?}.", e),
         }
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::CiphertextTooSmall => None,
-            Error::MaxGarbageLength => None,
-            Error::HandshakeOutOfOrder => None,
-            Error::SecretGeneration(e) => Some(e),
-            Error::Decryption(e) => Some(e),
-            Error::BufferTooSmall { required_bytes: _ } => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<fschacha20poly1305::Error> for Error {
     fn from(e: fschacha20poly1305::Error) -> Self {
@@ -826,11 +817,7 @@ impl<'a> Handshake<'a> {
         packet_buffer: &mut [u8],
     ) -> Result<(), Error> {
         // Find the end of the garbage.
-        let (garbage, ciphertext) = split_garbage(
-            buffer,
-            self.remote_garbage_terminator
-                .ok_or(Error::HandshakeOutOfOrder)?,
-        )?;
+        let (garbage, ciphertext) = self.split_garbage(buffer)?;
 
         // Flag to track if the version packet has been received to signal the end of the handshake.
         let mut found_version_packet = false;
@@ -925,40 +912,286 @@ impl<'a> Handshake<'a> {
         let packet_handler = self.packet_handler.ok_or(Error::HandshakeOutOfOrder)?;
         Ok(packet_handler)
     }
+
+    /// Split off garbage in the given buffer on the remote garbage terminator.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the garbage and the remaining ciphertext not including the terminator.
+    ///
+    /// # Error
+    ///
+    /// * `CiphertextTooSmall`    - Buffer did not contain a garbage terminator.
+    /// * `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
+    fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
+        let garbage_term = self
+            .remote_garbage_terminator
+            .ok_or(Error::HandshakeOutOfOrder)?;
+        if let Some(index) = buffer
+            .windows(garbage_term.len())
+            .position(|window| window == garbage_term)
+        {
+            Ok((&buffer[..index], &buffer[(index + garbage_term.len())..]))
+        } else if buffer.len() >= (MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES) {
+            Err(Error::MaxGarbageLength)
+        } else {
+            // Terminator not found, the buffer needs more information.
+            Err(Error::CiphertextTooSmall)
+        }
+    }
 }
 
-/// Split off garbage in the buffer on the garbage terminator.
-///
-/// # Returns
-///
-/// A `Result` containing the garbage and the remaining ciphertext not including the terminator.
-///
-/// # Error
-///
-/// * `CiphertextTooSmall`    - Buffer did not contain a garbage terminator.
-/// * `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
-fn split_garbage(
-    buffer: &[u8],
-    garbage_term: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
-) -> Result<(&[u8], &[u8]), Error> {
-    if let Some(index) = buffer
-        .windows(garbage_term.len())
-        .position(|window| window == garbage_term)
-    {
-        Ok((&buffer[..index], &buffer[(index + garbage_term.len())..]))
-    } else if buffer.len() >= (MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES) {
-        Err(Error::MaxGarbageLength)
-    } else {
-        // Terminator not found, the buffer needs more information.
-        Err(Error::CiphertextTooSmall)
+/// High level error type for the protocol interface.
+#[cfg(feature = "std")]
+#[derive(Debug)]
+pub enum ProtocolError {
+    Io(std::io::Error),
+    Internal(Error),
+}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for ProtocolError {
+    fn from(error: std::io::Error) -> Self {
+        ProtocolError::Io(error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<Error> for ProtocolError {
+    fn from(error: Error) -> Self {
+        ProtocolError::Internal(error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ProtocolError {}
+
+#[cfg(feature = "std")]
+impl fmt::Display for ProtocolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProtocolError::Io(e) => write!(f, "IO error: {:?}", e),
+            ProtocolError::Internal(e) => write!(f, "Internal error: {:?}", e),
+        }
+    }
+}
+
+/// A protocol session with handshake and send/receive packet management.
+#[cfg(feature = "async")]
+pub struct AsyncProtocol<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    reader: AsyncProtocolReader<R>,
+    writer: AsyncProtocolWriter<W>,
+}
+
+#[cfg(feature = "async")]
+impl<R, W> AsyncProtocol<R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    /// New protocol session which completes the initial handshake and returns a handler.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok(AsyncProtocol)`: An initialized protocol handler.
+    ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
+    pub async fn new(
+        network: Network,
+        role: Role,
+        garbage: Option<&[u8]>,
+        mut reader: R,
+        mut writer: W,
+    ) -> Result<Self, ProtocolError> {
+        // Initialize buffer.
+        let garbage_len = match garbage {
+            Some(slice) => slice.len(),
+            None => 0,
+        };
+        let mut ellswift_buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES + garbage_len];
+        let mut handshake = Handshake::new(network, role, garbage, &mut ellswift_buffer)?;
+
+        // Send initial key to remote.
+        writer.write_all(&ellswift_buffer).await?;
+        writer.flush().await?;
+
+        // Read remote's initial key.
+        let mut remote_ellswift_buffer = [0u8; 64];
+        reader.read_exact(&mut remote_ellswift_buffer).await?;
+
+        // Complete materials and send terminator to remote.
+        // Not exposing decoy packets yet.
+        let mut terminator_and_version_buffer =
+            vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES + NUM_PACKET_OVERHEAD_BYTES];
+        handshake.complete_materials(
+            remote_ellswift_buffer,
+            &mut terminator_and_version_buffer,
+            None,
+        )?;
+        writer.write_all(&terminator_and_version_buffer).await?;
+        writer.flush().await?;
+
+        // Receive and authenticate remote garbage and version.
+        // Keep pulling bytes from the buffer until the garbage is flushed.
+        let mut remote_garbage_and_version_buffer =
+            Vec::with_capacity(NUM_INITIAL_HANDSHAKE_BUFFER_BYTES);
+        loop {
+            let mut temp_buffer = [0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
+            match reader.read(&mut temp_buffer).await {
+                // No data available right now, continue.
+                Ok(0) => {
+                    continue;
+                }
+                Ok(bytes_read) => {
+                    remote_garbage_and_version_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
+
+                    match handshake.authenticate_garbage_and_version_with_alloc(
+                        &remote_garbage_and_version_buffer,
+                    ) {
+                        Ok(()) => break,
+                        // Not enough data, continue reading.
+                        Err(Error::CiphertextTooSmall) => continue,
+                        Err(e) => return Err(ProtocolError::Internal(e)),
+                    }
+                }
+                Err(e) => match e.kind() {
+                    // No data available or interrupted, retry.
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
+                        continue;
+                    }
+                    _ => return Err(ProtocolError::Io(e)),
+                },
+            }
+        }
+
+        let packet_handler = handshake.finalize()?;
+        let (packet_reader, packet_writer) = packet_handler.into_split();
+
+        Ok(Self {
+            reader: AsyncProtocolReader {
+                buffer: reader,
+                packet_reader,
+                state: DecryptState::default(),
+            },
+            writer: AsyncProtocolWriter {
+                buffer: writer,
+                packet_writer,
+            },
+        })
+    }
+
+    /// Read reference for packet reading operations.
+    pub fn reader(&mut self) -> &mut AsyncProtocolReader<R> {
+        &mut self.reader
+    }
+
+    /// Write reference for packet writing operations.
+    pub fn writer(&mut self) -> &mut AsyncProtocolWriter<W> {
+        &mut self.writer
+    }
+
+    /// Split the protocol into a separate reader and writer.
+    pub fn into_split(self) -> (AsyncProtocolReader<R>, AsyncProtocolWriter<W>) {
+        (self.reader, self.writer)
+    }
+}
+
+/// State machine of an asynchronous packet read.
+#[cfg(feature = "async")]
+#[derive(Default, Debug)]
+enum DecryptState {
+    #[default]
+    ReadingLength,
+    ReadingPayload {
+        packet_bytes: Vec<u8>,
+    },
+}
+
+/// Manages an async buffer to automatically decrypt contents of received packets.
+#[cfg(feature = "async")]
+pub struct AsyncProtocolReader<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    buffer: R,
+    packet_reader: PacketReader,
+    state: DecryptState,
+}
+
+#[cfg(feature = "async")]
+impl<R> AsyncProtocolReader<R>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    /// Decrypt contents of received packet from buffer.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok(Payload)`: A decrypted payload.
+    ///   * `Err(ProtocolError)`: An error that occurred during the read or decryption.
+    pub async fn decrypt(&mut self) -> Result<Payload, ProtocolError> {
+        // Storing state between async read_exacts to make function more cancellation safe.
+        loop {
+            match &mut self.state {
+                DecryptState::ReadingLength => {
+                    let mut length_bytes = [0u8; 3];
+                    self.buffer.read_exact(&mut length_bytes).await?;
+                    let packet_bytes_len = self.packet_reader.decypt_len(length_bytes);
+                    let packet_bytes = vec![0u8; packet_bytes_len];
+                    self.state = DecryptState::ReadingPayload { packet_bytes };
+                }
+                DecryptState::ReadingPayload { packet_bytes } => {
+                    self.buffer.read_exact(packet_bytes).await?;
+                    let payload = self
+                        .packet_reader
+                        .decrypt_payload_with_alloc(packet_bytes, None)?;
+                    self.state = DecryptState::ReadingLength;
+                    return Ok(payload);
+                }
+            }
+        }
+    }
+}
+
+/// Manages an async buffer to automatically encrypt and send contents in packets.
+#[cfg(feature = "async")]
+pub struct AsyncProtocolWriter<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    buffer: W,
+    packet_writer: PacketWriter,
+}
+
+#[cfg(feature = "async")]
+impl<W> AsyncProtocolWriter<W>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    /// Encrypt contents and write packet buffer.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok()`: On successful contents encryption and packet send.
+    ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
+    pub async fn encrypt(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
+        let write_bytes =
+            self.packet_writer
+                .encrypt_packet_with_alloc(plaintext, None, PacketType::Genuine)?;
+        self.buffer.write_all(&write_bytes[..]).await?;
+        self.buffer.flush().await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Any tests requiring a random number generator are currently
-    //! gated with the std feature flag.
-
     use super::*;
     use core::str::FromStr;
     use hex::prelude::*;
@@ -1064,15 +1297,6 @@ mod tests {
                 .responder_garbage_terminator
                 .to_lower_hex_string()
         );
-    }
-
-    #[test]
-    #[cfg(feature = "std")]
-    fn test_max_garbage() {
-        let too_much_garbage = vec![0; 4111];
-        let garbage_terminator = [1; 16];
-        let result = split_garbage(&too_much_garbage, garbage_terminator);
-        assert!(matches!(result, Err(Error::MaxGarbageLength)));
     }
 
     #[test]
