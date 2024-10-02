@@ -397,9 +397,9 @@ impl PacketWriter {
         packet_type: PacketType,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet.len() < plaintext.len() + NUM_PACKET_OVERHEAD_BYTES {
+        if packet.len() < PacketWriter::required_packet_allocation(plaintext) {
             return Err(Error::BufferTooSmall {
-                required_bytes: plaintext.len() + NUM_PACKET_OVERHEAD_BYTES,
+                required_bytes: PacketWriter::required_packet_allocation(plaintext),
             });
         }
 
@@ -433,9 +433,17 @@ impl PacketWriter {
     /// Encrypt plaintext bytes and serialize into a packet to be sent over the wire
     /// and handle necessary memory allocation.
     ///
+    /// # Arguments
+    ///
     /// * `plaintext`   - Plaintext content to be encrypted.
     /// * `aad`         - Optional associated authenticated data.
     /// * `packet_type` - Is this a genuine packet or a decoy.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok(Vec<u8>)`: Ciphertext packet.
+    ///   * `Err(Error)`: An error that occurred encrypting plaintext.
     #[cfg(feature = "alloc")]
     pub fn encrypt_packet(
         &mut self,
@@ -443,9 +451,22 @@ impl PacketWriter {
         aad: Option<&[u8]>,
         packet_type: PacketType,
     ) -> Result<Vec<u8>, Error> {
-        let mut packet = vec![0u8; plaintext.len() + NUM_PACKET_OVERHEAD_BYTES];
+        let mut packet = vec![0u8; PacketWriter::required_packet_allocation(plaintext)];
         self.encrypt_packet_no_alloc(plaintext, aad, &mut packet, packet_type)?;
         Ok(packet)
+    }
+
+    /// Require bytes to encrpt given plaintext contents as a packet.
+    ///
+    /// # Arguments
+    ///
+    /// * `plaintext` - Plaintext contents.
+    ///
+    /// # Returns
+    ///
+    /// Number of bytes necessary to be allocated for packet.
+    pub fn required_packet_allocation(plaintext: &[u8]) -> usize {
+        plaintext.len() + NUM_PACKET_OVERHEAD_BYTES
     }
 }
 
@@ -1011,19 +1032,28 @@ where
 {
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
+    /// # Arguments
+    ///
+    /// * `network` - Network which both parties are operating on.
+    /// * `role`    - Role in handshake, initiator or responder.
+    /// * `garbage` - Optional garbage bytes to send in handshake.
+    /// * `decoys`  - Optional decoy packet contents bytes to send in handshake.
+    /// * `reader`  - Asynchronous buffer to read packets sent by peer.
+    /// * `writer`  - Asynchronous buffer to write packets to peer.
+    ///
     /// # Returns
     ///
     /// A `Result` containing:
     ///   * `Ok(AsyncProtocol)`: An initialized protocol handler.
     ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
-    pub async fn new(
+    pub async fn new<'a>(
         network: Network,
         role: Role,
-        garbage: Option<&[u8]>,
+        garbage: Option<&'a [u8]>,
+        decoys: Option<&'a [&'a [u8]]>,
         mut reader: R,
         mut writer: W,
     ) -> Result<Self, ProtocolError> {
-        // Initialize buffer.
         let garbage_len = match garbage {
             Some(slice) => slice.len(),
             None => 0,
@@ -1039,14 +1069,26 @@ where
         let mut remote_ellswift_buffer = [0u8; 64];
         reader.read_exact(&mut remote_ellswift_buffer).await?;
 
+        let num_version_packet_bytes = PacketWriter::required_packet_allocation(&VERSION_CONTENT);
+        let num_decoy_packets_bytes: usize = match decoys {
+            Some(decoys) => decoys
+                .iter()
+                .map(|decoy| PacketWriter::required_packet_allocation(decoy))
+                .sum(),
+            None => 0,
+        };
+
         // Complete materials and send terminator to remote.
         // Not exposing decoy packets yet.
         let mut terminator_and_version_buffer =
-            vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES + NUM_PACKET_OVERHEAD_BYTES];
+            vec![
+                0u8;
+                NUM_GARBAGE_TERMINTOR_BYTES + num_version_packet_bytes + num_decoy_packets_bytes
+            ];
         handshake.complete_materials(
             remote_ellswift_buffer,
             &mut terminator_and_version_buffer,
-            None,
+            decoys,
         )?;
         writer.write_all(&terminator_and_version_buffer).await?;
         writer.flush().await?;

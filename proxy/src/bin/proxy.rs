@@ -34,9 +34,16 @@ async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_pr
     let remote_reader = remote_reader.compat();
     let remote_writer = remote_writer.compat_write();
 
-    let protocol = AsyncProtocol::new(network, Role::Initiator, None, remote_reader, remote_writer)
-        .await
-        .expect("protocol establishment");
+    let protocol = AsyncProtocol::new(
+        network,
+        Role::Initiator,
+        None,
+        None,
+        remote_reader,
+        remote_writer,
+    )
+    .await
+    .expect("protocol establishment");
 
     let (client_reader, client_writer) = client.into_split();
     let mut v1_client_reader = V1ProtocolReader::new(client_reader);
