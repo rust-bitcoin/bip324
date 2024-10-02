@@ -186,8 +186,8 @@ pub struct SessionKeyMaterial {
     initiator_packet_key: [u8; 32],
     responder_length_key: [u8; 32],
     responder_packet_key: [u8; 32],
-    initiator_garbage_terminator: [u8; 16],
-    responder_garbage_terminator: [u8; 16],
+    initiator_garbage_terminator: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
+    responder_garbage_terminator: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
 }
 
 /// Role in the handshake.
@@ -522,76 +522,6 @@ impl PacketHandler {
     }
 }
 
-fn gen_key(rng: &mut impl Rng) -> Result<SecretKey, Error> {
-    let mut buffer = [0u8; 32];
-    rng.fill(&mut buffer[..]);
-    let sk = SecretKey::from_slice(&buffer)?;
-    Ok(sk)
-}
-
-fn new_elligator_swift<C: Signing>(
-    sk: SecretKey,
-    curve: &Secp256k1<C>,
-) -> Result<ElligatorSwift, Error> {
-    let pk = PublicKey::from_secret_key(curve, &sk);
-    Ok(ElligatorSwift::from_pubkey(pk))
-}
-
-fn get_shared_secrets(
-    a: ElligatorSwift,
-    b: ElligatorSwift,
-    secret: SecretKey,
-    party: ElligatorSwiftParty,
-    network: Network,
-) -> Result<SessionKeyMaterial, Error> {
-    let data = "bip324_ellswift_xonly_ecdh".as_bytes();
-    let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
-    initialize_session_key_material(ecdh_sk.as_secret_bytes(), network)
-}
-
-fn initialize_session_key_material(
-    ikm: &[u8],
-    network: Network,
-) -> Result<SessionKeyMaterial, Error> {
-    let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-    let magic = network.magic().to_bytes();
-    let salt = [ikm_salt, &magic].concat();
-    let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ikm);
-    let mut session_id = [0u8; 32];
-    let session_info = "session_id".as_bytes();
-    hk.expand(session_info, &mut session_id)?;
-    let mut initiator_length_key = [0u8; 32];
-    let intiiator_l_info = "initiator_L".as_bytes();
-    hk.expand(intiiator_l_info, &mut initiator_length_key)?;
-    let mut initiator_packet_key = [0u8; 32];
-    let intiiator_p_info = "initiator_P".as_bytes();
-    hk.expand(intiiator_p_info, &mut initiator_packet_key)?;
-    let mut responder_length_key = [0u8; 32];
-    let responder_l_info = "responder_L".as_bytes();
-    hk.expand(responder_l_info, &mut responder_length_key)?;
-    let mut responder_packet_key = [0u8; 32];
-    let responder_p_info = "responder_P".as_bytes();
-    hk.expand(responder_p_info, &mut responder_packet_key)?;
-    let mut garbage = [0u8; 32];
-    let garbage_info = "garbage_terminators".as_bytes();
-    hk.expand(garbage_info, &mut garbage)?;
-    let initiator_garbage_terminator: [u8; 16] = garbage[..16]
-        .try_into()
-        .expect("first 16 btyes of expanded garbage");
-    let responder_garbage_terminator: [u8; 16] = garbage[16..]
-        .try_into()
-        .expect("last 16 bytes of expanded garbage");
-    Ok(SessionKeyMaterial {
-        session_id,
-        initiator_length_key,
-        initiator_packet_key,
-        responder_length_key,
-        responder_packet_key,
-        initiator_garbage_terminator,
-        responder_garbage_terminator,
-    })
-}
-
 /// Handshake state-machine to establish the secret material in the communication channel.
 ///
 /// A handshake is first initialized to create local materials needed to setup communication
@@ -673,8 +603,12 @@ impl<'a> Handshake<'a> {
         rng: &mut impl Rng,
         curve: &Secp256k1<C>,
     ) -> Result<Self, Error> {
-        let sk = gen_key(rng)?;
-        let es = new_elligator_swift(sk, curve)?;
+        let mut secret_key_buffer = [0u8; 32];
+        rng.fill(&mut secret_key_buffer[..]);
+        let sk = SecretKey::from_slice(&secret_key_buffer)?;
+        let pk = PublicKey::from_secret_key(curve, &sk);
+        let es = ElligatorSwift::from_pubkey(pk);
+
         let point = EcdhPoint {
             secret_key: sk,
             elligator_swift: es,
@@ -716,7 +650,7 @@ impl<'a> Handshake<'a> {
         // garbage terminator haggling.
         let materials = match self.role {
             Role::Initiator => {
-                let materials = get_shared_secrets(
+                let materials = Handshake::get_shared_secrets(
                     self.point.elligator_swift,
                     theirs,
                     self.point.secret_key,
@@ -730,7 +664,7 @@ impl<'a> Handshake<'a> {
                 materials
             }
             Role::Responder => {
-                let materials = get_shared_secrets(
+                let materials = Handshake::get_shared_secrets(
                     theirs,
                     self.point.elligator_swift,
                     self.point.secret_key,
@@ -953,6 +887,56 @@ impl<'a> Handshake<'a> {
             // Terminator not found, the buffer needs more information.
             Err(Error::CiphertextTooSmall)
         }
+    }
+
+    /// Calculate secret material for session based on exchanged keys.
+    fn get_shared_secrets(
+        a: ElligatorSwift,
+        b: ElligatorSwift,
+        secret: SecretKey,
+        party: ElligatorSwiftParty,
+        network: Network,
+    ) -> Result<SessionKeyMaterial, Error> {
+        let data = "bip324_ellswift_xonly_ecdh".as_bytes();
+        let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
+
+        let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
+        let magic = network.magic().to_bytes();
+        let salt = [ikm_salt, &magic].concat();
+        let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ecdh_sk.as_secret_bytes());
+        let mut session_id = [0u8; 32];
+        let session_info = "session_id".as_bytes();
+        hk.expand(session_info, &mut session_id)?;
+        let mut initiator_length_key = [0u8; 32];
+        let intiiator_l_info = "initiator_L".as_bytes();
+        hk.expand(intiiator_l_info, &mut initiator_length_key)?;
+        let mut initiator_packet_key = [0u8; 32];
+        let intiiator_p_info = "initiator_P".as_bytes();
+        hk.expand(intiiator_p_info, &mut initiator_packet_key)?;
+        let mut responder_length_key = [0u8; 32];
+        let responder_l_info = "responder_L".as_bytes();
+        hk.expand(responder_l_info, &mut responder_length_key)?;
+        let mut responder_packet_key = [0u8; 32];
+        let responder_p_info = "responder_P".as_bytes();
+        hk.expand(responder_p_info, &mut responder_packet_key)?;
+        let mut garbage = [0u8; 32];
+        let garbage_info = "garbage_terminators".as_bytes();
+        hk.expand(garbage_info, &mut garbage)?;
+        let initiator_garbage_terminator: [u8; 16] = garbage[..16]
+            .try_into()
+            .expect("first 16 btyes of expanded garbage");
+        let responder_garbage_terminator: [u8; 16] = garbage[16..]
+            .try_into()
+            .expect("last 16 bytes of expanded garbage");
+        Ok(SessionKeyMaterial {
+            session_id,
+            initiator_length_key,
+            initiator_packet_key,
+            responder_length_key,
+            responder_packet_key,
+            initiator_garbage_terminator,
+            responder_garbage_terminator,
+        })
     }
 }
 
@@ -1219,13 +1203,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "std")]
-    fn test_sec_keygen() {
-        let mut rng = rand::thread_rng();
-        gen_key(&mut rng).unwrap();
-    }
-
-    #[test]
-    #[cfg(feature = "std")]
     fn test_initial_message() {
         use alloc::string::ToString;
 
@@ -1258,25 +1235,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
-    fn test_expand_extract() {
-        let ikm = Vec::from_hex("c6992a117f5edbea70c3f511d32d26b9798be4b81a62eaee1a5acaa8459a3592")
-            .unwrap();
-        let session_keys = initialize_session_key_material(&ikm, Network::Bitcoin).unwrap();
-        assert_eq!(
-            session_keys.session_id.to_lower_hex_string(),
-            "ce72dffb015da62b0d0f5474cab8bc72605225b0cee3f62312ec680ec5f41ba5"
-        );
-    }
-
-    #[test]
     fn test_shared_secret() {
         let alice =
             SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1322,7 +1287,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1363,7 +1328,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1407,7 +1372,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1619,7 +1584,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1658,7 +1623,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("a1855e10e94e00baa23041d916e259f7044e491da6171269694763f018c7e63693d29575dcb464ac816baa1be353ba12e3876cba7628bd0bd8e755e721eb0140").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f0000000000000000000000000000000000000000000000000000000000000000").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_bob,
             elliswift_alice,
             alice,
@@ -1701,7 +1666,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("d1ee8a93a01130cbf299249a258f94feb5f469e7d0f2f28f69ee5e9aa8f9b54a60f2c3ff2d023634ec7f4127a96cc11662e402894cf1f694fb9a7eaa5f1d9244").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff22d5e441524d571a52b3def126189d3f416890a99d4da6ede2b0cde1760ce2c3f98457ae").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1728,7 +1693,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("d2685070c1e6376e633e825296634fd461fa9e5bdf2109bcebd735e5a91f3e587c5cb782abb797fbf6bb5074fd1542a474f2a45b673763ec2db7fb99b737bbb9").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("56bd0c06f10352c3a1a9f4b4c92f6fa2b26df124b57878353c1fc691c51abea77c8817daeeb9fa546b77c8daf79d89b22b0e1b87574ece42371f00237aa9d83a").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_bob,
             elliswift_alice,
             alice,
@@ -1767,7 +1732,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff053d7ecca53e33e185a8b9be4e7699a97c6ff4c795522e5918ab7cd6b6884f67e683f3dc").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffa7730be30000000000000000000000000000000000000000000000000000000000000000").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
@@ -1800,7 +1765,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffc81017fd92fd31637c26c906b42092e11cc0d3afae8d9019d2578af22735ce7bc469c72d").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("9652d78baefc028cd37a6a92625b8b8f85fde1e4c944ad3f20e198bef8c02f19fffffffffffffffffffffffffffffffffffffffffffffffffffffffff2e91870").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_bob,
             elliswift_alice,
             alice,
@@ -1838,7 +1803,7 @@ mod tests {
                 .unwrap();
         let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff115173765dc202cf029ad3f15479735d57697af12b0131dd21430d5772e4ef11474d58b9").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("12a50f3fafea7c1eeada4cf8d33777704b77361453afc83bda91eef349ae044d20126c6200547ea5a6911776c05dee2a7f1a9ba7dfbabbbd273c3ef29ef46e46").unwrap();
-        let session_keys = get_shared_secrets(
+        let session_keys = Handshake::get_shared_secrets(
             elliswift_alice,
             elliswift_bob,
             alice,
