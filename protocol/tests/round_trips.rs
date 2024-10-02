@@ -33,10 +33,10 @@ fn hello_world_happy_path() {
         .unwrap();
 
     init_handshake
-        .authenticate_garbage_and_version_with_alloc(&resp_message[64..])
+        .authenticate_garbage_and_version(&resp_message[64..])
         .unwrap();
     resp_handshake
-        .authenticate_garbage_and_version_with_alloc(&init_finalize_message)
+        .authenticate_garbage_and_version(&init_finalize_message)
         .unwrap();
 
     let mut alice = init_handshake.finalize().unwrap();
@@ -45,29 +45,29 @@ fn hello_world_happy_path() {
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob
-        .packet_writer
-        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
+        .writer()
+        .encrypt_packet(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = alice
-        .packet_reader
-        .decrypt_payload_with_alloc(&encrypted_message_to_alice[3..], None)
+        .reader()
+        .decrypt_payload(&encrypted_message_to_alice[3..], None)
         .unwrap();
     assert_eq!(message, messages.contents());
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice
-        .packet_writer
-        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
+        .writer()
+        .encrypt_packet(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = bob
-        .packet_reader
-        .decrypt_payload_with_alloc(&encrypted_message_to_bob[3..], None)
+        .reader()
+        .decrypt_payload(&encrypted_message_to_bob[3..], None)
         .unwrap();
     assert_eq!(message, messages.contents());
 }
 
 #[test]
 #[cfg(feature = "std")]
-#[ignore = "Requires a running bitcoin daemon."]
+#[ignore = "requires a running bitcoin daemon."]
 fn regtest_handshake() {
     use std::{
         io::{Read, Write},
@@ -113,7 +113,7 @@ fn regtest_handshake() {
     let response = &mut max_response[..size];
     println!("Authenticating the handshake");
     handshake
-        .authenticate_garbage_and_version_with_alloc(response)
+        .authenticate_garbage_and_version(response)
         .unwrap();
     println!("Finalizing the handshake");
     let packet_handler = handshake.finalize().unwrap();
@@ -137,7 +137,7 @@ fn regtest_handshake() {
     };
     let message = serialize(NetworkMessage::Version(msg)).unwrap();
     let packet = encrypter
-        .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
+        .encrypt_packet(&message, None, PacketType::Genuine)
         .unwrap();
     println!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
@@ -147,9 +147,7 @@ fn regtest_handshake() {
     let message_len = decrypter.decypt_len(response_len);
     let mut response_message = vec![0; message_len];
     stream.read_exact(&mut response_message).unwrap();
-    let msg = decrypter
-        .decrypt_payload_with_alloc(&response_message, None)
-        .unwrap();
+    let msg = decrypter.decrypt_payload(&response_message, None).unwrap();
     let message = deserialize(msg.contents()).unwrap();
     assert_eq!(message.cmd(), "version");
 }
