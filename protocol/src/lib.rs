@@ -450,11 +450,11 @@ impl PacketWriter {
 #[derive(Clone)]
 pub struct PacketHandler {
     /// A unique identifier for the communication session.
-    pub session_id: [u8; 32],
+    session_id: [u8; 32],
     /// Decrypt packets.
-    pub packet_reader: PacketReader,
+    packet_reader: PacketReader,
     /// Encrypt packets.
-    pub packet_writer: PacketWriter,
+    packet_writer: PacketWriter,
 }
 
 impl PacketHandler {
@@ -499,6 +499,21 @@ impl PacketHandler {
                 }
             }
         }
+    }
+
+    /// Unique session ID.
+    pub fn session_id(&self) -> &[u8; 32] {
+        &self.session_id
+    }
+
+    /// Read reference for packet decryption.
+    pub fn reader(&mut self) -> &mut PacketReader {
+        &mut self.packet_reader
+    }
+
+    /// Write reference for packet encryption.
+    pub fn writer(&mut self) -> &mut PacketWriter {
+        &mut self.packet_writer
     }
 
     /// Split the handler into separate reader and a writer.

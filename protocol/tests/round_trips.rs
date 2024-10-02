@@ -45,21 +45,21 @@ fn hello_world_happy_path() {
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
     let encrypted_message_to_alice = bob
-        .packet_writer
+        .writer()
         .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = alice
-        .packet_reader
+        .reader()
         .decrypt_payload_with_alloc(&encrypted_message_to_alice[3..], None)
         .unwrap();
     assert_eq!(message, messages.contents());
     let message = b"Goodbye!".to_vec();
     let encrypted_message_to_bob = alice
-        .packet_writer
+        .writer()
         .encrypt_packet_with_alloc(&message, None, PacketType::Genuine)
         .unwrap();
     let messages = bob
-        .packet_reader
+        .reader()
         .decrypt_payload_with_alloc(&encrypted_message_to_bob[3..], None)
         .unwrap();
     assert_eq!(message, messages.contents());
