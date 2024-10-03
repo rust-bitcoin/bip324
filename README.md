@@ -1,5 +1,18 @@
 # BIP324 Encrypted Transport Protocol
 
-[BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki) describes an encrypted communication protocol over the Bitcoin P2P network. Encrypted messages offer a number of benefits over plaintext communication, even though the data exchanged over the Bitcoin P2P network is public to some degree. For instance, plaintext message tampering without detection is trivial for a man in the middle (MitM) attacker. Additionally, a nefarious actor may associate metadata such as IP addresses and transaction origins without explicitly having to connect directly to peers. BIP 324 - "V2" - transport forces nefarious observers to actively connect to peers as opposed to passively observing network traffic, and makes packet tampering detectable. Furthermore, V2 messages over TCP/IP look no different from random noise, making Bitcoin P2P packets indistinguishable from other network packets. 
+[BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki) describes the V2 encrypted communication protocol for the bitcoin P2P network. 
 
-The `protocol` package export the `BIP324` library. The `proxy` package is a small application to enable V2 for V1-only clients.
+## Motivation
+
+Bitcoin's original P2P protocol, "V1", was designed without any encryption. Even though the data exchanged over the bitcoin P2P network is public to some degree, encrypted communications offers a number of benefits over plaintext communication. 
+
+* Internet Service Providers (ISPs) can easily detect and censor plaintext bitcoin communication.  
+* Plaintext message tampering, without detection, is trivial for a man in the middle (MitM) attacker. 
+* Nefarious actors may associate metadata, such as IP addresses and transaction origins, without explicitly having to connect directly to peers.
+
+BIP 324 - "V2" - encrypted communication protects against the above issues increasing the privacy and censorship-resistance of the bitcoin ecosystem. Any applications communicating with bitcoin nodes, including light clients, should make use of the V2 protocol.
+
+## Packages
+
+* `protocol` - Exports the `BIP324` client library.
+* `proxy` - A small side-car application to enable V2 communication for V1-only applications.
