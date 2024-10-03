@@ -996,14 +996,40 @@ impl<'a> Handshake<'a> {
 #[cfg(feature = "std")]
 #[derive(Debug)]
 pub enum ProtocolError {
-    Io(std::io::Error),
+    /// Wrap all IO errors with suggestion for next step on failure.
+    Io(std::io::Error, ProtocolFailureSuggestion),
+    /// Internal protocol specific errors.
     Internal(Error),
+}
+
+/// Suggest to caller next step on protocol failure.
+#[cfg(feature = "std")]
+#[derive(Debug)]
+pub enum ProtocolFailureSuggestion {
+    /// Caller could attempt to retry the connection with protocol V1 if desired.
+    RetryV1,
+    /// Caller should not attempt to retry connection.
+    Abort,
 }
 
 #[cfg(feature = "std")]
 impl From<std::io::Error> for ProtocolError {
     fn from(error: std::io::Error) -> Self {
-        ProtocolError::Io(error)
+        // Detect IO errors which possibly mean the remote doesn't understand
+        // the V2 protocol and immediatly closed the connection.
+        let suggestion = match error.kind() {
+            // The remote force closed the connection.
+            std::io::ErrorKind::ConnectionReset
+            // A more general error than ConnectionReset, but could be caused
+            // by the remote closing the connection.
+            | std::io::ErrorKind::ConnectionAborted
+            // End of file read errors can occur if the remote closes the connection,
+            // but the local system reads due to timing issues.
+            | std::io::ErrorKind::UnexpectedEof => ProtocolFailureSuggestion::RetryV1,
+            _ => ProtocolFailureSuggestion::Abort,
+        };
+
+        ProtocolError::Io(error, suggestion)
     }
 }
 
@@ -1021,8 +1047,18 @@ impl std::error::Error for ProtocolError {}
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProtocolError::Io(e) => write!(f, "IO error: {:?}", e),
-            ProtocolError::Internal(e) => write!(f, "Internal error: {:?}", e),
+            ProtocolError::Io(e, suggestion) => {
+                write!(
+                    f,
+                    "IO error: {}. Suggestion: {}.",
+                    e,
+                    match suggestion {
+                        ProtocolFailureSuggestion::RetryV1 => "Retry with V1 protocol",
+                        ProtocolFailureSuggestion::Abort => "Abort, do not retry",
+                    }
+                )
+            }
+            ProtocolError::Internal(e) => write!(f, "Internal error: {}.", e),
         }
     }
 }
@@ -1060,6 +1096,10 @@ where
     /// A `Result` containing:
     ///   * `Ok(AsyncProtocol)`: An initialized protocol handler.
     ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
+    ///
+    /// # Errors
+    ///
+    /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
     pub async fn new<'a>(
         network: Network,
         role: Role,
@@ -1135,7 +1175,7 @@ where
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
                         continue;
                     }
-                    _ => return Err(ProtocolError::Io(e)),
+                    _ => return Err(ProtocolError::Io(e, ProtocolFailureSuggestion::Abort)),
                 },
             }
         }
