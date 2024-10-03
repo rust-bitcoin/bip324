@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::str::FromStr;
+
 use bip324::{
     serde::{deserialize, serialize},
     AsyncProtocol, PacketType, Role,
@@ -12,7 +14,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 configure_me::include_config!();
 
 /// Validate and bootstrap proxy connection.
-async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
+async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_proxy::Error> {
     let remote_ip = bip324_proxy::peek_addr(&client)
         .await
         .expect("peek address");
@@ -28,15 +30,9 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
     let remote_reader = remote_reader.compat();
     let remote_writer = remote_writer.compat_write();
 
-    let protocol = AsyncProtocol::new(
-        Network::Bitcoin,
-        Role::Initiator,
-        None,
-        remote_reader,
-        remote_writer,
-    )
-    .await
-    .expect("protocol establishment");
+    let protocol = AsyncProtocol::new(network, Role::Initiator, None, remote_reader, remote_writer)
+        .await
+        .expect("protocol establishment");
 
     let (mut client_reader, mut client_writer) = client.into_split();
     let (mut remote_reader, mut remote_writer) = protocol.into_split();
@@ -92,6 +88,7 @@ async fn proxy_conn(client: TcpStream) -> Result<(), bip324_proxy::Error> {
 #[tokio::main]
 async fn main() {
     let (config, _) = Config::including_optional_config_files::<&[&str]>(&[]).unwrap_or_exit();
+    let network = Network::from_str(&config.network).expect("parse-able network");
 
     let proxy = TcpListener::bind((&*config.bind_host, config.bind_port))
         .await
@@ -107,7 +104,7 @@ async fn main() {
             .expect("Failed to accept inbound connection.");
         // Spawn a new task per connection.
         tokio::spawn(async move {
-            match proxy_conn(stream).await {
+            match proxy_conn(stream, network).await {
                 Ok(_) => {
                     println!("Proxy establilshed.");
                 }
