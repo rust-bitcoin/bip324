@@ -13,12 +13,12 @@ use std::net::SocketAddr;
 
 use bitcoin::consensus::{Decodable, Encodable};
 use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
-use bitcoin::p2p::{Address, Magic};
+use bitcoin::p2p::Address;
+use bitcoin::Network;
 use hex::prelude::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-const DEFAULT_MAGIC: Magic = Magic::BITCOIN;
 /// All V1 messages have a 24 byte header.
 const V1_HEADER_BYTES: usize = 24;
 /// Hex encoding of ascii version command.
@@ -64,7 +64,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// Peek the input stream and pluck the remote address based on the version message.
-pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
+pub async fn peek_addr(client: &TcpStream, network: Network) -> Result<SocketAddr, Error> {
     println!("Validating client connection.");
     // Peek the first 70 bytes, 24 for the header and 46 for the first part of the version message.
     let mut peek_bytes = [0; 70];
@@ -72,7 +72,7 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
 
     // Check network magic.
     println!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
-    if DEFAULT_MAGIC.to_bytes().ne(&peek_bytes[0..4]) {
+    if network.magic().to_bytes().ne(&peek_bytes[0..4]) {
         return Err(Error::WrongNetwork);
     }
 
@@ -85,44 +85,93 @@ pub async fn peek_addr(client: &TcpStream) -> Result<SocketAddr, Error> {
     // Pull off address from the addr_recv field of the version message.
     let mut addr_bytes = &peek_bytes[44..];
     let remote_addr = Address::consensus_decode(&mut addr_bytes).expect("network address bytes");
-    let socket_addr = remote_addr.socket_addr().expect("IP");
+    let socket_addr = remote_addr.socket_addr().expect("ip address");
 
     Ok(socket_addr)
 }
 
-/// Read a v1 message off of the input stream.
-///
-/// This future is not cancellation safe since state is read multiple times and depends on read_exact.
-pub async fn read_v1<T: AsyncRead + Unpin>(input: &mut T) -> Result<NetworkMessage, Error> {
-    let mut header_bytes = [0u8; V1_HEADER_BYTES];
-    input.read_exact(&mut header_bytes).await?;
-
-    let payload_len = u32::from_le_bytes(
-        header_bytes[16..20]
-            .try_into()
-            .expect("4 header length bytes"),
-    );
-
-    let mut full_bytes = vec![0u8; V1_HEADER_BYTES + payload_len as usize];
-    full_bytes[0..V1_HEADER_BYTES].copy_from_slice(&header_bytes[..]);
-    let payload_bytes = &mut full_bytes[V1_HEADER_BYTES..];
-    input.read_exact(payload_bytes).await?;
-
-    let message = RawNetworkMessage::consensus_decode(&mut &full_bytes[..]).expect("decode v1");
-    // todo: drop this clone?
-    Ok(message.payload().clone())
+/// State machine of an asynchronous helps make functions more robust to cancellation.
+#[derive(Default, Debug)]
+enum ReadState {
+    #[default]
+    ReadingLength,
+    ReadingPayload {
+        packet_bytes: Vec<u8>,
+    },
 }
 
-/// Write message to the output stream using v1.
-pub async fn write_v1<T: AsyncWrite + Unpin>(
-    output: &mut T,
-    msg: NetworkMessage,
-) -> Result<(), Error> {
-    let raw = RawNetworkMessage::new(DEFAULT_MAGIC, msg);
-    let mut buffer = vec![];
-    raw.consensus_encode(&mut buffer)
-        .map_err(|_| Error::Serde)?;
-    output.write_all(&buffer[..]).await?;
-    output.flush().await?;
-    Ok(())
+/// Read messages on the V1 protocol.
+pub struct V1ProtocolReader<T: AsyncRead + Unpin> {
+    input: T,
+    state: ReadState,
+}
+
+impl<T: AsyncRead + Unpin> V1ProtocolReader<T> {
+    /// New V1 message reader.
+    pub fn new(input: T) -> Self {
+        Self {
+            input,
+            state: ReadState::default(),
+        }
+    }
+
+    /// Read a v1 message off of the input stream.
+    pub async fn read(&mut self) -> Result<NetworkMessage, Error> {
+        loop {
+            match &mut self.state {
+                ReadState::ReadingLength => {
+                    let mut header_bytes = [0u8; V1_HEADER_BYTES];
+                    self.input.read_exact(&mut header_bytes).await?;
+
+                    let payload_len = u32::from_le_bytes(
+                        header_bytes[16..20]
+                            .try_into()
+                            .expect("4 header length bytes"),
+                    ) as usize;
+
+                    let mut packet_bytes = vec![0u8; V1_HEADER_BYTES + payload_len];
+                    packet_bytes[..V1_HEADER_BYTES].copy_from_slice(&header_bytes);
+
+                    self.state = ReadState::ReadingPayload { packet_bytes };
+                }
+                ReadState::ReadingPayload { packet_bytes } => {
+                    self.input
+                        .read_exact(&mut packet_bytes[V1_HEADER_BYTES..])
+                        .await?;
+
+                    let message = RawNetworkMessage::consensus_decode(&mut &packet_bytes[..])
+                        .expect("decode v1");
+
+                    // Reset state for next read.
+                    self.state = ReadState::ReadingLength;
+
+                    return Ok(message.payload().clone());
+                }
+            }
+        }
+    }
+}
+
+/// Write messages on the V1 protocol.
+pub struct V1ProtocolWriter<T: AsyncWrite + Unpin> {
+    network: Network,
+    output: T,
+}
+
+impl<T: AsyncWrite + Unpin> V1ProtocolWriter<T> {
+    /// New V1 message writer.
+    pub fn new(network: Network, output: T) -> Self {
+        Self { network, output }
+    }
+
+    /// Write message to the output stream using v1.
+    pub async fn write(&mut self, msg: NetworkMessage) -> Result<(), Error> {
+        let raw = RawNetworkMessage::new(self.network.magic(), msg);
+        let mut buffer = vec![];
+        raw.consensus_encode(&mut buffer)
+            .map_err(|_| Error::Serde)?;
+        self.output.write_all(&buffer[..]).await?;
+        self.output.flush().await?;
+        Ok(())
+    }
 }

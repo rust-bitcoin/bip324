@@ -1,6 +1,6 @@
 # V2 Proxy
 
-A proxy process which allows V1-only clients to communicate over a V2 protocol. The process listens on port `1324` for V1 connections and requires the V1 client to send along the remote peer's IP address in the `addr_recv` field.
+A proxy sidecar process which allows V1-only clients to communicate over the V2 protocol. The process listens on port `1324` for V1 connections and requires the V1 client to send along the remote peer's IP address in the `addr_recv` field.
 
 ## Running the Proxy
 
@@ -8,7 +8,7 @@ A proxy process which allows V1-only clients to communicate over a V2 protocol. 
 
 ## Testing with Nakamoto
 
-[Nakamoto](https://github.com/cloudhead/nakamoto) is a BIP-157/BIP-158 Light Client that communicates over the Bitcoin P2P network. With a single change, Nakamoto may be modified to use the proxy.
+[Nakamoto](https://github.com/cloudhead/nakamoto) is a BIP-157/BIP-158 Light Client that communicates over the Bitcoin P2P network. With a single change, Nakamoto may be modified to use the proxy. This patch hardcodes Nakamoto to connect to the localhost on port 1324 where the proxy should be running.
 
 ```diff
 diff --git a/net/poll/src/reactor.rs b/net/poll/src/reactor.rs

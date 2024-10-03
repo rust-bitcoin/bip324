@@ -14,3 +14,9 @@ name = "bind_host"
 type = "String"
 default = "\"127.0.0.1\".into()"
 doc = "The address to listen on"
+
+[[param]]
+name = "network"
+type = "String"
+default = "\"bitcoin\".into()"
+doc = "The bitcoin network to operate on"
