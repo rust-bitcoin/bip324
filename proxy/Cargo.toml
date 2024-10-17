@@ -18,6 +18,8 @@ tokio-util = { version = "0.7.12", features = ["compat"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
 bip324 = { path = "../protocol", features = ["async"] }
 configure_me = "0.4.0"
+log = "0.4"
+env_logger = "0.10"
 
 [build-dependencies]
 configure_me_codegen = { version = "0.4.8", default-features = false }
