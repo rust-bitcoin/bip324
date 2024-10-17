@@ -16,6 +16,7 @@ use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
 use bitcoin::p2p::Address;
 use bitcoin::Network;
 use hex::prelude::*;
+use log::debug;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -65,19 +66,18 @@ impl From<std::io::Error> for Error {
 
 /// Peek the input stream and pluck the remote address based on the version message.
 pub async fn peek_addr(client: &TcpStream, network: Network) -> Result<SocketAddr, Error> {
-    println!("Validating client connection.");
     // Peek the first 70 bytes, 24 for the header and 46 for the first part of the version message.
     let mut peek_bytes = [0; 70];
     client.peek(&mut peek_bytes).await?;
 
     // Check network magic.
-    println!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
+    debug!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
     if network.magic().to_bytes().ne(&peek_bytes[0..4]) {
         return Err(Error::WrongNetwork);
     }
 
     // Check command.
-    println!("Got command: {}", &peek_bytes[4..16].to_lower_hex_string());
+    debug!("Got command: {}", &peek_bytes[4..16].to_lower_hex_string());
     if VERSION_COMMAND.ne(&peek_bytes[4..16]) {
         return Err(Error::WrongCommand);
     }

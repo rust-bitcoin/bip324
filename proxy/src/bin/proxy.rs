@@ -8,6 +8,7 @@ use bip324::{
 };
 use bip324_proxy::{V1ProtocolReader, V1ProtocolWriter};
 use bitcoin::Network;
+use log::{debug, error, info};
 use tokio::{
     net::{TcpListener, TcpStream},
     select,
@@ -22,12 +23,12 @@ async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_pr
         .await
         .expect("peek address");
 
-    println!("Reaching out to {}.", remote_ip);
+    info!("Reaching out to {}.", remote_ip);
     let remote = TcpStream::connect(remote_ip)
         .await
         .expect("connect to remote");
 
-    println!("Initiating handshake.");
+    info!("Initiating handshake.");
     let (remote_reader, remote_writer) = remote.into_split();
     // Convert to futures-compatible types.
     let remote_reader = remote_reader.compat();
@@ -43,13 +44,13 @@ async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_pr
 
     let (mut remote_reader, mut remote_writer) = protocol.into_split();
 
-    println!("Setting up proxy.");
+    info!("Setting up proxy.");
 
     loop {
         select! {
             result = v1_client_reader.read() => {
                 let msg = result?;
-                println!(
+                debug!(
                     "Read {} message from client, writing to remote.",
                     msg.command()
                 );
@@ -66,7 +67,7 @@ async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_pr
                 if payload.packet_type() == PacketType::Genuine {
                     let msg = deserialize(payload.contents())
                         .expect("deserializable contents into network message");
-                    println!(
+                    debug!(
                         "Read {} message from remote, writing to client.",
                         msg.command()
                     );
@@ -79,13 +80,15 @@ async fn proxy_conn(client: TcpStream, network: Network) -> Result<(), bip324_pr
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let (config, _) = Config::including_optional_config_files::<&[&str]>(&[]).unwrap_or_exit();
     let network = Network::from_str(&config.network).expect("parse-able network");
 
     let proxy = TcpListener::bind((&*config.bind_host, config.bind_port))
         .await
         .expect("Failed to bind to proxy port.");
-    println!(
+    info!(
         "Listening for connections on {}:{}",
         config.bind_host, config.bind_port,
     );
@@ -98,10 +101,10 @@ async fn main() {
         tokio::spawn(async move {
             match proxy_conn(stream, network).await {
                 Ok(_) => {
-                    println!("Proxy establilshed.");
+                    info!("Proxy establilshed.");
                 }
                 Err(e) => {
-                    println!("Connection ended with error: {e}.");
+                    error!("Connection ended with error: {e}.");
                 }
             };
         });
