@@ -89,6 +89,8 @@ pub enum Error {
     MaxGarbageLength,
     /// A handshake step was not completed in the proper order.
     HandshakeOutOfOrder,
+    /// The remote peer is communicating on the V1 protocol.
+    V1Protocol,
     /// Not able to generate secret material.
     SecretGeneration(SecretGenerationError),
     /// General decryption error, channel could be out of sync.
@@ -115,6 +117,7 @@ impl fmt::Display for Error {
             Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence."),
             Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {:?}.", e),
             Error::Decryption(e) => write!(f, "Decrytion error: {:?}.", e),
+            Error::V1Protocol => write!(f, "The remote peer is communicating on the V1 protocol."),
         }
     }
 }
@@ -638,12 +641,29 @@ impl<'a> Handshake<'a> {
     /// * `their_elliswift` - The key material of the remote peer.
     /// * `response_buffer` - Buffer to write response for remote peer which includes the garbage terminator and version packet.
     /// * `decoys`          - Contents for decoy packets sent before version packet.
+    ///
+    /// # Errors
+    ///
+    /// * `V1Protocol` - The remote is communicating on the V1 protocol instead of V2. Caller can fallback
+    ///                  to V1 if they want.
     pub fn complete_materials(
         &mut self,
         their_elliswift: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
         response_buffer: &mut [u8],
         decoys: Option<&[&[u8]]>,
     ) -> Result<(), Error> {
+        // Short circuit if the remote is sending the V1 protocol network bytes.
+        // Gives the caller an opportunity to fallback to V1 if they choose.
+        if self.network.magic()
+            == bitcoin::p2p::Magic::from_bytes(
+                their_elliswift[..4]
+                    .try_into()
+                    .expect("64 byte array to have 4 byte prefix"),
+            )
+        {
+            return Err(Error::V1Protocol);
+        }
+
         let theirs = ElligatorSwift::from_array(their_elliswift);
 
         // Line up appropriate materials based on role and some
@@ -1386,6 +1406,31 @@ mod tests {
             .packet_reader
             .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], Some(&auth_garbage))
             .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_handshake_v1_protocol() {
+        let mut handshake_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let mut rng = rand::thread_rng();
+        let curve = Secp256k1::signing_only();
+
+        let mut handshake = Handshake::new_with_rng(
+            Network::Bitcoin,
+            Role::Initiator,
+            None,
+            &mut handshake_buffer,
+            &mut rng,
+            &curve,
+        )
+        .expect("Handshake creation should succeed");
+
+        // Emulate remote sending network magic for start of V1 protocol.
+        let mut v1_protocol = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        v1_protocol[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes()[..]);
+        let mut response_buffer = [0u8; 0];
+        let result = handshake.complete_materials(v1_protocol, &mut response_buffer, None);
+        assert!(matches!(result, Err(Error::V1Protocol)));
     }
 
     #[test]
