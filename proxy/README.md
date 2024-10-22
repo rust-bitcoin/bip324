@@ -6,6 +6,8 @@ A proxy sidecar process which allows V1-only clients to communicate over the V2 
 
 `cargo run --bin proxy`
 
+The `--v1-fallback=true` flag can be used to fallback to the V1 protocol if the remote client does not support V2.
+
 ## Testing with Nakamoto
 
 [Nakamoto](https://github.com/cloudhead/nakamoto) is a BIP-157/BIP-158 Light Client that communicates over the Bitcoin P2P network. With a single change, Nakamoto may be modified to use the proxy. This patch hardcodes Nakamoto to connect to the localhost on port 1324 where the proxy should be running.
