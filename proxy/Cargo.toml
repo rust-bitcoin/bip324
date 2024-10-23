@@ -1,6 +1,6 @@
 [package]
 name = "bip324-proxy"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "BIP324 proxy enabling v1-only clients to use the v2 Bitcoin P2P Protocol"
