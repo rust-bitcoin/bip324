@@ -78,8 +78,8 @@ async fn v2_proxy(
         Role::Initiator,
         None,
         None,
-        remote_reader,
-        remote_writer,
+        &mut remote_reader,
+        &mut remote_writer,
     )
     .await
     {
@@ -95,7 +95,7 @@ async fn v2_proxy(
     let mut v1_client_reader = V1ProtocolReader::new(client_reader);
     let mut v1_client_writer = V1ProtocolWriter::new(network, client_writer);
 
-    let (mut remote_reader, mut remote_writer) = protocol.into_split();
+    let (mut v2_remote_reader, mut v2_remote_writer) = protocol.into_split();
 
     info!("Setting up V2 proxy.");
 
@@ -109,12 +109,12 @@ async fn v2_proxy(
                 );
 
                 let contents = serialize(msg).expect("serialize-able contents into network message");
-                remote_writer
-                    .encrypt(&contents)
+                v2_remote_writer
+                    .encrypt(&contents, &mut remote_writer)
                     .await
                     .expect("write to remote");
             },
-            result = remote_reader.decrypt() => {
+            result = v2_remote_reader.decrypt(&mut remote_reader) => {
                 let payload = result.expect("read packet");
                 // Ignore decoy packets.
                 if payload.packet_type() == PacketType::Genuine {
