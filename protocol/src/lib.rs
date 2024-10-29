@@ -1255,7 +1255,7 @@ impl AsyncProtocolReader {
     /// A `Result` containing:
     ///   * `Ok(Payload)`: A decrypted payload.
     ///   * `Err(ProtocolError)`: An error that occurred during the read or decryption.
-    pub async fn decrypt<R>(&mut self, buffer: &mut R) -> Result<Payload, ProtocolError>
+    pub async fn read_and_decrypt<R>(&mut self, buffer: &mut R) -> Result<Payload, ProtocolError>
     where
         R: AsyncRead + Unpin + Send,
     {
@@ -1313,7 +1313,7 @@ impl AsyncProtocolWriter {
     /// A `Result` containing:
     ///   * `Ok()`: On successful contents encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub async fn encrypt<W>(
+    pub async fn encrypt_and_write<W>(
         &mut self,
         plaintext: &[u8],
         buffer: &mut W,

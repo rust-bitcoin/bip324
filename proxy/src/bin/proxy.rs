@@ -71,7 +71,7 @@ async fn v2_proxy(
         .expect("connect to remote");
 
     info!("Initiating handshake.");
-    let (remote_reader, remote_writer) = remote.into_split();
+    let (mut remote_reader, mut remote_writer) = remote.into_split();
 
     let protocol = match AsyncProtocol::new(
         network,
@@ -110,11 +110,11 @@ async fn v2_proxy(
 
                 let contents = serialize(msg).expect("serialize-able contents into network message");
                 v2_remote_writer
-                    .encrypt(&contents, &mut remote_writer)
+                    .encrypt_and_write(&contents, &mut remote_writer)
                     .await
                     .expect("write to remote");
             },
-            result = v2_remote_reader.decrypt(&mut remote_reader) => {
+            result = v2_remote_reader.read_and_decrypt(&mut remote_reader) => {
                 let payload = result.expect("read packet");
                 // Ignore decoy packets.
                 if payload.packet_type() == PacketType::Genuine {
