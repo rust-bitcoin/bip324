@@ -1070,21 +1070,13 @@ impl fmt::Display for ProtocolError {
 
 /// A protocol session with handshake and send/receive packet management.
 #[cfg(any(feature = "async", feature = "tokio"))]
-pub struct AsyncProtocol<R, W>
-where
-    R: AsyncRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
-{
-    reader: AsyncProtocolReader<R>,
-    writer: AsyncProtocolWriter<W>,
+pub struct AsyncProtocol {
+    reader: AsyncProtocolReader,
+    writer: AsyncProtocolWriter,
 }
 
 #[cfg(any(feature = "async", feature = "tokio"))]
-impl<R, W> AsyncProtocol<R, W>
-where
-    R: AsyncRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
-{
+impl AsyncProtocol {
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
     /// # Arguments
@@ -1105,14 +1097,18 @@ where
     /// # Errors
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
-    pub async fn new<'a>(
+    pub async fn new<'a, R, W>(
         network: Network,
         role: Role,
         garbage: Option<&'a [u8]>,
         decoys: Option<&'a [&'a [u8]]>,
-        mut reader: R,
-        mut writer: W,
-    ) -> Result<Self, ProtocolError> {
+        reader: &mut R,
+        writer: &mut W,
+    ) -> Result<Self, ProtocolError>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
         let garbage_len = match garbage {
             Some(slice) => slice.len(),
             None => 0,
@@ -1190,29 +1186,25 @@ where
 
         Ok(Self {
             reader: AsyncProtocolReader {
-                buffer: reader,
                 packet_reader,
                 state: DecryptState::default(),
             },
-            writer: AsyncProtocolWriter {
-                buffer: writer,
-                packet_writer,
-            },
+            writer: AsyncProtocolWriter { packet_writer },
         })
     }
 
     /// Read reference for packet reading operations.
-    pub fn reader(&mut self) -> &mut AsyncProtocolReader<R> {
+    pub fn reader(&mut self) -> &mut AsyncProtocolReader {
         &mut self.reader
     }
 
     /// Write reference for packet writing operations.
-    pub fn writer(&mut self) -> &mut AsyncProtocolWriter<W> {
+    pub fn writer(&mut self) -> &mut AsyncProtocolWriter {
         &mut self.writer
     }
 
     /// Split the protocol into a separate reader and writer.
-    pub fn into_split(self) -> (AsyncProtocolReader<R>, AsyncProtocolWriter<W>) {
+    pub fn into_split(self) -> (AsyncProtocolReader, AsyncProtocolWriter) {
         (self.reader, self.writer)
     }
 }
@@ -1243,30 +1235,30 @@ impl Default for DecryptState {
 
 /// Manages an async buffer to automatically decrypt contents of received packets.
 #[cfg(any(feature = "async", feature = "tokio"))]
-pub struct AsyncProtocolReader<R>
-where
-    R: AsyncRead + Unpin + Send,
-{
-    buffer: R,
+pub struct AsyncProtocolReader {
     packet_reader: PacketReader,
     state: DecryptState,
 }
 
 #[cfg(any(feature = "async", feature = "tokio"))]
-impl<R> AsyncProtocolReader<R>
-where
-    R: AsyncRead + Unpin + Send,
-{
+impl AsyncProtocolReader {
     /// Decrypt contents of received packet from buffer.
     ///
     /// This function is cancellation safe.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - Asynchronous I/O buffer to pull bytes from.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
     ///   * `Ok(Payload)`: A decrypted payload.
     ///   * `Err(ProtocolError)`: An error that occurred during the read or decryption.
-    pub async fn decrypt(&mut self) -> Result<Payload, ProtocolError> {
+    pub async fn read_and_decrypt<R>(&mut self, buffer: &mut R) -> Result<Payload, ProtocolError>
+    where
+        R: AsyncRead + Unpin + Send,
+    {
         // Storing state between async reads to make function cancellation safe.
         loop {
             match &mut self.state {
@@ -1275,7 +1267,7 @@ where
                     bytes_read,
                 } => {
                     while *bytes_read < 3 {
-                        *bytes_read += self.buffer.read(&mut length_bytes[*bytes_read..]).await?;
+                        *bytes_read += buffer.read(&mut length_bytes[*bytes_read..]).await?;
                     }
 
                     let packet_bytes_len = self.packet_reader.decypt_len(*length_bytes);
@@ -1290,7 +1282,7 @@ where
                     bytes_read,
                 } => {
                     while *bytes_read < packet_bytes.len() {
-                        *bytes_read += self.buffer.read(&mut packet_bytes[*bytes_read..]).await?;
+                        *bytes_read += buffer.read(&mut packet_bytes[*bytes_read..]).await?;
                     }
 
                     let payload = self.packet_reader.decrypt_payload(packet_bytes, None)?;
@@ -1304,32 +1296,36 @@ where
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
 #[cfg(any(feature = "async", feature = "tokio"))]
-pub struct AsyncProtocolWriter<W>
-where
-    W: AsyncWrite + Unpin + Send,
-{
-    buffer: W,
+pub struct AsyncProtocolWriter {
     packet_writer: PacketWriter,
 }
 
 #[cfg(any(feature = "async", feature = "tokio"))]
-impl<W> AsyncProtocolWriter<W>
-where
-    W: AsyncWrite + Unpin + Send,
-{
+impl AsyncProtocolWriter {
     /// Encrypt contents and write packet buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - Asynchronous I/O buffer to write bytes to.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
     ///   * `Ok()`: On successful contents encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub async fn encrypt(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
+    pub async fn encrypt_and_write<W>(
+        &mut self,
+        plaintext: &[u8],
+        buffer: &mut W,
+    ) -> Result<(), ProtocolError>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
         let write_bytes =
             self.packet_writer
                 .encrypt_packet(plaintext, None, PacketType::Genuine)?;
-        self.buffer.write_all(&write_bytes[..]).await?;
-        self.buffer.flush().await?;
+        buffer.write_all(&write_bytes[..]).await?;
+        buffer.flush().await?;
         Ok(())
     }
 }
