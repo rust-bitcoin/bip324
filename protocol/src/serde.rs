@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 use bitcoin::{
     block,
     consensus::{encode, Decodable, Encodable},
-    io::BufRead,
     VarInt,
 };
 
@@ -296,7 +295,7 @@ struct HeaderDeserializationWrapper(Vec<block::Header>);
 
 impl Decodable for HeaderDeserializationWrapper {
     #[inline]
-    fn consensus_decode_from_finite_reader<R: BufRead + ?Sized>(
+    fn consensus_decode_from_finite_reader<R: bitcoin::io::Read + ?Sized>(
         r: &mut R,
     ) -> Result<Self, encode::Error> {
         let len = VarInt::consensus_decode(r)?.0;
