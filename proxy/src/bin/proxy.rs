@@ -13,7 +13,6 @@ use tokio::{
     net::{TcpListener, TcpStream},
     select,
 };
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 configure_me::include_config!();
 
@@ -73,9 +72,6 @@ async fn v2_proxy(
 
     info!("Initiating handshake.");
     let (remote_reader, remote_writer) = remote.into_split();
-    // Convert to futures-compatible types.
-    let remote_reader = remote_reader.compat();
-    let remote_writer = remote_writer.compat_write();
 
     let protocol = match AsyncProtocol::new(
         network,

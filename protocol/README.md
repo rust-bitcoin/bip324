@@ -12,7 +12,8 @@ The lower-level `Handshake` and `PacketHandler` types can be directly used by ap
 
 * `alloc` -- Expose memory allocation dependent features.
 * `std`   -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
-* `async` -- High level wrappers for asynchronous read and write runtimes.
+* `async` -- High level wrappers for asynchronous read and write runtimes using agnostic futures-rs traits.
+* `tokio` -- Same wrappers as `async`, but using the popular tokio runtime's specific traits instead of futures-rs.
 
 ## Handshake
 
