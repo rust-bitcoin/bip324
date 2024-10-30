@@ -47,8 +47,13 @@ use bitcoin::{
     },
 };
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
-#[cfg(feature = "async")]
+// Default to the futures-rs traits, but can overwrite with more specific
+// tokio implemenations for easier caller integration.
+#[cfg(all(feature = "async", not(feature = "tokio")))]
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(feature = "tokio")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 use hkdf::Hkdf;
 use rand::Rng;
 
@@ -1064,7 +1069,7 @@ impl fmt::Display for ProtocolError {
 }
 
 /// A protocol session with handshake and send/receive packet management.
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 pub struct AsyncProtocol<R, W>
 where
     R: AsyncRead + Unpin + Send,
@@ -1074,7 +1079,7 @@ where
     writer: AsyncProtocolWriter<W>,
 }
 
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 impl<R, W> AsyncProtocol<R, W>
 where
     R: AsyncRead + Unpin + Send,
@@ -1213,7 +1218,7 @@ where
 }
 
 /// State machine of an asynchronous packet read.
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 #[derive(Debug)]
 enum DecryptState {
     ReadingLength {
@@ -1226,7 +1231,7 @@ enum DecryptState {
     },
 }
 
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 impl Default for DecryptState {
     fn default() -> Self {
         DecryptState::ReadingLength {
@@ -1237,7 +1242,7 @@ impl Default for DecryptState {
 }
 
 /// Manages an async buffer to automatically decrypt contents of received packets.
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 pub struct AsyncProtocolReader<R>
 where
     R: AsyncRead + Unpin + Send,
@@ -1247,7 +1252,7 @@ where
     state: DecryptState,
 }
 
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 impl<R> AsyncProtocolReader<R>
 where
     R: AsyncRead + Unpin + Send,
@@ -1298,7 +1303,7 @@ where
 }
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 pub struct AsyncProtocolWriter<W>
 where
     W: AsyncWrite + Unpin + Send,
@@ -1307,7 +1312,7 @@ where
     packet_writer: PacketWriter,
 }
 
-#[cfg(feature = "async")]
+#[cfg(any(feature = "async", feature = "tokio"))]
 impl<W> AsyncProtocolWriter<W>
 where
     W: AsyncWrite + Unpin + Send,
