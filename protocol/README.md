@@ -29,8 +29,6 @@ BIP324 elects to use the ChaCha20Poly1305 Authenticated Encryption with Addition
 
 Poly1305 is a purpose-built MAC, as opposed to something like an HMAC using SHA256 which leverages an existing hash scheme to build a message authentication code. Purpose-built introduces new complexity, but also allows for increased performance.
 
-ChaCha20 and Poly1305 are both implemented in this crate to keep dependencies to a minimum.
-
 ## Development
 
 The implementation is tested against vectors from the BIP324 reference and a number of additional library tests.

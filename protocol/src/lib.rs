@@ -23,7 +23,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-mod chacha20poly1305;
 mod fschacha20poly1305;
 mod hkdf;
 #[cfg(feature = "std")]
