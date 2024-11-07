@@ -1292,6 +1292,11 @@ impl AsyncProtocolReader {
             }
         }
     }
+
+    /// Consume the protocol reader in exchange for the underlying packet decoder.
+    pub fn decoder(self) -> PacketReader {
+        return self.packet_reader;
+    }
 }
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
@@ -1327,6 +1332,11 @@ impl AsyncProtocolWriter {
         buffer.write_all(&write_bytes[..]).await?;
         buffer.flush().await?;
         Ok(())
+    }
+
+    /// Consume the protocol writer in exchange for the underlying packet encoder.
+    pub fn encoder(self) -> PacketWriter {
+        return self.packet_writer;
     }
 }
 
