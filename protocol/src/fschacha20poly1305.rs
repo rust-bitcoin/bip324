@@ -3,10 +3,8 @@
 //! Wrap ciphers with automatic re-keying in order to provide [forward secrecy](https://eprint.iacr.org/2001/035.pdf) within a session.
 //! Logic is covered by the BIP324 test vectors.
 
+use chacha20_poly1305::{chacha20::ChaCha20, ChaCha20Poly1305, Key, Nonce};
 use core::fmt;
-
-use crate::chacha20poly1305::chacha20::ChaCha20;
-use crate::chacha20poly1305::ChaCha20Poly1305;
 
 /// Message lengths are encoded in three bytes.
 const LENGTH_BYTES: u32 = 3;
@@ -18,7 +16,7 @@ const REKEY_INITIAL_NONCE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 /// Errors encrypting and decrypting with [`FSChaCha20Poly1305`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    Decryption(crate::chacha20poly1305::Error),
+    Decryption(chacha20_poly1305::Error),
 }
 
 impl fmt::Display for Error {
@@ -44,14 +42,14 @@ impl std::error::Error for Error {
 /// FSChaCha20Poly1305 is used for message packets in BIP324.
 #[derive(Clone)]
 pub struct FSChaCha20Poly1305 {
-    key: [u8; 32],
+    key: Key,
     message_counter: u64,
 }
 
 impl FSChaCha20Poly1305 {
     pub fn new(key: [u8; 32]) -> Self {
         FSChaCha20Poly1305 {
-            key,
+            key: Key::new(key),
             message_counter: 0,
         }
     }
@@ -77,9 +75,9 @@ impl FSChaCha20Poly1305 {
             rekey_nonce[4..].copy_from_slice(&self.nonce()[4..]);
 
             let mut plaintext = [0u8; 32];
-            let cipher = ChaCha20Poly1305::new(self.key, rekey_nonce);
+            let cipher = ChaCha20Poly1305::new(self.key, Nonce::new(rekey_nonce));
             cipher.encrypt(&mut plaintext, Some(aad));
-            self.key = plaintext;
+            self.key = Key::new(plaintext);
         }
 
         self.message_counter += 1;
@@ -96,7 +94,7 @@ impl FSChaCha20Poly1305 {
     ///
     /// The 16-byte authentication tag.
     pub fn encrypt(&mut self, aad: &[u8], content: &mut [u8]) -> [u8; 16] {
-        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+        let cipher = ChaCha20Poly1305::new(self.key, Nonce::new(self.nonce()));
 
         let tag = cipher.encrypt(content, Some(aad));
 
@@ -113,7 +111,7 @@ impl FSChaCha20Poly1305 {
     /// * `tag`     - 16-byte authentication tag.
     /// * `aad`     - Optional associated authenticated data covered by the authentication tag.
     pub fn decrypt(&mut self, aad: &[u8], content: &mut [u8], tag: [u8; 16]) -> Result<(), Error> {
-        let cipher = ChaCha20Poly1305::new(self.key, self.nonce());
+        let cipher = ChaCha20Poly1305::new(self.key, Nonce::new(self.nonce()));
 
         cipher
             .decrypt(content, tag, Some(aad))
@@ -132,7 +130,7 @@ impl FSChaCha20Poly1305 {
 /// implicitly authenticated by the message packets.
 #[derive(Clone)]
 pub struct FSChaCha20 {
-    key: [u8; 32],
+    key: Key,
     block_counter: u32,
     chunk_counter: u32,
 }
@@ -140,7 +138,7 @@ pub struct FSChaCha20 {
 impl FSChaCha20 {
     pub fn new(key: [u8; 32]) -> Self {
         FSChaCha20 {
-            key,
+            key: Key::new(key),
             block_counter: 0,
             chunk_counter: 0,
         }
@@ -151,7 +149,7 @@ impl FSChaCha20 {
         let counter_mod = (self.chunk_counter / REKEY_INTERVAL as u32).to_le_bytes();
         let mut nonce = [0u8; 12];
         nonce[4..8].copy_from_slice(&counter_mod);
-        let mut cipher = ChaCha20::new(self.key, nonce, 0);
+        let mut cipher = ChaCha20::new(self.key, Nonce::new(nonce), 0);
         cipher.seek(self.block_counter);
         cipher.apply_keystream(chunk);
         self.block_counter += LENGTH_BYTES;
@@ -160,7 +158,7 @@ impl FSChaCha20 {
             cipher.seek(self.block_counter);
             cipher.apply_keystream(&mut key_buffer);
             self.block_counter = 0;
-            self.key = key_buffer;
+            self.key = Key::new(key_buffer);
         }
         self.chunk_counter += 1;
     }

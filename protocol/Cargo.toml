@@ -12,8 +12,8 @@ rust-version = "1.63.0"
 default = ["std"]
 async = ["std", "futures/std"]
 tokio = ["std", "tokio/io-util"]
-std = ["alloc", "bitcoin/std", "rand/std", "rand/std_rng"]
-alloc = []
+std = ["alloc", "bitcoin/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
+alloc = ["chacha20-poly1305/alloc"]
 
 [dependencies]
 futures = { version = "0.3.30", default-features = false, optional = true }
@@ -21,6 +21,7 @@ futures = { version = "0.3.30", default-features = false, optional = true }
 tokio = { version = ">=1.37.0, <1.39.0", default-features = false, optional = true }
 rand = { version = "0.8.0", default-features = false }
 bitcoin = { version = "0.32.4", default-features = false }
+chacha20-poly1305 = { version = "0.1.1", default-features = false }
 
 [dev-dependencies]
 hex = { package = "hex-conservative", version = "0.2.0" }
