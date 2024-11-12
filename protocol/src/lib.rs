@@ -24,7 +24,6 @@ extern crate alloc;
 extern crate std;
 
 mod fschacha20poly1305;
-mod hkdf;
 #[cfg(feature = "std")]
 pub mod serde;
 
@@ -37,14 +36,12 @@ use alloc::vec;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-use bitcoin::{
-    hashes::sha256,
-    secp256k1::{
-        self,
-        ellswift::{ElligatorSwift, ElligatorSwiftParty},
-        PublicKey, Secp256k1, SecretKey, Signing,
-    },
+use bitcoin::secp256k1::{
+    self,
+    ellswift::{ElligatorSwift, ElligatorSwiftParty},
+    PublicKey, Secp256k1, SecretKey, Signing,
 };
+use bitcoin_hashes::{hkdf, sha256};
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 // Default to the futures-rs traits, but can overwrite with more specific
 // tokio implemenations for easier caller integration.
