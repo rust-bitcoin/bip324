@@ -1291,7 +1291,7 @@ impl AsyncProtocolReader {
 
     /// Consume the protocol reader in exchange for the underlying packet decoder.
     pub fn decoder(self) -> PacketReader {
-        return self.packet_reader;
+        self.packet_reader
     }
 }
 
@@ -1332,7 +1332,7 @@ impl AsyncProtocolWriter {
 
     /// Consume the protocol writer in exchange for the underlying packet encoder.
     pub fn encoder(self) -> PacketWriter {
-        return self.packet_writer;
+        self.packet_writer
     }
 }
 
