@@ -19,6 +19,7 @@ pub use bitcoin::p2p::message::{CommandString, NetworkMessage};
 pub enum Error {
     Serialize,
     Deserialize,
+    UnknownShortID(u8),
 }
 
 impl fmt::Display for Error {
@@ -26,6 +27,7 @@ impl fmt::Display for Error {
         match self {
             Error::Serialize => write!(f, "Unable to serialize"),
             Error::Deserialize => write!(f, "Unable to deserialize"),
+            Error::UnknownShortID(b) => write!(f, "Unrecognized short ID when deserializing {b}"),
         }
     }
 }
@@ -36,6 +38,7 @@ impl std::error::Error for Error {
         match self {
             Error::Serialize => None,
             Error::Deserialize => None,
+            Error::UnknownShortID(_) => None,
         }
     }
 }
@@ -283,7 +286,7 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
         )),
 
         // Unsupported short ID.
-        _ => Err(Error::Deserialize),
+        unknown => Err(Error::UnknownShortID(unknown)),
     }
 }
 
