@@ -15,29 +15,28 @@ use bitcoin::{
 
 pub use bitcoin::p2p::message::{CommandString, NetworkMessage};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Error {
-    Serialize,
-    Deserialize,
+    Serialize(bitcoin::io::Error),
+    Deserialize(bitcoin::consensus::encode::Error),
     UnknownShortID(u8),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Serialize => write!(f, "Unable to serialize"),
-            Error::Deserialize => write!(f, "Unable to deserialize"),
+            Error::Serialize(e) => write!(f, "Unable to serialize {e}"),
+            Error::Deserialize(e) => write!(f, "Unable to deserialize {e}"),
             Error::UnknownShortID(b) => write!(f, "Unrecognized short ID when deserializing {b}"),
         }
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Serialize => None,
-            Error::Deserialize => None,
+            Error::Serialize(e) => Some(e),
+            Error::Deserialize(e) => Some(e),
             Error::UnknownShortID(_) => None,
         }
     }
@@ -143,7 +142,7 @@ pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
             buffer.push(0u8);
             msg.command()
                 .consensus_encode(&mut buffer)
-                .map_err(|_| Error::Serialize)?;
+                .map_err(Error::Serialize)?;
         }
         NetworkMessage::Unknown {
             command,
@@ -152,12 +151,12 @@ pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
             buffer.push(0u8);
             command
                 .consensus_encode(&mut buffer)
-                .map_err(|_| Error::Serialize)?;
+                .map_err(Error::Serialize)?;
         }
     }
 
     msg.consensus_encode(&mut buffer)
-        .map_err(|_| Error::Serialize)?;
+        .map_err(Error::Serialize)?;
 
     Ok(buffer)
 }
@@ -171,15 +170,14 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
         0u8 => {
             // Next 12 bytes have encoded command.
             let mut command_buffer = &buffer[1..13];
-            let command = CommandString::consensus_decode(&mut command_buffer)
-                .map_err(|_| Error::Deserialize)?;
+            let command =
+                CommandString::consensus_decode(&mut command_buffer).map_err(Error::Deserialize)?;
             // Rest of buffer is payload.
             payload_buffer = &buffer[13..];
             // There are a handful of "known" messages which don't use a short ID, otherwise Unknown.
             match command.as_ref() {
                 "version" => Ok(NetworkMessage::Version(
-                    Decodable::consensus_decode(&mut payload_buffer)
-                        .map_err(|_| Error::Deserialize)?,
+                    Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
                 )),
                 "verack" => Ok(NetworkMessage::Verack),
                 "sendheaders" => Ok(NetworkMessage::SendHeaders),
@@ -187,12 +185,10 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
                 "wtxidrelay" => Ok(NetworkMessage::WtxidRelay),
                 "sendaddrv2" => Ok(NetworkMessage::SendAddrV2),
                 "alert" => Ok(NetworkMessage::Alert(
-                    Decodable::consensus_decode(&mut payload_buffer)
-                        .map_err(|_| Error::Deserialize)?,
+                    Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
                 )),
                 "reject" => Ok(NetworkMessage::Reject(
-                    Decodable::consensus_decode(&mut payload_buffer)
-                        .map_err(|_| Error::Deserialize)?,
+                    Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
                 )),
                 _ => Ok(NetworkMessage::Unknown {
                     command,
@@ -202,87 +198,87 @@ pub fn deserialize(buffer: &[u8]) -> Result<NetworkMessage, Error> {
         }
         // The following single byte IDs map to command short IDs.
         1u8 => Ok(NetworkMessage::Addr(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         2u8 => Ok(NetworkMessage::Block(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         3u8 => Ok(NetworkMessage::BlockTxn(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         4u8 => Ok(NetworkMessage::CmpctBlock(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         5u8 => Ok(NetworkMessage::FeeFilter(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         6u8 => Ok(NetworkMessage::FilterAdd(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         7u8 => Ok(NetworkMessage::FilterClear),
         8u8 => Ok(NetworkMessage::FilterLoad(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         9u8 => Ok(NetworkMessage::GetBlocks(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         10u8 => Ok(NetworkMessage::GetBlockTxn(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         11u8 => Ok(NetworkMessage::GetData(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         12u8 => Ok(NetworkMessage::GetHeaders(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         // This one gets a little weird and needs a bit of love in the future.
         13u8 => Ok(NetworkMessage::Headers(
             HeaderDeserializationWrapper::consensus_decode(&mut payload_buffer)
-                .map_err(|_| Error::Deserialize)?
+                .map_err(Error::Deserialize)?
                 .0,
         )),
         14u8 => Ok(NetworkMessage::Inv(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         15u8 => Ok(NetworkMessage::MemPool),
         16u8 => Ok(NetworkMessage::MerkleBlock(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         17u8 => Ok(NetworkMessage::NotFound(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         18u8 => Ok(NetworkMessage::Ping(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         19u8 => Ok(NetworkMessage::Pong(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         20u8 => Ok(NetworkMessage::SendCmpct(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         21u8 => Ok(NetworkMessage::Tx(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         22u8 => Ok(NetworkMessage::GetCFilters(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         23u8 => Ok(NetworkMessage::CFilter(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         24u8 => Ok(NetworkMessage::GetCFHeaders(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         25u8 => Ok(NetworkMessage::CFHeaders(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         26u8 => Ok(NetworkMessage::GetCFCheckpt(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         27u8 => Ok(NetworkMessage::CFCheckpt(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
         28u8 => Ok(NetworkMessage::AddrV2(
-            Decodable::consensus_decode(&mut payload_buffer).map_err(|_| Error::Deserialize)?,
+            Decodable::consensus_decode(&mut payload_buffer).map_err(Error::Deserialize)?,
         )),
 
         // Unsupported short ID.
