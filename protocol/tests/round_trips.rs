@@ -69,9 +69,11 @@ fn hello_world_happy_path() {
 #[cfg(feature = "std")]
 #[ignore = "requires a running bitcoin daemon."]
 fn regtest_handshake() {
+    use core::time::Duration;
     use std::{
         io::{Read, Write},
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
+        process::{Command, Stdio},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -80,6 +82,23 @@ fn regtest_handshake() {
         Handshake, PacketType,
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+
+    #[allow(clippy::zombie_processes)]
+    Command::new("bitcoind")
+        .arg("--chain=regtest")
+        .arg("--rpcport=18443")
+        .arg("--rpcuser=test")
+        .arg("--rpcpassword=bip324")
+        .arg("--rest=1")
+        .arg("--server=1")
+        .arg("--listen=1")
+        .arg("--v2transport=1")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("failed to start bitcoind");
+
+    println!("Waiting for bitcoind to initialize");
+    std::thread::sleep(Duration::from_secs(1));
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{PORT}")).unwrap();
     let mut public_key = [0u8; 64];
@@ -150,4 +169,15 @@ fn regtest_handshake() {
     let msg = decrypter.decrypt_payload(&response_message, None).unwrap();
     let message = deserialize(msg.contents()).unwrap();
     assert_eq!(message.cmd(), "version");
+
+    Command::new("bitcoin-cli")
+        .arg("--chain=regtest")
+        .arg("--rpcuser=test")
+        .arg("--rpcpassword=bip324")
+        .arg("stop")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("failed to stop bitcoind")
+        .wait()
+        .expect("failed to stop bitcoind");
 }
