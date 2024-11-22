@@ -1,3 +1,9 @@
+# v0.6.0
+
+* Switch out the chacha20-poly1305 implementation with the SIMD-enabled rust-bitcoin version.
+* Expose underlying packet handler types in `AsyncProtocol` so callers can leverage the automatic handshake while maintaining fine grained control of the packet handling.
+* Pass along more specific I/O errors to caller.
+
 # v0.5.0
 
 * Replace the ownership-based interface of `AsyncProtocol` with mutable references which fit in the asynchronous ecosystem better.
