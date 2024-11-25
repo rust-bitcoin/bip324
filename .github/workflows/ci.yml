@@ -7,7 +7,6 @@ on:
   pull_request:
 
 jobs:
-  # Proxy application is not as strict as protocol library.
   proxy:
     runs-on: ubuntu-latest
     strategy:
