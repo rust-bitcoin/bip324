@@ -1,3 +1,12 @@
 [workspace]
 members = ["protocol", "proxy"]
+# Resolving transitive dependencies which are MSRV compliant with resolver v3,
+# but the v3 resolver is only available in rustc > 1.84.0.
+#
+# 1. Update workspace resolver setting to `3`.
+# 2. Hop over to a toolchain with rust version > 1.84.0.
+# 3. Run `cargo update` to fix up lock file versions.
+# 4. Set workspace resolver setting back to `2` to support MSRV.
+#
+# Once MSRV > 1.84.0 this setting can be dropped since the default is then v3.
 resolver = "2"
