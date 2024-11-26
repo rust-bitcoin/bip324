@@ -67,7 +67,6 @@ fn hello_world_happy_path() {
 
 #[test]
 #[cfg(feature = "std")]
-#[ignore = "requires a running bitcoin daemon."]
 fn regtest_handshake() {
     use std::{
         io::{Read, Write},
@@ -80,8 +79,9 @@ fn regtest_handshake() {
         Handshake, PacketType,
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    let bitcoind = regtest_process(TransportVersion::V2);
 
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{PORT}")).unwrap();
+    let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
     let mut public_key = [0u8; 64];
     let mut handshake = Handshake::new(
         bip324::Network::Regtest,
@@ -150,4 +150,59 @@ fn regtest_handshake() {
     let msg = decrypter.decrypt_payload(&response_message, None).unwrap();
     let message = deserialize(msg.contents()).unwrap();
     assert_eq!(message.cmd(), "version");
+}
+
+#[test]
+#[should_panic]
+#[cfg(feature = "std")]
+fn regtest_handshake_v1_only() {
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+    };
+
+    use bip324::Handshake;
+    let bitcoind = regtest_process(TransportVersion::V1);
+
+    let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
+    let mut public_key = [0u8; 64];
+    let _ = Handshake::new(
+        bip324::Network::Regtest,
+        bip324::Role::Initiator,
+        None,
+        &mut public_key,
+    )
+    .unwrap();
+    println!("Writing public key to the remote node");
+    stream.write_all(&public_key).unwrap();
+    stream.flush().unwrap();
+    let mut remote_public_key = [0u8; 64];
+    println!("Reading the remote node public key");
+    stream.read_exact(&mut remote_public_key).unwrap();
+}
+
+/// Bitcoind transport versions.
+enum TransportVersion {
+    V1,
+    V2,
+}
+
+/// Fire up a managed regtest bitcoind process.
+fn regtest_process(transport: TransportVersion) -> bitcoind::BitcoinD {
+    // Pull executable from auto-downloaded location, unless
+    // environment variable override is present. Some operating
+    // systems (e.g. NixOS) don't like the downloaded executable
+    // so the environment varible must be used.
+    let exe_path = bitcoind::exe_path().unwrap();
+    let mut conf = bitcoind::Conf::default();
+
+    // Enable V2 if requested, otherwise disable.
+    match transport {
+        TransportVersion::V2 => conf.args.push("-v2transport=1"),
+        TransportVersion::V1 => conf.args.push("-v2transport=0"),
+    }
+
+    // Enable p2p port for tests.
+    conf.p2p = bitcoind::P2P::Yes;
+    bitcoind::BitcoinD::with_conf(exe_path, &conf).unwrap()
 }

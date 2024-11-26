@@ -27,6 +27,8 @@ bitcoin_hashes = { version ="0.15.0", default-features = false }
 chacha20-poly1305 = { version = "0.1.1", default-features = false }
 
 [dev-dependencies]
+# bitcoind version 26.0 includes support for BIP324's V2 protocol, but it is disabled by default.
+bitcoind = { package = "bitcoind-json-rpc-regtest", version = "0.3.0", default-features = false, features = ["26_0"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
 
 [lib]
