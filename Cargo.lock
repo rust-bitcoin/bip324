@@ -45,9 +45,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.93"
+version = "1.0.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
+checksum = "c1fd03a028ef38ba2276dce7e33fcd6369c158a1bca17946c4b1b701891c1ff7"
 
 [[package]]
 name = "arrayvec"
@@ -110,8 +110,8 @@ version = "0.6.0"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes 0.15.0",
- "bitcoind-json-rpc-regtest",
  "chacha20-poly1305",
+ "corepc-node",
  "futures",
  "hex-conservative 0.2.1",
  "rand",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "bip324-proxy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bip324 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitcoin",
@@ -222,51 +222,6 @@ checksum = "e0982261c82a50d89d1a411602afee0498b3e0debe3d36693f0c661352809639"
 dependencies = [
  "bitcoin-io 0.2.0",
  "hex-conservative 0.3.0",
-]
-
-[[package]]
-name = "bitcoind-json-rpc-client"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "496c919b6afc9f620c01858bb54799edcada994bbe4ff9e7dcca12da8271d832"
-dependencies = [
- "bitcoin",
- "bitcoind-json-rpc-types",
- "jsonrpc",
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "bitcoind-json-rpc-regtest"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "543e0c6ea81b14f0db0b11124c373d66794df4b7ec2ea0370aa35b4cb05dbcd9"
-dependencies = [
- "anyhow",
- "bitcoin_hashes 0.14.0",
- "bitcoind-json-rpc-client",
- "flate2",
- "log",
- "minreq",
- "serde_json",
- "tar",
- "tempfile",
- "which",
- "zip",
-]
-
-[[package]]
-name = "bitcoind-json-rpc-types"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80270bb74df085641b0acab8ee00c42eb531cb7ed869bfb0d9ed37f7fb23c230"
-dependencies = [
- "bitcoin",
- "bitcoin-internals 0.3.0",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -392,6 +347,51 @@ name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
+
+[[package]]
+name = "corepc-client"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b926446a90cd329b8ce85ea40d74e1961d0ad42ea0bc0708a82e5ca843fe631d"
+dependencies = [
+ "bitcoin",
+ "corepc-types",
+ "jsonrpc",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "corepc-node"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d73264e3fa9857a43c8c51dba528646c355773617924f0b9e821d078f11a6fb"
+dependencies = [
+ "anyhow",
+ "bitcoin_hashes 0.14.0",
+ "corepc-client",
+ "flate2",
+ "log",
+ "minreq",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "which",
+ "zip",
+]
+
+[[package]]
+name = "corepc-types"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7efadd36b3035cb5dda5c8346d6314a16507b4d26269a553733d12b5bbf9b31"
+dependencies = [
+ "bitcoin",
+ "bitcoin-internals 0.3.0",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "cpufeatures"
