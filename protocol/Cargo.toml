@@ -11,7 +11,7 @@ rust-version = "1.63.0"
 [features]
 default = ["std"]
 # High-level wrappers using futures traits.
-async = ["std", "dep:futures"]
+futures = ["std", "dep:futures"]
 # High-level wrappers using tokio traits - may affect MSRV requirements.
 tokio = ["std", "dep:tokio"]
 std = ["alloc", "bitcoin/std", "bitcoin_hashes/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
