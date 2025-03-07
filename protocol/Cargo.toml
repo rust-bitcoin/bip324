@@ -1,6 +1,6 @@
 [package]
 name = "bip324"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "Encrypted messaging over the Bitcoin P2P Protocol as specified by BIP 324"
