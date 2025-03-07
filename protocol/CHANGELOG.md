@@ -1,3 +1,8 @@
+# v0.7.0
+
+* Loosen tokio version restrictions allowing the consumer to dictate the tokio version best for them. The version could effect the MSRV of the library.
+* Rename the `async` feature to `futures` to better follow ecosystem conventions.
+
 # v0.6.0
 
 * Switch out the chacha20-poly1305 implementation with the SIMD-enabled rust-bitcoin version.
