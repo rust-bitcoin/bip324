@@ -4,7 +4,7 @@ A BIP324 library to establish and communicate over an encrypted channel.
 
 The library is designed with a bare `no_std` and "Sans I/O" interface to keep it as agnostic as possible to application runtimes, but higher level interfaces are exposed for ease of use.
 
-The `async` feature includes the high-level `AsyncProcotol` type which helps create and manage an encrypted channel. 
+The `futures` feature includes the high-level `AsyncProcotol` type which helps create and manage an encrypted channel. 
 
 The lower-level `Handshake` and `PacketHandler` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials. A successful handshake results in a packet handler which performs the encrypt and decrypt operations for the lifetime of the channel.
 
@@ -12,8 +12,8 @@ The lower-level `Handshake` and `PacketHandler` types can be directly used by ap
 
 * `alloc` -- Expose memory allocation dependent features.
 * `std`   -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
-* `async` -- High level wrappers for asynchronous read and write runtimes using agnostic futures-rs traits.
-* `tokio` -- Same wrappers as `async`, but using the popular tokio runtime's specific traits instead of futures-rs.
+* `futures` -- High level wrappers for asynchronous read and write runtimes using agnostic futures-rs traits.
+* `tokio` -- Same wrappers as `futures`, but using the popular tokio runtime's specific traits instead of futures-rs.
 
 ## Minimum Supported Rust Version (MSRV)
 

@@ -45,7 +45,7 @@ use bitcoin_hashes::{hkdf, sha256};
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 // Default to the futures-rs traits, but can overwrite with more specific
 // tokio implemenations for easier caller integration.
-#[cfg(all(feature = "async", not(feature = "tokio")))]
+#[cfg(all(feature = "futures", not(feature = "tokio")))]
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -1065,13 +1065,13 @@ impl fmt::Display for ProtocolError {
 }
 
 /// A protocol session with handshake and send/receive packet management.
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 pub struct AsyncProtocol {
     reader: AsyncProtocolReader,
     writer: AsyncProtocolWriter,
 }
 
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 impl AsyncProtocol {
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
@@ -1206,7 +1206,7 @@ impl AsyncProtocol {
 }
 
 /// State machine of an asynchronous packet read.
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 #[derive(Debug)]
 enum DecryptState {
     ReadingLength {
@@ -1219,7 +1219,7 @@ enum DecryptState {
     },
 }
 
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 impl Default for DecryptState {
     fn default() -> Self {
         DecryptState::ReadingLength {
@@ -1230,13 +1230,13 @@ impl Default for DecryptState {
 }
 
 /// Manages an async buffer to automatically decrypt contents of received packets.
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 pub struct AsyncProtocolReader {
     packet_reader: PacketReader,
     state: DecryptState,
 }
 
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 impl AsyncProtocolReader {
     /// Decrypt contents of received packet from buffer.
     ///
@@ -1296,12 +1296,12 @@ impl AsyncProtocolReader {
 }
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 pub struct AsyncProtocolWriter {
     packet_writer: PacketWriter,
 }
 
-#[cfg(any(feature = "async", feature = "tokio"))]
+#[cfg(any(feature = "futures", feature = "tokio"))]
 impl AsyncProtocolWriter {
     /// Encrypt contents and write packet buffer.
     ///
