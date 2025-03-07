@@ -10,15 +10,18 @@ rust-version = "1.63.0"
 
 [features]
 default = ["std"]
-async = ["std", "futures/std"]
-tokio = ["std", "tokio/io-util"]
+# High-level wrappers using futures traits.
+async = ["std", "dep:futures"]
+# High-level wrappers using tokio traits - may affect MSRV requirements.
+tokio = ["std", "dep:tokio"]
 std = ["alloc", "bitcoin/std", "bitcoin_hashes/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
 alloc = ["chacha20-poly1305/alloc"]
 
 [dependencies]
-futures = { version = "0.3.30", default-features = false, optional = true }
-# Must be under 1.39.0 due to MSRV 1.63.0 requirement.
-tokio = { version = ">=1.37.0, <1.39.0", default-features = false, optional = true }
+futures = { version = "0.3.30", default-features = false, optional = true, features = ["std"] }
+# The tokio feature may increase the MSRV beyond 1.63.0
+# depending on which version of tokio is selected by the caller.
+tokio = { version = "1", default-features = false, optional = true, features = ["io-util"] }
 rand = { version = "0.8.0", default-features = false }
 bitcoin = { version = "0.32.4", default-features = false }
 # Depending on hashes directly for HKDF, can drop this and 

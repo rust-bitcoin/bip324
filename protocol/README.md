@@ -15,6 +15,12 @@ The lower-level `Handshake` and `PacketHandler` types can be directly used by ap
 * `async` -- High level wrappers for asynchronous read and write runtimes using agnostic futures-rs traits.
 * `tokio` -- Same wrappers as `async`, but using the popular tokio runtime's specific traits instead of futures-rs.
 
+## Minimum Supported Rust Version (MSRV)
+
+This crate has a baseline MSRV of **1.63.0**.
+
+However, the effective MSRV may be higher depending on the specific versions of dependencies selected by the caller. Currently, tokio is known to affect MSRV when using newer versions with the `tokio` feature flag, but other dependencies may also impact the effective MSRV in the future.
+
 ## Handshake
 
 Alice and Bob initiate a connection by sending three messages to each other to derive a number of shared secrets. Alice begins the connection by deriving a public/private keypair over `secp256k1`, the typical bitcoin curve. Alice is known as the *initiator*. She encodes the public key in the [Elligator Swift](https://eprint.iacr.org/2022/759.pdf) format (64-bytes), optionally pads it with some random garbage bytes, and sends the message to Bob. 
