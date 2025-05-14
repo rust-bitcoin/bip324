@@ -188,12 +188,13 @@ enum TransportVersion {
 }
 
 /// Fire up a managed regtest bitcoind process.
-fn regtest_process(transport: TransportVersion) -> bitcoind::BitcoinD {
+fn regtest_process(transport: TransportVersion) -> bitcoind::Node {
     // Pull executable from auto-downloaded location, unless
     // environment variable override is present. Some operating
     // systems (e.g. NixOS) don't like the downloaded executable
     // so the environment varible must be used.
     let exe_path = bitcoind::exe_path().unwrap();
+    println!("Using bitcoind at {exe_path}");
     let mut conf = bitcoind::Conf::default();
 
     // Enable V2 if requested, otherwise disable.
@@ -204,5 +205,5 @@ fn regtest_process(transport: TransportVersion) -> bitcoind::BitcoinD {
 
     // Enable p2p port for tests.
     conf.p2p = bitcoind::P2P::Yes;
-    bitcoind::BitcoinD::with_conf(exe_path, &conf).unwrap()
+    bitcoind::Node::with_conf(exe_path, &conf).unwrap()
 }

@@ -1,0 +1,25 @@
+# Attempt to detect any upcoming breaking changes if CI hasn't been run in awhile.
+name: Weekly Check
+
+on:
+  # Allows manual triggering.
+  workflow_dispatch:  
+  schedule:
+   # Run at midnight on Sundays.
+   - cron: "0 0 * * 0" 
+
+jobs:
+  # Quick canary of code as well as potential issues with upcoming toolchains.
+  check:
+    strategy:
+      matrix:
+        toolchain: [stable, beta, nightly]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy,rustfmt
+      - run: just check
