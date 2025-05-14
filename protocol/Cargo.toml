@@ -31,7 +31,7 @@ chacha20-poly1305 = { version = "0.1.1", default-features = false }
 
 [dev-dependencies]
 # bitcoind version 26.0 includes support for BIP324's V2 protocol, but it is disabled by default.
-bitcoind = { package = "corepc-node", version = "0.4.0", default-features = false, features = ["26_0"] }
+bitcoind = { package = "corepc-node", version = "0.7.1", default-features = false, features = ["26_0","download"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
 
 [lib]

@@ -1,81 +1,66 @@
-name: Build & Test
+name: CI
 
 on:
   push:
     branches:
       - main
   pull_request:
+    branches:
+      - main
 
 jobs:
-  proxy:
-    runs-on: ubuntu-latest
+  # Quick canary of code as well as potential issues with upcoming toolchains.
+  check:
     strategy:
       matrix:
         toolchain: [stable, beta, nightly]
-    steps:
-      - uses: actions/checkout@v3
-      - name: Update Toolchain
-        run: |
-          rustup default ${{ matrix.toolchain }}
-          rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
-          rustup component add --toolchain ${{ matrix.toolchain }} clippy
-          rustup update ${{ matrix.toolchain }}
-      - name: Lint
-        run: |
-          cargo clippy --package bip324-proxy --all-targets
-      - name: Format
-        run: |
-          cargo fmt --package bip324-proxy -- --check
-      - name: Build
-        run: |
-          cargo build --package bip324-proxy --verbose
-          cargo build --all --verbose --no-default-features
-          cargo build --all --verbose --all-features
-      - name: Test
-        run: |
-          cargo test --package bip324-proxy --verbose
-
-  protocol:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy,rustfmt
+      - run: just check
+  # Build and test the code across platforms.
+  test:
     strategy:
       matrix:
-        # Minumum Supported Rust Version (MSRV) is 1.63.0.
-        toolchain: [1.63.0, stable, beta, nightly]
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v3
-      - name: Update Toolchain
-        run: |
-          rustup default ${{ matrix.toolchain }}
-          rustup component add --toolchain ${{ matrix.toolchain }} rustfmt
-          rustup component add --toolchain ${{ matrix.toolchain }} clippy
-          rustup update ${{ matrix.toolchain }}
-      - name: Lint
-        run: |
-          cargo clippy --package bip324 --all-targets
-      - name: Format
-        run: |
-          cargo fmt --package bip324 -- --check
-      - name: Build
-        # Build with default features, all, and none. 
-        # Then build with specific feature sub-sets.
-        run: |
-          cargo build --package bip324 --verbose
-          cargo build --package bip324 --verbose --all-features
-          cargo build --package bip324 --verbose --no-default-features
-          cargo build --package bip324 --verbose --no-default-features --features alloc
-      - name: Test
-        # Test with default features, all, and none. 
-        # Then test with specific feature sub-sets.
-        run: |
-          cargo test --package bip324 --verbose
-          cargo test --package bip324 --verbose --all-features
-          cargo test --package bip324 --verbose --no-default-features
-          cargo test --package bip324 --verbose --no-default-features --features alloc
-      - name: Check No Standard Library Support
-        # The cross tool used to test in a no standard library environment doesn't play nice with our MSRV, so limiting to just stable toolchain.
-        if: matrix.toolchain == 'stable'
-        run: |
-          rustup target add --toolchain ${{ matrix.toolchain }} thumbv7m-none-eabi
-          cargo install cross --locked
-          cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
-        
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: just test unit
+  features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: just test features
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: just test msrv
+  min-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - run: just test min-versions
+  no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: just test no-std

@@ -11,13 +11,12 @@ readme = "README.md"
 spec = "config_spec.toml"
 
 [dependencies]
-bitcoin = { version = "0.32.0" }
-tokio = { version = "1.37.0", features = ["full"] }
+bitcoin = { version = "0.32.4" }
+tokio = { version = "1", features = ["full"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
-# Can test locally by replacing versoin with path = "../protocol".
-bip324 = { version = "0.6.0", features = ["tokio"] }
+bip324 = { path = "../protocol", features = ["tokio"] }
 configure_me = "0.4.0"
-log = "0.4"
+log = "0.4.8"
 env_logger = "0.10"
 
 [build-dependencies]
