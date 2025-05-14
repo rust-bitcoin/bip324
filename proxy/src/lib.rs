@@ -41,9 +41,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::WrongNetwork => write!(f, "recieved message on wrong network"),
-            Error::Io(e) => write!(f, "network {:?}", e),
+            Error::Io(e) => write!(f, "network {e:?}"),
             Error::WrongCommand => write!(f, "recieved message with wrong command"),
-            Error::Protocol(e) => write!(f, "protocol error {:?}", e),
+            Error::Protocol(e) => write!(f, "protocol error {e:?}"),
             Error::Serde => write!(f, "unable to serialize command"),
         }
     }

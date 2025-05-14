@@ -112,15 +112,14 @@ impl fmt::Display for Error {
             }
             Error::BufferTooSmall { required_bytes } => write!(
                 f,
-                "Buffer memory allocation too small, need at least {} bytes.",
-                required_bytes
+                "Buffer memory allocation too small, need at least {required_bytes} bytes."
             ),
             Error::NoGarbageTerminator => {
                 write!(f, "More than 4095 bytes of garbage recieved in the handshake before a terminator was sent.")
             }
             Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence."),
-            Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {:?}.", e),
-            Error::Decryption(e) => write!(f, "Decrytion error: {:?}.", e),
+            Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {e:?}."),
+            Error::Decryption(e) => write!(f, "Decrytion error: {e:?}."),
             Error::V1Protocol => write!(f, "The remote peer is communicating on the V1 protocol."),
             Error::TooMuchGarbage => write!(
                 f,
@@ -152,9 +151,9 @@ impl fmt::Display for SecretGenerationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecretGenerationError::MaterialsGeneration(e) => {
-                write!(f, "Cannot generate materials: {}.", e)
+                write!(f, "Cannot generate materials: {e}.")
             }
-            SecretGenerationError::Expansion(e) => write!(f, "Cannot expand key: {}.", e),
+            SecretGenerationError::Expansion(e) => write!(f, "Cannot expand key: {e}."),
         }
     }
 }
@@ -302,10 +301,10 @@ impl PacketReader {
     /// # Arguments
     ///
     /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
-    ///                  the header, contents, and authentication tag.
-    /// * `contents`   - Mutable buffer to write plaintext. Note that the first byte is the header byte
-    ///                  containing protocol flags.
-    /// * `aad`        - Optional associated authenticated data.
+    ///   the header, contents, and authentication tag.
+    /// * `contents` - Mutable buffer to write plaintext. Note that the first byte is the header byte
+    ///   containing protocol flags.
+    /// * `aad` - Optional associated authenticated data.
     ///
     /// # Returns
     ///
@@ -351,8 +350,8 @@ impl PacketReader {
     /// # Arguments
     ///
     /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
-    ///                  the header, contents, and authentication tag.
-    /// * `aad`        - Optional associated authenticated data.
+    ///   the header, contents, and authentication tag.
+    /// * `aad` - Optional associated authenticated data.
     ///
     /// # Returns
     ///
@@ -387,16 +386,16 @@ impl PacketWriter {
     ///
     /// # Arguments
     ///
-    /// * `plaintext`   - Plaintext contents to be encrypted.
-    /// * `aad`         - Optional associated authenticated data.
-    /// * `packet`      - Buffer to write backet bytes too which must have enough capacity
-    ///                   for the plaintext length in bytes + 20 (length, header, and tag bytes).
+    /// * `plaintext` - Plaintext contents to be encrypted.
+    /// * `aad` - Optional associated authenticated data.
+    /// * `packet` - Buffer to write backet bytes too which must have enough capacity
+    ///   for the plaintext length in bytes + 20 (length, header, and tag bytes).
     /// * `packet_type` - Is this a genuine packet or a decoy.
     ///
     /// # Errors
     ///
     /// * `Error::BufferTooSmall` - Buffer does not have enough allocated memory for the
-    ///                             ciphertext plus the 20 bytes needed for the length, header, and tag bytes.
+    ///   ciphertext plus the 20 bytes needed for the length, header, and tag bytes.
     pub fn encrypt_packet_no_alloc(
         &mut self,
         plaintext: &[u8],
@@ -443,8 +442,8 @@ impl PacketWriter {
     ///
     /// # Arguments
     ///
-    /// * `plaintext`   - Plaintext content to be encrypted.
-    /// * `aad`         - Optional associated authenticated data.
+    /// * `plaintext` - Plaintext content to be encrypted.
+    /// * `aad` - Optional associated authenticated data.
     /// * `packet_type` - Is this a genuine packet or a decoy.
     ///
     /// # Returns
@@ -589,7 +588,7 @@ impl<'a> Handshake<'a> {
     ///
     /// * `network` - The bitcoin network which both peers operate on.
     /// * `garbage` - Optional garbage to send in handshake.
-    /// * `buffer`  - Packet buffer to send to peer which will include initial materials for handshake + garbage.
+    /// * `buffer` - Packet buffer to send to peer which will include initial materials for handshake + garbage.
     ///
     /// # Returns
     ///
@@ -616,9 +615,9 @@ impl<'a> Handshake<'a> {
     ///
     /// * `network` - The bitcoin network which both peers operate on.
     /// * `garbage` - Optional garbage to send in handshake.    
-    /// * `buffer`  - Packet buffer to send to peer which will include initial materials for handshake + garbage.
-    /// * `rng`     - Supplied Random Number Generator.
-    /// * `curve`   - Supplied secp256k1 context.
+    /// * `buffer` - Packet buffer to send to peer which will include initial materials for handshake + garbage.
+    /// * `rng` - Supplied Random Number Generator.
+    /// * `curve` - Supplied secp256k1 context.
     ///
     /// # Returns
     ///
@@ -676,12 +675,12 @@ impl<'a> Handshake<'a> {
     ///
     /// * `their_elliswift` - The key material of the remote peer.
     /// * `response_buffer` - Buffer to write response for remote peer which includes the garbage terminator and version packet.
-    /// * `decoys`          - Contents for decoy packets sent before version packet.
+    /// * `decoys` - Contents for decoy packets sent before version packet.
     ///
     /// # Errors
     ///
     /// * `V1Protocol` - The remote is communicating on the V1 protocol instead of V2. Caller can fallback
-    ///                  to V1 if they want.
+    ///   to V1 if they want.
     pub fn complete_materials(
         &mut self,
         their_elliswift: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
@@ -804,15 +803,15 @@ impl<'a> Handshake<'a> {
     ///
     /// # Arguments
     ///
-    /// * `buffer`        - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
+    /// * `buffer` - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
     /// * `packet_buffer` - Required memory allocation for decrypting decoy and version packets.
     ///
     /// # Error    
     ///
-    /// * `CiphertextTooSmall`    - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
-    /// * `BufferTooSmall`        - The supplied packet_buffer is not large enough for decrypting the decoy and version packets.
-    /// * `HandshakeOutOfOrder`   - The handshake sequence is in a bad state and should be restarted.
-    /// * `MaxGarbageLength`      - Buffer did not contain the garbage terminator, should not be retried.
+    /// * `CiphertextTooSmall` - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
+    /// * `BufferTooSmall` - The supplied packet_buffer is not large enough for decrypting the decoy and version packets.
+    /// * `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
+    /// * `MaxGarbageLength` - Buffer did not contain the garbage terminator, should not be retried.
     pub fn authenticate_garbage_and_version_no_alloc(
         &mut self,
         buffer: &[u8],
@@ -923,8 +922,8 @@ impl<'a> Handshake<'a> {
     ///
     /// # Error
     ///
-    /// * `CiphertextTooSmall`    - Buffer did not contain a garbage terminator.
-    /// * `MaxGarbageLength`      - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
+    /// * `CiphertextTooSmall` - Buffer did not contain a garbage terminator.
+    /// * `MaxGarbageLength` - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
     fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
         let garbage_term = self
             .remote_garbage_terminator
@@ -1059,7 +1058,7 @@ impl fmt::Display for ProtocolError {
                     }
                 )
             }
-            ProtocolError::Internal(e) => write!(f, "Internal error: {}.", e),
+            ProtocolError::Internal(e) => write!(f, "Internal error: {e}."),
         }
     }
 }
@@ -1078,11 +1077,11 @@ impl AsyncProtocol {
     /// # Arguments
     ///
     /// * `network` - Network which both parties are operating on.
-    /// * `role`    - Role in handshake, initiator or responder.
+    /// * `role` - Role in handshake, initiator or responder.
     /// * `garbage` - Optional garbage bytes to send in handshake.
-    /// * `decoys`  - Optional decoy packet contents bytes to send in handshake.
-    /// * `reader`  - Asynchronous buffer to read packets sent by peer.
-    /// * `writer`  - Asynchronous buffer to write packets to peer.
+    /// * `decoys` - Optional decoy packet contents bytes to send in handshake.
+    /// * `reader` - Asynchronous buffer to read packets sent by peer.
+    /// * `writer` - Asynchronous buffer to write packets to peer.
     ///
     /// # Returns
     ///
