@@ -294,7 +294,7 @@ struct HeaderDeserializationWrapper(Vec<block::Header>);
 
 impl Decodable for HeaderDeserializationWrapper {
     #[inline]
-    fn consensus_decode_from_finite_reader<R: bitcoin::io::Read + ?Sized>(
+    fn consensus_decode_from_finite_reader<R: bitcoin::io::Read + bitcoin::io::BufRead + ?Sized>(
         r: &mut R,
     ) -> Result<Self, encode::Error> {
         let len = VarInt::consensus_decode(r)?.0;
