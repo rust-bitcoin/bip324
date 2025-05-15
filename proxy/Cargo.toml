@@ -2,7 +2,7 @@
 name = "bip324-proxy"
 version = "0.4.0"
 edition = "2021"
-license-file = "LICENSE"
+license = "CC0-1.0"
 description = "BIP324 proxy enabling v1-only clients to use the v2 Bitcoin P2P Protocol"
 repository = "https://github.com/rust-bitcoin/bip324"
 readme = "README.md"

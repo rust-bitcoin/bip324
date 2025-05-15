@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: CC0-1.0
 
 // configure_me generated code has lint issues.
 #![allow(clippy::uninlined_format_args)]
