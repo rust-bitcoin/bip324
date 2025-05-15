@@ -1,3 +1,7 @@
+# Contributing
+
+Coding conventions and requirements are captured in the justfile. Check it out to contribute!
+
 ## Publish New Crate Versions
 
 1. Update the version in each crate's Cargo.toml and ensure the Cargo.lock is updated as well.
