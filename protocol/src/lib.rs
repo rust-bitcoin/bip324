@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: CC0-1.0
 
 //! BIP324 encrypted transport for exchanging bitcoin P2P *messages*. Much like TLS, a connection begins by exchanging ephemeral
 //! elliptic curve public keys and performing a Diffie-Hellman handshake. Thereafter, each participant derives shared session secrets, and may

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: CC0-1.0
 
 //! Serialize and deserialize V2 messages over the wire.
 //!
