@@ -5,8 +5,8 @@ _default:
 check:
   cargo fmt --check
   # Turn warnings into errors.
-  cargo clippy --workspace --all-targets -- -D warnings
-  cargo check --workspace --all-features
+  cargo clippy --all-targets -- -D warnings
+  cargo check --all-features
 
 # Run a test suite: unit, features, msrv, min-versions, or no-std.
 test suite="unit":
@@ -14,8 +14,8 @@ test suite="unit":
 
 # Unit test suite.
 _test-unit:
-  cargo test --workspace --all-targets
-  cargo test --workspace --doc
+  cargo test --all-targets
+  cargo test --doc
 
 # Test feature flag matrix compatability.
 _test-features:
@@ -33,12 +33,17 @@ _test-msrv:
 # Test that minimum versions of dependency contraints are valid.
 _test-min-versions:
   rm -f Cargo.lock
-  cargo +nightly check --workspace --all-features -Z direct-minimal-versions
+  cargo +nightly check --all-features -Z direct-minimal-versions
 
 # Test no standard library support.
 _test-no-std:
   cargo install cross@0.2.5
   $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
+
+# Run fuzz test: handshake.
+fuzz target="handshake" time="60":
+  cargo install cargo-fuzz@0.12.0
+  cd protocol && cargo +nightly fuzz run {{target}} -- -max_total_time={{time}}
 
 # Add a release tag and publish to the upstream remote. Need write privileges on the repository.
 tag crate version remote="upstream":
