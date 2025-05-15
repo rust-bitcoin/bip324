@@ -652,6 +652,14 @@ impl<'a> Handshake<'a> {
             elligator_swift: es,
         };
 
+        // Bounds check on the output buffer.
+        let required_bytes = garbage.map_or(NUM_ELLIGATOR_SWIFT_BYTES, |g| {
+            NUM_ELLIGATOR_SWIFT_BYTES + g.len()
+        });
+        if buffer.len() < required_bytes {
+            return Err(Error::BufferTooSmall { required_bytes });
+        };
+
         buffer[0..64].copy_from_slice(&point.elligator_swift.to_array());
         if let Some(garbage) = garbage {
             buffer[64..64 + garbage.len()].copy_from_slice(garbage);
@@ -700,6 +708,13 @@ impl<'a> Handshake<'a> {
         }
 
         let theirs = ElligatorSwift::from_array(their_elliswift);
+
+        // Check if the buffer is large enough for the garbage terminator.
+        if response_buffer.len() < NUM_GARBAGE_TERMINTOR_BYTES {
+            return Err(Error::BufferTooSmall {
+                required_bytes: NUM_GARBAGE_TERMINTOR_BYTES,
+            });
+        }
 
         // Line up appropriate materials based on role and some
         // garbage terminator haggling.
@@ -1182,7 +1197,7 @@ impl AsyncProtocol {
         Ok(Self {
             reader: AsyncProtocolReader {
                 packet_reader,
-                state: DecryptState::default(),
+                state: DecryptState::init_reading_length(),
             },
             writer: AsyncProtocolWriter { packet_writer },
         })
@@ -1219,10 +1234,19 @@ enum DecryptState {
 }
 
 #[cfg(any(feature = "futures", feature = "tokio"))]
-impl Default for DecryptState {
-    fn default() -> Self {
+impl DecryptState {
+    /// Transistion state to reading the length bytes.
+    fn init_reading_length() -> Self {
         DecryptState::ReadingLength {
             length_bytes: [0u8; 3],
+            bytes_read: 0,
+        }
+    }
+
+    /// Transition state to reading payload bytes.
+    fn init_reading_payload(packet_bytes_len: usize) -> Self {
+        DecryptState::ReadingPayload {
+            packet_bytes: vec![0u8; packet_bytes_len],
             bytes_read: 0,
         }
     }
@@ -1266,11 +1290,7 @@ impl AsyncProtocolReader {
                     }
 
                     let packet_bytes_len = self.packet_reader.decypt_len(*length_bytes);
-                    let packet_bytes = vec![0u8; packet_bytes_len];
-                    self.state = DecryptState::ReadingPayload {
-                        packet_bytes,
-                        bytes_read: 0,
-                    };
+                    self.state = DecryptState::init_reading_payload(packet_bytes_len);
                 }
                 DecryptState::ReadingPayload {
                     packet_bytes,
@@ -1281,7 +1301,7 @@ impl AsyncProtocolReader {
                     }
 
                     let payload = self.packet_reader.decrypt_payload(packet_bytes, None)?;
-                    self.state = DecryptState::default();
+                    self.state = DecryptState::init_reading_length();
                     return Ok(payload);
                 }
             }
@@ -1559,16 +1579,33 @@ mod tests {
         assert!(result.is_ok());
 
         // Test with garbage length exceeding MAX_NUM_GARBAGE_BYTES.
-        let invalid_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES + 1];
+        let too_much_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES + 1];
         let result = Handshake::new_with_rng(
             Network::Bitcoin,
             Role::Initiator,
-            Some(&invalid_garbage),
+            Some(&too_much_garbage),
             &mut handshake_buffer,
             &mut rng,
             &curve,
         );
         assert!(matches!(result, Err(Error::TooMuchGarbage)));
+
+        // Test too small of buffer.
+        let buffer_size = NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len() - 1;
+        let mut too_small_buffer = vec![0u8; buffer_size];
+        let result = Handshake::new_with_rng(
+            Network::Bitcoin,
+            Role::Initiator,
+            Some(&valid_garbage),
+            &mut too_small_buffer,
+            &mut rng,
+            &curve,
+        );
+
+        assert!(
+            matches!(result, Err(Error::BufferTooSmall { required_bytes }) if required_bytes == NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len()),
+            "Expected BufferTooSmall with correct size"
+        );
 
         // Test with no garbage.
         let result = Handshake::new_with_rng(
