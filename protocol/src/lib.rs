@@ -1197,7 +1197,7 @@ impl AsyncProtocol {
         Ok(Self {
             reader: AsyncProtocolReader {
                 packet_reader,
-                state: DecryptState::default(),
+                state: DecryptState::init_reading_length(),
             },
             writer: AsyncProtocolWriter { packet_writer },
         })
@@ -1234,10 +1234,19 @@ enum DecryptState {
 }
 
 #[cfg(any(feature = "futures", feature = "tokio"))]
-impl Default for DecryptState {
-    fn default() -> Self {
+impl DecryptState {
+    /// Transistion state to reading the length bytes.
+    fn init_reading_length() -> Self {
         DecryptState::ReadingLength {
             length_bytes: [0u8; 3],
+            bytes_read: 0,
+        }
+    }
+
+    /// Transition state to reading payload bytes.
+    fn init_reading_payload(packet_bytes_len: usize) -> Self {
+        DecryptState::ReadingPayload {
+            packet_bytes: vec![0u8; packet_bytes_len],
             bytes_read: 0,
         }
     }
@@ -1281,11 +1290,7 @@ impl AsyncProtocolReader {
                     }
 
                     let packet_bytes_len = self.packet_reader.decypt_len(*length_bytes);
-                    let packet_bytes = vec![0u8; packet_bytes_len];
-                    self.state = DecryptState::ReadingPayload {
-                        packet_bytes,
-                        bytes_read: 0,
-                    };
+                    self.state = DecryptState::init_reading_payload(packet_bytes_len);
                 }
                 DecryptState::ReadingPayload {
                     packet_bytes,
@@ -1296,7 +1301,7 @@ impl AsyncProtocolReader {
                     }
 
                     let payload = self.packet_reader.decrypt_payload(packet_bytes, None)?;
-                    self.state = DecryptState::default();
+                    self.state = DecryptState::init_reading_length();
                     return Ok(payload);
                 }
             }
