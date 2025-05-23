@@ -130,7 +130,20 @@ impl fmt::Display for Error {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::CiphertextTooSmall => None,
+            Error::BufferTooSmall { .. } => None,
+            Error::NoGarbageTerminator => None,
+            Error::HandshakeOutOfOrder => None,
+            Error::V1Protocol => None,
+            Error::SecretGeneration(e) => Some(e),
+            Error::Decryption(e) => Some(e),
+            Error::TooMuchGarbage => None,
+        }
+    }
+}
 
 impl From<fschacha20poly1305::Error> for Error {
     fn from(e: fschacha20poly1305::Error) -> Self {
@@ -1056,7 +1069,14 @@ impl From<Error> for ProtocolError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for ProtocolError {}
+impl std::error::Error for ProtocolError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ProtocolError::Io(e, _) => Some(e),
+            ProtocolError::Internal(e) => Some(e),
+        }
+    }
+}
 
 #[cfg(feature = "std")]
 impl fmt::Display for ProtocolError {

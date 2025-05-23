@@ -49,7 +49,17 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::WrongNetwork => None,
+            Error::WrongCommand => None,
+            Error::Serde => None,
+            Error::Io(e) => Some(e),
+            Error::Protocol(e) => Some(e),
+        }
+    }
+}
 
 impl From<bip324::ProtocolError> for Error {
     fn from(e: bip324::ProtocolError) -> Self {
