@@ -6,7 +6,7 @@
 NIGHTLY_TOOLCHAIN := "nightly-2025-06-19"
 STABLE_TOOLCHAIN := "1.87.0"
 
-@_default:
+_default:
   @just --list
 
 # Quick check of the code including lints and formatting.
@@ -26,7 +26,8 @@ STABLE_TOOLCHAIN := "1.87.0"
 
 # Unit test suite.
 @_test-unit:
-  cargo +{{STABLE_TOOLCHAIN}} test --all-targets
+  # Run everything except benches which need the nightly toolchain.
+  cargo +{{STABLE_TOOLCHAIN}} test --lib --bins --tests --examples
   cargo +{{STABLE_TOOLCHAIN}} test --doc
 
 # Test feature flag matrix compatability.
@@ -61,6 +62,10 @@ STABLE_TOOLCHAIN := "1.87.0"
 @_test-no-std:
   cargo install cross@0.2.5
   $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
+
+# Run benchmarks.
+bench:
+  cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench packet_handler
 
 # Run fuzz test: handshake.
 @fuzz target="handshake" time="60":
