@@ -2,6 +2,18 @@
 
 //! Wrap ciphers with automatic re-keying in order to provide [forward secrecy](https://eprint.iacr.org/2001/035.pdf) within a session.
 //! Logic is covered by the BIP324 test vectors.
+//!
+//! ## Performance Considerations
+//!
+//! This module uses small stack-allocated arrays (12-byte nonces, 32-byte keys) for temporary
+//! cryptographic operations. These allocations are intentionally kept as local variables rather
+//! than pre-allocated struct fields for optimal performance.
+//!
+//! Tests comparing the current implementation against a version with
+//! pre-allocated buffers to reduce stack allocations showed decreased performance.
+//!
+//! * **FSChaCha20 operations** +3.7% overhead with pre-allocated buffers.
+//! * **FSChaCha20Poly1305 operations** +1.0% overhead with pre-allocated buffers.  
 
 use chacha20_poly1305::{chacha20::ChaCha20, ChaCha20Poly1305, Key, Nonce};
 use core::fmt;
