@@ -20,6 +20,15 @@ _default:
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets -- -D warnings
 
+# Attempt any auto-fixes for format and lints.
+@fix:
+  # Ensure the toolchain is installed and has the necessary components.
+  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+  # No --check flag to actually apply formatting.
+  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
+  # Adding --fix flag to apply suggestions with --allow-dirty.
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
+
 # Run a test suite: unit, features, msrv, constraints, or no-std.
 @test suite="unit":
   just _test-{{suite}}
