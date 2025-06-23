@@ -41,10 +41,9 @@ _default:
 
 # Test feature flag matrix compatability.
 @_test-features:
-  # Build and test with all features, no features, and some combinations.
+  # Build and test with all features, no features, and some combinations if required.
   cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --all-features
   cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --no-default-features
-  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --no-default-features --features alloc 
 
 # Check code with MSRV compiler.
 @_test-msrv:
@@ -70,7 +69,7 @@ _default:
 # Test no standard library support.
 @_test-no-std:
   cargo install cross@0.2.5
-  $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features --features alloc
+  $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
 
 # Run benchmarks.
 bench:

@@ -32,11 +32,12 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
+    let mut packet_buffer = vec![0u8; 4096];
     init_handshake
-        .authenticate_garbage_and_version(&resp_message[64..])
+        .authenticate_garbage_and_version(&resp_message[64..], &mut packet_buffer)
         .unwrap();
     resp_handshake
-        .authenticate_garbage_and_version(&init_finalize_message)
+        .authenticate_garbage_and_version(&init_finalize_message, &mut packet_buffer)
         .unwrap();
 
     let mut alice = init_handshake.finalize().unwrap();
@@ -44,25 +45,54 @@ fn hello_world_happy_path() {
 
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
-    let encrypted_message_to_alice = bob
-        .writer()
-        .encrypt_packet(&message, None, PacketType::Genuine)
+    let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
+    let mut encrypted_message_to_alice = vec![0u8; packet_len];
+    bob.outbound()
+        .encrypt(
+            &message,
+            &mut encrypted_message_to_alice,
+            PacketType::Genuine,
+            None,
+        )
         .unwrap();
-    let messages = alice
-        .reader()
-        .decrypt_payload(&encrypted_message_to_alice[3..], None)
+
+    let alice_message_len = alice
+        .inbound()
+        .decrypt_packet_len(encrypted_message_to_alice[..3].try_into().unwrap());
+    let mut decrypted_message =
+        vec![0u8; bip324::InboundCipher::decryption_buffer_len(alice_message_len)];
+    alice
+        .inbound()
+        .decrypt(
+            &encrypted_message_to_alice[3..],
+            &mut decrypted_message,
+            None,
+        )
         .unwrap();
-    assert_eq!(message, messages.contents());
+    assert_eq!(message, decrypted_message[1..].to_vec()); // Skip header byte
+
     let message = b"Goodbye!".to_vec();
-    let encrypted_message_to_bob = alice
-        .writer()
-        .encrypt_packet(&message, None, PacketType::Genuine)
+    let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
+    let mut encrypted_message_to_bob = vec![0u8; packet_len];
+    alice
+        .outbound()
+        .encrypt(
+            &message,
+            &mut encrypted_message_to_bob,
+            PacketType::Genuine,
+            None,
+        )
         .unwrap();
-    let messages = bob
-        .reader()
-        .decrypt_payload(&encrypted_message_to_bob[3..], None)
+
+    let bob_message_len = bob
+        .inbound()
+        .decrypt_packet_len(encrypted_message_to_bob[..3].try_into().unwrap());
+    let mut decrypted_message =
+        vec![0u8; bip324::InboundCipher::decryption_buffer_len(bob_message_len)];
+    bob.inbound()
+        .decrypt(&encrypted_message_to_bob[3..], &mut decrypted_message, None)
         .unwrap();
-    assert_eq!(message, messages.contents());
+    assert_eq!(message, decrypted_message[1..].to_vec()); // Skip header byte
 }
 
 #[test]
@@ -112,8 +142,9 @@ fn regtest_handshake() {
     let size = stream.read(&mut max_response).unwrap();
     let response = &mut max_response[..size];
     println!("Authenticating the handshake");
+    let mut packet_buffer = vec![0u8; 4096];
     handshake
-        .authenticate_garbage_and_version(response)
+        .authenticate_garbage_and_version(response, &mut packet_buffer)
         .unwrap();
     println!("Finalizing the handshake");
     let packet_handler = handshake.finalize().unwrap();
@@ -136,19 +167,25 @@ fn regtest_handshake() {
         relay: false,
     };
     let message = serialize(NetworkMessage::Version(msg)).unwrap();
-    let packet = encrypter
-        .encrypt_packet(&message, None, PacketType::Genuine)
+    let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
+    let mut packet = vec![0u8; packet_len];
+    encrypter
+        .encrypt(&message, &mut packet, PacketType::Genuine, None)
         .unwrap();
     println!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
     println!("Reading the response length buffer");
     let mut response_len = [0; 3];
     stream.read_exact(&mut response_len).unwrap();
-    let message_len = decrypter.decypt_len(response_len);
+    let message_len = decrypter.decrypt_packet_len(response_len);
     let mut response_message = vec![0; message_len];
     stream.read_exact(&mut response_message).unwrap();
-    let msg = decrypter.decrypt_payload(&response_message, None).unwrap();
-    let message = deserialize(msg.contents()).unwrap();
+    let mut decrypted_message =
+        vec![0u8; bip324::InboundCipher::decryption_buffer_len(response_message.len())];
+    let _ = decrypter
+        .decrypt(&response_message, &mut decrypted_message, None)
+        .unwrap();
+    let message = deserialize(&decrypted_message[1..]).unwrap(); // Skip header byte
     assert_eq!(message.cmd(), "version");
 }
 

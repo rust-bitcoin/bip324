@@ -1,5 +1,5 @@
 #![no_main]
-use bip324::{Handshake, Network, Role};
+use bip324::{Handshake, Network, Role, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -52,6 +52,7 @@ fuzz_target!(|data: &[u8]| {
     // Exercising malformed public key handling.
     let _ = handshake.complete_materials(fuzzed_responder_pubkey, &mut garbage_and_version, None);
     // Check how a broken handshake is handled.
-    let _ = handshake.authenticate_garbage_and_version(&garbage_and_version);
+    let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES]; // Initial buffer for decoy and version packets
+    let _ = handshake.authenticate_garbage_and_version(&garbage_and_version, &mut packet_buffer);
     let _ = handshake.finalize();
 });

@@ -15,8 +15,7 @@ default = ["std"]
 futures = ["std", "dep:futures"]
 # High-level wrappers using tokio traits - may affect MSRV requirements.
 tokio = ["std", "dep:tokio"]
-std = ["alloc", "bitcoin/std", "bitcoin_hashes/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
-alloc = ["chacha20-poly1305/alloc"]
+std = ["bitcoin/std", "bitcoin_hashes/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
 
 [dependencies]
 futures = { version = "0.3.30", default-features = false, optional = true, features = ["std"] }

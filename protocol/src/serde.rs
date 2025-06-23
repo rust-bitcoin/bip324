@@ -6,12 +6,12 @@
 
 use core::fmt;
 
-use alloc::vec::Vec;
 use bitcoin::{
     block,
     consensus::{encode, Decodable, Encodable},
     VarInt,
 };
+use std::vec::Vec;
 
 pub use bitcoin::p2p::message::{CommandString, NetworkMessage};
 
