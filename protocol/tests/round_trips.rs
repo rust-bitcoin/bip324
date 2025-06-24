@@ -147,8 +147,8 @@ fn regtest_handshake() {
         .authenticate_garbage_and_version(response, &mut packet_buffer)
         .unwrap();
     println!("Finalizing the handshake");
-    let packet_handler = handshake.finalize().unwrap();
-    let (mut decrypter, mut encrypter) = packet_handler.into_split();
+    let cipher_session = handshake.finalize().unwrap();
+    let (mut decrypter, mut encrypter) = cipher_session.into_split();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")

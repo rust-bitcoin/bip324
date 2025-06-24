@@ -6,7 +6,7 @@ The library is designed with a bare `no_std` and "Sans I/O" interface to keep it
 
 The `futures` feature includes the high-level `AsyncProcotol` type which helps create and manage an encrypted channel. 
 
-The lower-level `CipherSession` and `Handshake` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials. A successful handshake results in a packet handler which performs the encrypt and decrypt operations for the lifetime of the channel.
+The lower-level `CipherSession` and `Handshake` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials and verify a channel. A successful handshake results in a cipher session which performs the encrypt and decrypt operations for the lifetime of the channel.
 
 ## Feature Flags
 

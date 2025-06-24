@@ -5,7 +5,7 @@ extern crate test;
 use bip324::{CipherSession, Handshake, InboundCipher, Network, OutboundCipher, PacketType, Role};
 use test::{black_box, Bencher};
 
-fn create_packet_handler_pair() -> (CipherSession, CipherSession) {
+fn create_cipher_session_pair() -> (CipherSession, CipherSession) {
     // Create a proper handshake between Alice and Bob.
     let mut alice_init_buffer = vec![0u8; 64];
     let mut alice_handshake = Handshake::new(
@@ -62,7 +62,7 @@ fn create_packet_handler_pair() -> (CipherSession, CipherSession) {
 #[bench]
 fn bench_round_trip_small_packet(b: &mut Bencher) {
     let plaintext = b"Hello, World!"; // ~13 bytes.
-    let (mut alice, mut bob) = create_packet_handler_pair();
+    let (mut alice, mut bob) = create_cipher_session_pair();
 
     b.iter(|| {
         // Encrypt the packet.
@@ -101,7 +101,7 @@ fn bench_round_trip_small_packet(b: &mut Bencher) {
 #[bench]
 fn bench_round_trip_large_packet(b: &mut Bencher) {
     let plaintext = vec![0u8; 4096]; // 4KB packet.
-    let (mut alice, mut bob) = create_packet_handler_pair();
+    let (mut alice, mut bob) = create_cipher_session_pair();
 
     b.iter(|| {
         // Encrypt the packet.
