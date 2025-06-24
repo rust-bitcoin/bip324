@@ -6,12 +6,11 @@ The library is designed with a bare `no_std` and "Sans I/O" interface to keep it
 
 The `futures` feature includes the high-level `AsyncProcotol` type which helps create and manage an encrypted channel. 
 
-The lower-level `Handshake` and `PacketHandler` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials. A successful handshake results in a packet handler which performs the encrypt and decrypt operations for the lifetime of the channel.
+The lower-level `CipherSession` and `Handshake` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials. A successful handshake results in a packet handler which performs the encrypt and decrypt operations for the lifetime of the channel.
 
 ## Feature Flags
 
-* `alloc` -- Expose memory allocation dependent features.
-* `std`   -- Includes the `alloc` memory allocation feature as well as extra standard library dependencies for I/O and random number generators.
+* `std` -- Standard library dependencies for I/O, memory allocation, and random number generators.
 * `futures` -- High level wrappers for asynchronous read and write runtimes using agnostic futures-rs traits.
 * `tokio` -- Same wrappers as `futures`, but using the popular tokio runtime's specific traits instead of futures-rs.
 

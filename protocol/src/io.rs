@@ -5,10 +5,10 @@
 
 use core::fmt;
 
-#[cfg(feature = "alloc")]
-use alloc::vec;
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 use bitcoin::Network;
 
@@ -20,10 +20,37 @@ use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    Error, Handshake, PacketReader, PacketType, PacketWriter, Payload, Role,
-    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
-    VERSION_CONTENT,
+    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
+    NUM_GARBAGE_TERMINTOR_BYTES, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES, VERSION_CONTENT,
 };
+
+/// A decrypted BIP324 payload with its packet type.
+#[cfg(feature = "std")]
+pub struct Payload {
+    contents: Vec<u8>,
+    packet_type: PacketType,
+}
+
+#[cfg(feature = "std")]
+impl Payload {
+    /// Create a new payload.
+    pub fn new(contents: Vec<u8>, packet_type: PacketType) -> Self {
+        Self {
+            contents,
+            packet_type,
+        }
+    }
+
+    /// Access the decrypted payload contents.
+    pub fn contents(&self) -> &[u8] {
+        &self.contents
+    }
+
+    /// Access the packet type.
+    pub fn packet_type(&self) -> PacketType {
+        self.packet_type
+    }
+}
 
 /// High level error type for the protocol interface.
 #[cfg(feature = "std")]
@@ -159,11 +186,11 @@ impl AsyncProtocol {
         let mut remote_ellswift_buffer = [0u8; 64];
         reader.read_exact(&mut remote_ellswift_buffer).await?;
 
-        let num_version_packet_bytes = PacketWriter::required_packet_allocation(&VERSION_CONTENT);
+        let num_version_packet_bytes = OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
         let num_decoy_packets_bytes: usize = match decoys {
             Some(decoys) => decoys
                 .iter()
-                .map(|decoy| PacketWriter::required_packet_allocation(decoy))
+                .map(|decoy| OutboundCipher::encryption_buffer_len(decoy.len()))
                 .sum(),
             None => 0,
         };
@@ -187,6 +214,8 @@ impl AsyncProtocol {
         // Keep pulling bytes from the buffer until the garbage is flushed.
         let mut remote_garbage_and_version_buffer =
             Vec::with_capacity(NUM_INITIAL_HANDSHAKE_BUFFER_BYTES);
+        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
+
         loop {
             let mut temp_buffer = [0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
             match reader.read(&mut temp_buffer).await {
@@ -197,12 +226,17 @@ impl AsyncProtocol {
                 Ok(bytes_read) => {
                     remote_garbage_and_version_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
 
-                    match handshake
-                        .authenticate_garbage_and_version(&remote_garbage_and_version_buffer)
-                    {
+                    match handshake.authenticate_garbage_and_version(
+                        &remote_garbage_and_version_buffer,
+                        &mut packet_buffer,
+                    ) {
                         Ok(()) => break,
                         // Not enough data, continue reading.
                         Err(Error::CiphertextTooSmall) => continue,
+                        Err(Error::BufferTooSmall { required_bytes }) => {
+                            packet_buffer.resize(required_bytes, 0);
+                            continue;
+                        }
                         Err(e) => return Err(ProtocolError::Internal(e)),
                     }
                 }
@@ -216,15 +250,15 @@ impl AsyncProtocol {
             }
         }
 
-        let packet_handler = handshake.finalize()?;
-        let (packet_reader, packet_writer) = packet_handler.into_split();
+        let cipher_session = handshake.finalize()?;
+        let (inbound_cipher, outbound_cipher) = cipher_session.into_split();
 
         Ok(Self {
             reader: AsyncProtocolReader {
-                packet_reader,
+                inbound_cipher,
                 state: DecryptState::init_reading_length(),
             },
-            writer: AsyncProtocolWriter { packet_writer },
+            writer: AsyncProtocolWriter { outbound_cipher },
         })
     }
 
@@ -280,7 +314,7 @@ impl DecryptState {
 /// Manages an async buffer to automatically decrypt contents of received packets.
 #[cfg(any(feature = "futures", feature = "tokio"))]
 pub struct AsyncProtocolReader {
-    packet_reader: PacketReader,
+    inbound_cipher: InboundCipher,
     state: DecryptState,
 }
 
@@ -297,7 +331,7 @@ impl AsyncProtocolReader {
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok(Payload)`: A decrypted payload.
+    ///   * `Ok(Payload)`: A decrypted payload with packet type.
     ///   * `Err(ProtocolError)`: An error that occurred during the read or decryption.
     pub async fn read_and_decrypt<R>(&mut self, buffer: &mut R) -> Result<Payload, ProtocolError>
     where
@@ -314,7 +348,7 @@ impl AsyncProtocolReader {
                         *bytes_read += buffer.read(&mut length_bytes[*bytes_read..]).await?;
                     }
 
-                    let packet_bytes_len = self.packet_reader.decypt_len(*length_bytes);
+                    let packet_bytes_len = self.inbound_cipher.decrypt_packet_len(*length_bytes);
                     self.state = DecryptState::init_reading_payload(packet_bytes_len);
                 }
                 DecryptState::ReadingPayload {
@@ -325,24 +359,28 @@ impl AsyncProtocolReader {
                         *bytes_read += buffer.read(&mut packet_bytes[*bytes_read..]).await?;
                     }
 
-                    let payload = self.packet_reader.decrypt_payload(packet_bytes, None)?;
+                    let plaintext_len = InboundCipher::decryption_buffer_len(packet_bytes.len());
+                    let mut plaintext_buffer = vec![0u8; plaintext_len];
+                    let packet_type =
+                        self.inbound_cipher
+                            .decrypt(packet_bytes, &mut plaintext_buffer, None)?;
                     self.state = DecryptState::init_reading_length();
-                    return Ok(payload);
+                    return Ok(Payload::new(plaintext_buffer, packet_type));
                 }
             }
         }
     }
 
-    /// Consume the protocol reader in exchange for the underlying packet decoder.
-    pub fn decoder(self) -> PacketReader {
-        self.packet_reader
+    /// Consume the protocol reader in exchange for the underlying inbound cipher.
+    pub fn into_cipher(self) -> InboundCipher {
+        self.inbound_cipher
     }
 }
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
 #[cfg(any(feature = "futures", feature = "tokio"))]
 pub struct AsyncProtocolWriter {
-    packet_writer: PacketWriter,
+    outbound_cipher: OutboundCipher,
 }
 
 #[cfg(any(feature = "futures", feature = "tokio"))]
@@ -366,16 +404,19 @@ impl AsyncProtocolWriter {
     where
         W: AsyncWrite + Unpin + Send,
     {
-        let write_bytes =
-            self.packet_writer
-                .encrypt_packet(plaintext, None, PacketType::Genuine)?;
-        buffer.write_all(&write_bytes[..]).await?;
+        let packet_len = OutboundCipher::encryption_buffer_len(plaintext.len());
+        let mut packet_buffer = vec![0u8; packet_len];
+
+        self.outbound_cipher
+            .encrypt(plaintext, &mut packet_buffer, PacketType::Genuine, None)?;
+
+        buffer.write_all(&packet_buffer).await?;
         buffer.flush().await?;
         Ok(())
     }
 
-    /// Consume the protocol writer in exchange for the underlying packet encoder.
-    pub fn encoder(self) -> PacketWriter {
-        self.packet_writer
+    /// Consume the protocol writer in exchange for the underlying outbound cipher.
+    pub fn into_cipher(self) -> OutboundCipher {
+        self.outbound_cipher
     }
 }

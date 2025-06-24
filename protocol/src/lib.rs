@@ -7,19 +7,17 @@
 //! ## Packets
 //!
 //! A *packet* has the following layout:
-//!   * *Length*   - 3-byte encoding of the length of the *contents* (note this does not include the header byte).
+//!   * *Length*   - 3-byte encrypted length of the *contents* (note this does not include the header byte).
 //!   * *Header*   - 1-byte for transport layer protocol flags, currently only used to flag decoy packets.
 //!   * *Contents* - Variable length payload.
 //!   * *Tag*      - 16-byte authentication tag.
 //!
 //! ## Application Messages
 //!
-//! Under the new V2 specification, P2P messages are encoded differently than V1.
+//! Under the new V2 specification, P2P messages are encrypted differently than V1.
 //! Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
 #![no_std]
 
-#[cfg(feature = "alloc")]
-extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -32,18 +30,13 @@ pub mod serde;
 // Re-export async I/O types for backwards compatibility.
 #[cfg(any(feature = "futures", feature = "tokio"))]
 pub use io::{
-    AsyncProtocol, AsyncProtocolReader, AsyncProtocolWriter, ProtocolError,
+    AsyncProtocol, AsyncProtocolReader, AsyncProtocolWriter, Payload, ProtocolError,
     ProtocolFailureSuggestion,
 };
 
 use core::fmt;
 
 pub use bitcoin::Network;
-
-#[cfg(feature = "alloc")]
-use alloc::vec;
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
 
 use bitcoin::secp256k1::{
     self,
@@ -58,7 +51,7 @@ use rand::Rng;
 
 /// Number of bytes for the header holding protocol flags.
 pub const NUM_HEADER_BYTES: usize = 1;
-/// Number of bytes for the length encoding prefix of a packet.
+/// Number of bytes for the encrypted length prefix of a packet.
 pub const NUM_LENGTH_BYTES: usize = 3;
 /// Value for header byte with the decoy flag flipped to true.
 pub const DECOY_BYTE: u8 = 128;
@@ -255,56 +248,30 @@ impl PacketType {
     }
 }
 
-/// Plaintext payload of a packet, which includes the header and contents.
-#[cfg(feature = "alloc")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Payload {
-    bytes: Vec<u8>,
-}
-
-#[cfg(feature = "alloc")]
-impl Payload {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-
-    /// Contents of the payload.
-    pub fn contents(&self) -> &[u8] {
-        // Exclude the header byte.
-        &self.bytes[1..]
-    }
-
-    /// Packet type of the payload.
-    pub fn packet_type(&self) -> PacketType {
-        PacketType::from_byte(&self.bytes[0])
-    }
-}
-
-/// Read packets over established encrypted channel from a peer.
+/// Decrypts packets received from the remote peer.
 #[derive(Clone)]
-pub struct PacketReader {
-    length_decoding_cipher: FSChaCha20,
-    packet_decoding_aead: FSChaCha20Poly1305,
+pub struct InboundCipher {
+    length_cipher: FSChaCha20,
+    packet_cipher: FSChaCha20Poly1305,
 }
 
-impl PacketReader {
-    /// Decode the length, in bytes, of the rest of the inbound packet.
+impl InboundCipher {
+    /// Decrypt the length of the next inbound packet.
     ///
-    /// Note that this does not decode to the length of contents described
-    /// in BIP324, and is meant to represent the rest of the inbound packet
-    /// which includes the header byte and the 16-byte authentication tag.
+    /// Note that this returns the length of the remaining packet data
+    /// to be read from the stream (header + contents + tag), not just the contents.
     ///
     /// # Arguments
     ///
-    /// * `len_bytes` - The first three bytes of the ciphertext.
+    /// * `len_bytes` - The first three bytes of the encrypted packet.
     ///
     /// # Returns
     ///
     /// The length of the rest of the packet.
-    pub fn decypt_len(&mut self, len_bytes: [u8; 3]) -> usize {
+    pub fn decrypt_packet_len(&mut self, len_bytes: [u8; 3]) -> usize {
         let mut enc_content_len = [0u8; 3];
         enc_content_len.copy_from_slice(&len_bytes);
-        self.length_decoding_cipher.crypt(&mut enc_content_len);
+        self.length_cipher.crypt(&mut enc_content_len);
         let mut content_slice = [0u8; 4];
         content_slice[0..3].copy_from_slice(&enc_content_len);
         let content_len = u32::from_le_bytes(content_slice);
@@ -312,20 +279,25 @@ impl PacketReader {
         content_len as usize + NUM_HEADER_BYTES + NUM_TAG_BYTES
     }
 
-    /// Decrypt the packet header byte and contents.
+    /// Calculate the required decryption buffer length from packet length.
+    pub fn decryption_buffer_len(packet_len: usize) -> usize {
+        packet_len - NUM_TAG_BYTES
+    }
+
+    /// Decrypt an inbound packet.
     ///
     /// # Arguments
     ///
-    /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
+    /// * `packet_payload` - The packet from the peer excluding the first 3 length bytes. It should contain
     ///   the header, contents, and authentication tag.
-    /// * `contents` - Mutable buffer to write plaintext. Note that the first byte is the header byte
+    /// * `plaintext_buffer` - Mutable buffer to write plaintext. Note that the first byte is the header byte
     ///   containing protocol flags.
     /// * `aad` - Optional associated authenticated data.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok(PacketType)`: A flag indicating if the decoded packet is a decoy or not.
+    ///   * `Ok(PacketType)`: A flag indicating if the decrypted packet is a decoy or not.
     ///   * `Err(Error)`: An error that occurred during decryption.
     ///
     /// # Errors
@@ -333,96 +305,73 @@ impl PacketReader {
     /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
     /// * `BufferTooSmall `    - Contents buffer argument is not large enough for plaintext.
     /// * Decryption errors for any failures such as a tag mismatch.
-    pub fn decrypt_payload_no_alloc(
+    pub fn decrypt(
         &mut self,
-        ciphertext: &[u8],
-        contents: &mut [u8],
+        packet_payload: &[u8],
+        plaintext_buffer: &mut [u8],
         aad: Option<&[u8]>,
-    ) -> Result<(), Error> {
+    ) -> Result<PacketType, Error> {
         let auth = aad.unwrap_or_default();
         // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES {
+        if packet_payload.len() < NUM_TAG_BYTES {
             return Err(Error::CiphertextTooSmall);
         }
-        let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
+        let (msg, tag) = packet_payload.split_at(packet_payload.len() - NUM_TAG_BYTES);
         // Check that the contents buffer is large enough.
-        if contents.len() < msg.len() {
+        if plaintext_buffer.len() < msg.len() {
             return Err(Error::BufferTooSmall {
                 required_bytes: msg.len(),
             });
         }
-        contents[0..msg.len()].copy_from_slice(msg);
-        self.packet_decoding_aead.decrypt(
+        plaintext_buffer[0..msg.len()].copy_from_slice(msg);
+        self.packet_cipher.decrypt(
             auth,
-            &mut contents[0..msg.len()],
+            &mut plaintext_buffer[0..msg.len()],
             tag.try_into().expect("16 byte tag"),
         )?;
 
-        Ok(())
-    }
-
-    /// Decrypt the packet header byte and contents.
-    ///
-    /// # Arguments
-    ///
-    /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
-    ///   the header, contents, and authentication tag.
-    /// * `aad` - Optional associated authenticated data.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(Payload)`: The plaintext header and contents.
-    ///   * `Err(Error)`: An error that occurred during decryption.
-    ///
-    /// # Errors
-    ///
-    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
-    #[cfg(feature = "alloc")]
-    pub fn decrypt_payload(
-        &mut self,
-        ciphertext: &[u8],
-        aad: Option<&[u8]>,
-    ) -> Result<Payload, Error> {
-        let mut payload = vec![0u8; ciphertext.len() - NUM_TAG_BYTES];
-        self.decrypt_payload_no_alloc(ciphertext, &mut payload, aad)?;
-        Ok(Payload::new(payload))
+        Ok(PacketType::from_byte(&plaintext_buffer[0]))
     }
 }
 
-/// Prepare packets to be sent over encrypted channel to a peer.
+/// Encrypts packets to send to the remote peer.
 #[derive(Clone)]
-pub struct PacketWriter {
-    length_encoding_cipher: FSChaCha20,
-    packet_encoding_aead: FSChaCha20Poly1305,
+pub struct OutboundCipher {
+    length_cipher: FSChaCha20,
+    packet_cipher: FSChaCha20Poly1305,
 }
 
-impl PacketWriter {
-    /// Encrypt plaintext bytes and serialize into a packet to be sent over the wire.
+impl OutboundCipher {
+    /// Calculate the required encryption buffer length for given plaintext length.
+    pub fn encryption_buffer_len(plaintext_len: usize) -> usize {
+        plaintext_len + NUM_PACKET_OVERHEAD_BYTES
+    }
+
+    /// Encrypt plaintext into a packet for transmission.
     ///
     /// # Arguments
     ///
     /// * `plaintext` - Plaintext contents to be encrypted.
-    /// * `aad` - Optional associated authenticated data.
-    /// * `packet` - Buffer to write backet bytes too which must have enough capacity
-    ///   for the plaintext length in bytes + 20 (length, header, and tag bytes).
+    /// * `packet_buffer` - Buffer to write packet bytes to which must have enough capacity
+    ///   as calculated by `encryption_buffer_len(plaintext.len())`.
     /// * `packet_type` - Is this a genuine packet or a decoy.
+    /// * `aad` - Optional associated authenticated data.
     ///
     /// # Errors
     ///
-    /// * `Error::BufferTooSmall` - Buffer does not have enough allocated memory for the
-    ///   ciphertext plus the 20 bytes needed for the length, header, and tag bytes.
-    pub fn encrypt_packet_no_alloc(
+    /// * `Error::BufferTooSmall` - Buffer does not have enough allocated memory as
+    ///   calculated by `encryption_buffer_len()`.
+    pub fn encrypt(
         &mut self,
         plaintext: &[u8],
-        aad: Option<&[u8]>,
-        packet: &mut [u8],
+        packet_buffer: &mut [u8],
         packet_type: PacketType,
+        aad: Option<&[u8]>,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet.len() < PacketWriter::required_packet_allocation(plaintext) {
+        if packet_buffer.len() < Self::encryption_buffer_len(plaintext.len()) {
             return Err(Error::BufferTooSmall {
-                required_bytes: PacketWriter::required_packet_allocation(plaintext),
+                required_bytes: Self::encryption_buffer_len(plaintext.len()),
             });
         }
 
@@ -432,116 +381,78 @@ impl PacketWriter {
         let plaintext_end_index = plaintext_start_index + plaintext_length;
 
         // Set header byte.
-        packet[header_index] = packet_type.to_byte();
-        packet[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
+        packet_buffer[header_index] = packet_type.to_byte();
+        packet_buffer[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
 
         // Encrypt header byte and plaintext in place and produce authentication tag.
         let auth = aad.unwrap_or_default();
         let tag = self
-            .packet_encoding_aead
-            .encrypt(auth, &mut packet[header_index..plaintext_end_index]);
+            .packet_cipher
+            .encrypt(auth, &mut packet_buffer[header_index..plaintext_end_index]);
 
         // Encrypt plaintext length.
         let mut content_len = [0u8; 3];
         content_len.copy_from_slice(&(plaintext_length as u32).to_le_bytes()[0..NUM_LENGTH_BYTES]);
-        self.length_encoding_cipher.crypt(&mut content_len);
+        self.length_cipher.crypt(&mut content_len);
 
         // Copy over encrypted length and the tag to the final packet (plaintext already encrypted).
-        packet[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
-        packet[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)].copy_from_slice(&tag);
+        packet_buffer[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
+        packet_buffer[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)]
+            .copy_from_slice(&tag);
 
         Ok(())
     }
-
-    /// Encrypt plaintext bytes and serialize into a packet to be sent over the wire
-    /// and handle necessary memory allocation.
-    ///
-    /// # Arguments
-    ///
-    /// * `plaintext` - Plaintext content to be encrypted.
-    /// * `aad` - Optional associated authenticated data.
-    /// * `packet_type` - Is this a genuine packet or a decoy.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(Vec<u8>)`: Ciphertext packet.
-    ///   * `Err(Error)`: An error that occurred encrypting plaintext.
-    #[cfg(feature = "alloc")]
-    pub fn encrypt_packet(
-        &mut self,
-        plaintext: &[u8],
-        aad: Option<&[u8]>,
-        packet_type: PacketType,
-    ) -> Result<Vec<u8>, Error> {
-        let mut packet = vec![0u8; PacketWriter::required_packet_allocation(plaintext)];
-        self.encrypt_packet_no_alloc(plaintext, aad, &mut packet, packet_type)?;
-        Ok(packet)
-    }
-
-    /// Require bytes to encrpt given plaintext contents as a packet.
-    ///
-    /// # Arguments
-    ///
-    /// * `plaintext` - Plaintext contents.
-    ///
-    /// # Returns
-    ///
-    /// Number of bytes necessary to be allocated for packet.
-    pub fn required_packet_allocation(plaintext: &[u8]) -> usize {
-        plaintext.len() + NUM_PACKET_OVERHEAD_BYTES
-    }
 }
 
-/// Encrypt and decrypt packets with a peer.
+/// Manages cipher state for a BIP324 encrypted connection.
 #[derive(Clone)]
-pub struct PacketHandler {
+pub struct CipherSession {
     /// A unique identifier for the communication session.
-    session_id: [u8; 32],
-    /// Decrypt packets.
-    packet_reader: PacketReader,
-    /// Encrypt packets.
-    packet_writer: PacketWriter,
+    id: [u8; 32],
+    /// Decrypts inbound packets.
+    inbound: InboundCipher,
+    /// Encrypts outbound packets.
+    outbound: OutboundCipher,
 }
 
-impl PacketHandler {
+impl CipherSession {
     fn new(materials: SessionKeyMaterial, role: Role) -> Self {
         match role {
             Role::Initiator => {
-                let length_encoding_cipher = FSChaCha20::new(materials.initiator_length_key);
-                let length_decoding_cipher = FSChaCha20::new(materials.responder_length_key);
-                let packet_encoding_cipher =
+                let initiator_length_cipher = FSChaCha20::new(materials.initiator_length_key);
+                let responder_length_cipher = FSChaCha20::new(materials.responder_length_key);
+                let initiator_packet_cipher =
                     FSChaCha20Poly1305::new(materials.initiator_packet_key);
-                let packet_decoding_cipher =
+                let responder_packet_cipher =
                     FSChaCha20Poly1305::new(materials.responder_packet_key);
-                PacketHandler {
-                    session_id: materials.session_id,
-                    packet_reader: PacketReader {
-                        length_decoding_cipher,
-                        packet_decoding_aead: packet_decoding_cipher,
+                CipherSession {
+                    id: materials.session_id,
+                    inbound: InboundCipher {
+                        length_cipher: responder_length_cipher,
+                        packet_cipher: responder_packet_cipher,
                     },
-                    packet_writer: PacketWriter {
-                        length_encoding_cipher,
-                        packet_encoding_aead: packet_encoding_cipher,
+                    outbound: OutboundCipher {
+                        length_cipher: initiator_length_cipher,
+                        packet_cipher: initiator_packet_cipher,
                     },
                 }
             }
             Role::Responder => {
-                let length_encoding_cipher = FSChaCha20::new(materials.responder_length_key);
-                let length_decoding_cipher = FSChaCha20::new(materials.initiator_length_key);
-                let packet_encoding_cipher =
+                let responder_length_cipher = FSChaCha20::new(materials.responder_length_key);
+                let initiator_length_cipher = FSChaCha20::new(materials.initiator_length_key);
+                let responder_packet_cipher =
                     FSChaCha20Poly1305::new(materials.responder_packet_key);
-                let packet_decoding_cipher =
+                let initiator_packet_cipher =
                     FSChaCha20Poly1305::new(materials.initiator_packet_key);
-                PacketHandler {
-                    session_id: materials.session_id,
-                    packet_reader: PacketReader {
-                        length_decoding_cipher,
-                        packet_decoding_aead: packet_decoding_cipher,
+                CipherSession {
+                    id: materials.session_id,
+                    inbound: InboundCipher {
+                        length_cipher: initiator_length_cipher,
+                        packet_cipher: initiator_packet_cipher,
                     },
-                    packet_writer: PacketWriter {
-                        length_encoding_cipher,
-                        packet_encoding_aead: packet_encoding_cipher,
+                    outbound: OutboundCipher {
+                        length_cipher: responder_length_cipher,
+                        packet_cipher: responder_packet_cipher,
                     },
                 }
             }
@@ -549,23 +460,23 @@ impl PacketHandler {
     }
 
     /// Unique session ID.
-    pub fn session_id(&self) -> &[u8; 32] {
-        &self.session_id
+    pub fn id(&self) -> &[u8; 32] {
+        &self.id
     }
 
-    /// Read reference for packet decryption.
-    pub fn reader(&mut self) -> &mut PacketReader {
-        &mut self.packet_reader
+    /// Get a mutable reference to the inbound cipher for decryption operations.
+    pub fn inbound(&mut self) -> &mut InboundCipher {
+        &mut self.inbound
     }
 
-    /// Write reference for packet encryption.
-    pub fn writer(&mut self) -> &mut PacketWriter {
-        &mut self.packet_writer
+    /// Get a mutable reference to the outbound cipher for encryption operations.
+    pub fn outbound(&mut self) -> &mut OutboundCipher {
+        &mut self.outbound
     }
 
-    /// Split the handler into separate reader and a writer.
-    pub fn into_split(self) -> (PacketReader, PacketWriter) {
-        (self.packet_reader, self.packet_writer)
+    /// Split the session into separate inbound and outbound ciphers.
+    pub fn into_split(self) -> (InboundCipher, OutboundCipher) {
+        (self.inbound, self.outbound)
     }
 }
 
@@ -577,7 +488,7 @@ impl PacketHandler {
 /// necessary materials from their peers request. `complete_materials` creates the response
 /// packet to be sent from each peer and `authenticate_garbage_and_version` is then used
 /// to verify the handshake. Finally, the `finalized` method is used to consumer the handshake
-/// and return a packet handler for further communication on the channel.
+/// and return a cipher session for further communication on the channel.
 pub struct Handshake<'a> {
     /// Bitcoin network both peers are operating on.
     network: Network,
@@ -589,8 +500,8 @@ pub struct Handshake<'a> {
     garbage: Option<&'a [u8]>,
     /// Peers expected garbage terminator.
     remote_garbage_terminator: Option<[u8; NUM_GARBAGE_TERMINTOR_BYTES]>,
-    /// Packet handler output.
-    packet_handler: Option<PacketHandler>,
+    /// Cipher session output.
+    cipher_session: Option<CipherSession>,
     /// Decrypted length for next packet. Store state between authentication attempts to avoid resetting ciphers.
     current_packet_length_bytes: Option<usize>,
     /// Processesed buffer index. Store state between authentication attempts to avoid resetting ciphers.
@@ -687,7 +598,7 @@ impl<'a> Handshake<'a> {
             point,
             garbage,
             remote_garbage_terminator: None,
-            packet_handler: None,
+            cipher_session: None,
             current_packet_length_bytes: None,
             current_buffer_index: 0,
         })
@@ -765,7 +676,7 @@ impl<'a> Handshake<'a> {
             }
         };
 
-        let mut packet_handler = PacketHandler::new(materials, self.role);
+        let mut cipher_session = CipherSession::new(materials, self.role);
         let mut start_index = NUM_GARBAGE_TERMINTOR_BYTES;
 
         // Write any decoy packets and then the version packet.
@@ -773,55 +684,29 @@ impl<'a> Handshake<'a> {
         // to authenticate the garbage previously sent.
         if let Some(decoys) = decoys {
             for (i, decoy) in decoys.iter().enumerate() {
-                let end_index = start_index + decoy.len() + NUM_PACKET_OVERHEAD_BYTES;
-                packet_handler.packet_writer.encrypt_packet_no_alloc(
+                let end_index = start_index + OutboundCipher::encryption_buffer_len(decoy.len());
+                cipher_session.outbound().encrypt(
                     decoy,
-                    if i == 0 { self.garbage } else { None },
                     &mut response_buffer[start_index..end_index],
                     PacketType::Decoy,
+                    if i == 0 { self.garbage } else { None },
                 )?;
 
                 start_index = end_index;
             }
         }
 
-        packet_handler.packet_writer.encrypt_packet_no_alloc(
+        cipher_session.outbound().encrypt(
             &VERSION_CONTENT,
-            if decoys.is_none() { self.garbage } else { None },
-            &mut response_buffer
-                [start_index..start_index + VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES],
+            &mut response_buffer[start_index
+                ..start_index + OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len())],
             PacketType::Genuine,
+            if decoys.is_none() { self.garbage } else { None },
         )?;
 
-        self.packet_handler = Some(packet_handler);
+        self.cipher_session = Some(cipher_session);
 
         Ok(())
-    }
-
-    /// Authenticate the channel and manage the memory allocation required.
-    ///
-    /// This function wraps [`authenticate_garbage_and_version`] and handles buffer allocation.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer` - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors of [`authenticate_garbage_and_version`], except `BufferTooSmall` is managed internally.
-    #[cfg(feature = "alloc")]
-    pub fn authenticate_garbage_and_version(&mut self, buffer: &[u8]) -> Result<(), Error> {
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
-        loop {
-            match self.authenticate_garbage_and_version_no_alloc(buffer, &mut packet_buffer) {
-                Ok(()) => return Ok(()),
-                Err(Error::BufferTooSmall { required_bytes }) => {
-                    packet_buffer.resize(required_bytes, 0);
-                }
-                Err(e) => return Err(e),
-            }
-        }
     }
 
     /// Authenticate the channel.
@@ -843,7 +728,7 @@ impl<'a> Handshake<'a> {
     /// * `BufferTooSmall` - The supplied packet_buffer is not large enough for decrypting the decoy and version packets.
     /// * `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
     /// * `MaxGarbageLength` - Buffer did not contain the garbage terminator, should not be retried.
-    pub fn authenticate_garbage_and_version_no_alloc(
+    pub fn authenticate_garbage_and_version(
         &mut self,
         buffer: &[u8],
         packet_buffer: &mut [u8],
@@ -889,8 +774,8 @@ impl<'a> Handshake<'a> {
         packet_buffer: &mut [u8],
         garbage: Option<&[u8]>,
     ) -> Result<bool, Error> {
-        let packet_handler = self
-            .packet_handler
+        let cipher_session = self
+            .cipher_session
             .as_mut()
             .ok_or(Error::HandshakeOutOfOrder)?;
 
@@ -899,7 +784,7 @@ impl<'a> Handshake<'a> {
             if ciphertext.len() < self.current_buffer_index + NUM_LENGTH_BYTES {
                 return Err(Error::CiphertextTooSmall);
             }
-            let packet_length = packet_handler.packet_reader.decypt_len(
+            let packet_length = cipher_session.inbound().decrypt_packet_len(
                 ciphertext[self.current_buffer_index..self.current_buffer_index + NUM_LENGTH_BYTES]
                     .try_into()
                     .expect("Buffer slice must be exactly 3 bytes long"),
@@ -918,7 +803,7 @@ impl<'a> Handshake<'a> {
         if ciphertext.len() < self.current_buffer_index + NUM_LENGTH_BYTES + packet_length {
             return Err(Error::CiphertextTooSmall);
         }
-        packet_handler.packet_reader.decrypt_payload_no_alloc(
+        let packet_type = cipher_session.inbound().decrypt(
             &ciphertext[self.current_buffer_index + NUM_LENGTH_BYTES
                 ..self.current_buffer_index + NUM_LENGTH_BYTES + packet_length],
             packet_buffer,
@@ -929,20 +814,17 @@ impl<'a> Handshake<'a> {
         self.current_buffer_index = self.current_buffer_index + NUM_LENGTH_BYTES + packet_length;
         self.current_packet_length_bytes = None;
 
-        Ok(matches!(
-            PacketType::from_byte(packet_buffer.first().expect("header byte")),
-            PacketType::Genuine
-        ))
+        Ok(matches!(packet_type, PacketType::Genuine))
     }
 
-    /// Complete the handshake and return the packet handler for further communication.
+    /// Complete the handshake and return the cipher session for further communication.
     ///
     /// # Error    
     ///
     /// * `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
-    pub fn finalize(self) -> Result<PacketHandler, Error> {
-        let packet_handler = self.packet_handler.ok_or(Error::HandshakeOutOfOrder)?;
-        Ok(packet_handler)
+    pub fn finalize(self) -> Result<CipherSession, Error> {
+        let cipher_session = self.cipher_session.ok_or(Error::HandshakeOutOfOrder)?;
+        Ok(cipher_session)
     }
 
     /// Split off garbage in the given buffer on the remote garbage terminator.
@@ -1023,23 +905,22 @@ impl<'a> Handshake<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use core::str::FromStr;
     use hex::prelude::*;
+    use std::string::ToString;
+    use std::vec;
+    use std::vec::Vec;
 
-    #[cfg(feature = "std")]
     fn gen_garbage(garbage_len: u32, rng: &mut impl Rng) -> Vec<u8> {
         let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
         buffer
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_initial_message() {
-        use alloc::string::ToString;
-
         let mut message = [0u8; 64];
         let handshake =
             Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
@@ -1049,7 +930,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_message_response() {
         let mut message = [0u8; 64];
         Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
@@ -1114,8 +994,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
-    fn test_packet_handler() {
+    fn test_cipher_session() {
         let alice =
             SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
                 .unwrap();
@@ -1129,32 +1008,48 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
-        let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
         let message = b"Bitcoin rox!".to_vec();
-        let enc_packet = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&message, None, PacketType::Decoy)
+
+        let mut enc_packet = vec![0u8; OutboundCipher::encryption_buffer_len(message.len())];
+        alice_cipher
+            .outbound()
+            .encrypt(&message, &mut enc_packet, PacketType::Decoy, None)
             .unwrap();
-        let dec = bob_packet_handler
-            .packet_reader
-            .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], None)
+
+        let plaintext_len = bob_cipher
+            .inbound()
+            .decrypt_packet_len(enc_packet[0..NUM_LENGTH_BYTES].try_into().unwrap());
+        let mut plaintext_buffer = vec![0u8; InboundCipher::decryption_buffer_len(plaintext_len)];
+        let packet_type = bob_cipher
+            .inbound()
+            .decrypt(&enc_packet[NUM_LENGTH_BYTES..], &mut plaintext_buffer, None)
             .unwrap();
-        assert_eq!(PacketType::Decoy, dec.packet_type());
+        assert_eq!(PacketType::Decoy, packet_type);
+        assert_eq!(message, plaintext_buffer[1..].to_vec()); // Skip header byte
+
         let message = b"Windows sox!".to_vec();
-        let enc_packet = bob_packet_handler
-            .packet_writer
-            .encrypt_packet(&message, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+        let mut enc_packet = vec![0u8; packet_len];
+        bob_cipher
+            .outbound()
+            .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
             .unwrap();
-        let dec = alice_packet_handler
-            .packet_reader
-            .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], None)
+
+        let plaintext_len = alice_cipher
+            .inbound()
+            .decrypt_packet_len(enc_packet[0..NUM_LENGTH_BYTES].try_into().unwrap());
+        let mut plaintext_buffer = vec![0u8; InboundCipher::decryption_buffer_len(plaintext_len)];
+        let packet_type = alice_cipher
+            .inbound()
+            .decrypt(&enc_packet[NUM_LENGTH_BYTES..], &mut plaintext_buffer, None)
             .unwrap();
-        assert_eq!(message, dec.contents());
+        assert_eq!(PacketType::Genuine, packet_type);
+        assert_eq!(message, plaintext_buffer[1..].to_vec()); // Skip header byte
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_fuzz_packets() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -1170,35 +1065,58 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
-        let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
         // Force a rekey under the hood.
         for _ in 0..(224 + 100) {
             let message = gen_garbage(4095, &mut rng);
-            let enc_packet = alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&message, None, PacketType::Genuine)
+
+            let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+            let mut enc_packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
                 .unwrap();
-            let dec_packet = bob_packet_handler
-                .packet_reader
-                .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], None)
+
+            let alice_message_len = bob_cipher
+                .inbound()
+                .decrypt_packet_len(enc_packet[..NUM_LENGTH_BYTES].try_into().unwrap());
+            let mut dec_packet = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
+            bob_cipher
+                .inbound()
+                .decrypt(
+                    &enc_packet[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + alice_message_len],
+                    &mut dec_packet,
+                    None,
+                )
                 .unwrap();
-            assert_eq!(message, dec_packet.contents());
+            assert_eq!(message, dec_packet[1..].to_vec()); // Skip header byte
+
             let message = gen_garbage(420, &mut rng);
-            let enc_packet = bob_packet_handler
-                .packet_writer
-                .encrypt_packet(&message, None, PacketType::Genuine)
+            let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+            let mut enc_packet = vec![0u8; packet_len];
+            bob_cipher
+                .outbound()
+                .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
                 .unwrap();
-            let dec_packet = alice_packet_handler
-                .packet_reader
-                .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], None)
+
+            let bob_message_len = alice_cipher
+                .inbound()
+                .decrypt_packet_len(enc_packet[..NUM_LENGTH_BYTES].try_into().unwrap());
+            let mut dec_packet = vec![0u8; InboundCipher::decryption_buffer_len(bob_message_len)];
+            alice_cipher
+                .inbound()
+                .decrypt(
+                    &enc_packet[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + bob_message_len],
+                    &mut dec_packet,
+                    None,
+                )
                 .unwrap();
-            assert_eq!(message, dec_packet.contents());
+            assert_eq!(message, dec_packet[1..].to_vec()); // Skip header byte
         }
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_authenticated_garbage() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -1214,21 +1132,38 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
-        let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
         let auth_garbage = gen_garbage(200, &mut rng);
-        let enc_packet = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&VERSION_CONTENT, Some(&auth_garbage), PacketType::Genuine)
+
+        let packet_len = OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
+        let mut enc_packet = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(
+                &VERSION_CONTENT,
+                &mut enc_packet,
+                PacketType::Genuine,
+                Some(&auth_garbage),
+            )
             .unwrap();
-        let _ = bob_packet_handler
-            .packet_reader
-            .decrypt_payload(&enc_packet[NUM_LENGTH_BYTES..], Some(&auth_garbage))
+
+        let alice_message_len = bob_cipher
+            .inbound()
+            .decrypt_packet_len(enc_packet[..NUM_LENGTH_BYTES].try_into().unwrap());
+        let mut plaintext_buffer =
+            vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
+        let _ = bob_cipher
+            .inbound()
+            .decrypt(
+                &enc_packet[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + alice_message_len],
+                &mut plaintext_buffer,
+                Some(&auth_garbage),
+            )
             .unwrap();
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_handshake_garbage_length_check() {
         let mut rng = rand::thread_rng();
         let curve = Secp256k1::new();
@@ -1288,7 +1223,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_handshake_no_garbage_terminator() {
         let mut handshake_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let mut rng = rand::thread_rng();
@@ -1319,7 +1253,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_handshake_with_garbage_and_decoys() {
         // Define the garbage and decoys that the initiator is sending to the responder.
         let initiator_garbage = vec![1u8, 2u8, 3u8];
@@ -1403,43 +1336,84 @@ mod tests {
 
         // The initiator verifies the second half of the responders message which
         // includes the garbage, garbage terminator, decoys, and version packet.
+        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
         initiator_handshake
-            .authenticate_garbage_and_version(&responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES..])
+            .authenticate_garbage_and_version(
+                &responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
+                &mut packet_buffer,
+            )
             .unwrap();
 
         // The responder verifies the second message from the initiator which
         // includes the garbage, garbage terminator, decoys, and version packet.
         responder_handshake
-            .authenticate_garbage_and_version(&initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES..])
+            .authenticate_garbage_and_version(
+                &initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
+                &mut packet_buffer,
+            )
             .unwrap();
 
         let mut alice = initiator_handshake.finalize().unwrap();
         let mut bob = responder_handshake.finalize().unwrap();
 
         let message = b"Hello world".to_vec();
-        let encrypted_message_to_alice = bob
-            .packet_writer
-            .encrypt_packet(&message, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+        let mut encrypted_message_to_alice = vec![0u8; packet_len];
+        bob.outbound()
+            .encrypt(
+                &message,
+                &mut encrypted_message_to_alice,
+                PacketType::Genuine,
+                None,
+            )
             .unwrap();
-        let dec = alice
-            .packet_reader
-            .decrypt_payload(&encrypted_message_to_alice[NUM_LENGTH_BYTES..], None)
+
+        let bob_message_len = alice.inbound().decrypt_packet_len(
+            encrypted_message_to_alice[..NUM_LENGTH_BYTES]
+                .try_into()
+                .unwrap(),
+        );
+        let mut dec = vec![0u8; InboundCipher::decryption_buffer_len(bob_message_len)];
+        alice
+            .inbound()
+            .decrypt(
+                &encrypted_message_to_alice[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + bob_message_len],
+                &mut dec,
+                None,
+            )
             .unwrap();
-        assert_eq!(message, dec.contents());
+        assert_eq!(message, dec[1..].to_vec()); // Skip header byte
+
         let message = b"g!".to_vec();
-        let encrypted_message_to_bob = alice
-            .packet_writer
-            .encrypt_packet(&message, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+        let mut encrypted_message_to_bob = vec![0u8; packet_len];
+        alice
+            .outbound()
+            .encrypt(
+                &message,
+                &mut encrypted_message_to_bob,
+                PacketType::Genuine,
+                None,
+            )
             .unwrap();
-        let dec = bob
-            .packet_reader
-            .decrypt_payload(&encrypted_message_to_bob[NUM_LENGTH_BYTES..], None)
+
+        let alice_message_len = bob.inbound().decrypt_packet_len(
+            encrypted_message_to_bob[..NUM_LENGTH_BYTES]
+                .try_into()
+                .unwrap(),
+        );
+        let mut dec = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
+        bob.inbound()
+            .decrypt(
+                &encrypted_message_to_bob[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + alice_message_len],
+                &mut dec,
+                None,
+            )
             .unwrap();
-        assert_eq!(message, dec.contents());
+        assert_eq!(message, dec[1..].to_vec()); // Skip header byte
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_partial_decodings() {
         let mut rng = rand::thread_rng();
 
@@ -1467,11 +1441,12 @@ mod tests {
             )
             .unwrap();
 
+        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
         init_handshake
-            .authenticate_garbage_and_version(&resp_message[64..])
+            .authenticate_garbage_and_version(&resp_message[64..], &mut packet_buffer)
             .unwrap();
         resp_handshake
-            .authenticate_garbage_and_version(&init_finalize_message)
+            .authenticate_garbage_and_version(&init_finalize_message, &mut packet_buffer)
             .unwrap();
 
         let mut alice = init_handshake.finalize().unwrap();
@@ -1479,25 +1454,31 @@ mod tests {
 
         let mut message_to_bob = Vec::new();
         let message = gen_garbage(420, &mut rng);
-        let enc_packet = alice
-            .packet_writer
-            .encrypt_packet(&message, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
+        let mut enc_packet = vec![0u8; packet_len];
+        alice
+            .outbound()
+            .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
             .unwrap();
-        message_to_bob.extend(enc_packet);
+        message_to_bob.extend(&enc_packet);
+
         let alice_message_len = bob
-            .packet_reader
-            .decypt_len(message_to_bob[..3].try_into().unwrap());
-        let contents = bob
-            .packet_reader
-            .decrypt_payload(&message_to_bob[3..3 + alice_message_len], None)
+            .inbound()
+            .decrypt_packet_len(message_to_bob[..3].try_into().unwrap());
+        let mut contents = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
+        bob.inbound()
+            .decrypt(
+                &message_to_bob[3..3 + alice_message_len],
+                &mut contents,
+                None,
+            )
             .unwrap();
-        assert_eq!(contents.contents(), message);
+        assert_eq!(message, contents[1..].to_vec()); // Skip header byte
     }
 
     // The rest are sourced from [the BIP324 test vectors](https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv).
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_1() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -1513,22 +1494,37 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
-        let mut bob_packet_handler = PacketHandler::new(session_keys, Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
         let first = gen_garbage(100, &mut rng);
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&first, None, PacketType::Genuine)
+
+        let packet_len = OutboundCipher::encryption_buffer_len(first.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&first, &mut enc, PacketType::Genuine, None)
             .unwrap();
-        let dec_packet = bob_packet_handler
-            .packet_reader
-            .decrypt_payload(&enc[NUM_LENGTH_BYTES..], None)
+
+        let alice_message_len = bob_cipher
+            .inbound()
+            .decrypt_packet_len(enc[..NUM_LENGTH_BYTES].try_into().unwrap());
+        let mut dec_packet = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
+        bob_cipher
+            .inbound()
+            .decrypt(
+                &enc[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + alice_message_len],
+                &mut dec_packet,
+                None,
+            )
             .unwrap();
-        assert_eq!(first, dec_packet.contents());
+        assert_eq!(first, dec_packet[1..].to_vec()); // Skip header byte
+
         let contents: Vec<u8> = vec![0x8e];
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert_eq!(
             enc,
@@ -1537,7 +1533,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_2() {
         let alice =
             SecretKey::from_str("1f9c581b35231838f0f17cf0c979835baccb7f3abbbb96ffcc318ab71e6e126f")
@@ -1558,17 +1553,21 @@ mod tests {
             Vec::from_hex("9267c54560607de73f18c563b76a2442718879c52dd39852885d4a3c9912c9ea")
                 .unwrap()
         );
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
         let contents: Vec<u8> = Vec::from_hex("3eb1d4e98035cfd8eeb29bac969ed3824a").unwrap();
         for _ in 0..999 {
-            alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&Vec::new(), None, PacketType::Genuine)
+            let packet_len = OutboundCipher::encryption_buffer_len(0);
+            let mut packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&Vec::new(), &mut packet, PacketType::Genuine, None)
                 .unwrap();
         }
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert_eq!(
             enc,
@@ -1580,7 +1579,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_3() {
         let alice =
             SecretKey::from_str("0286c41cd30913db0fdff7a64ebda5c8e3e7cef10f2aebc00a7650443cf4c60d")
@@ -1595,19 +1593,20 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
         let contents = Vec::from_hex("054290a6c6ba8d80478172e89d32bf690913ae9835de6dcf206ff1f4d652286fe0ddf74deba41d55de3edc77c42a32af79bbea2c00bae7492264c60866ae5a").unwrap();
         let aad = Vec::from_hex("84932a55aac22b51e7b128d31d9f0550da28e6a3f394224707d878603386b2f9d0c6bcd8046679bfed7b68c517e7431e75d9dd34605727d2ef1c2babbf680ecc8d68d2c4886e9953a4034abde6da4189cd47c6bb3192242cf714d502ca6103ee84e08bc2ca4fd370d5ad4e7d06c7fbf496c6c7cc7eb19c40c61fb33df2a9ba48497a96c98d7b10c1f91098a6b7b16b4bab9687f27585ade1491ae0dba6a79e1e2d85dd9d9d45c5135ca5fca3f0f99a60ea39edbc9efc7923111c937913f225d67788d5f7e8852b697e26b92ec7bfcaa334a1665511c2b4c0a42d06f7ab98a9719516c8fd17f73804555ee84ab3b7d1762f6096b778d3cb9c799cbd49a9e4a325197b4e6cc4a5c4651f8b41ff88a92ec428354531f970263b467c77ed11312e2617d0d53fe9a8707f51f9f57a77bfb49afe3d89d85ec05ee17b9186f360c94ab8bb2926b65ca99dae1d6ee1af96cad09de70b6767e949023e4b380e66669914a741ed0fa420a48dbc7bfae5ef2019af36d1022283dd90655f25eec7151d471265d22a6d3f91dc700ba749bb67c0fe4bc0888593fbaf59d3c6fff1bf756a125910a63b9682b597c20f560ecb99c11a92c8c8c3f7fbfaa103146083a0ccaecf7a5f5e735a784a8820155914a289d57d8141870ffcaf588882332e0bcd8779efa931aa108dab6c3cce76691e345df4a91a03b71074d66333fd3591bff071ea099360f787bbe43b7b3dff2a59c41c7642eb79870222ad1c6f2e5a191ed5acea51134679587c9cf71c7d8ee290be6bf465c4ee47897a125708704ad610d8d00252d01959209d7cd04d5ecbbb1419a7e84037a55fefa13dee464b48a35c96bcb9a53e7ed461c3a1607ee00c3c302fd47cd73fda7493e947c9834a92d63dcfbd65aa7c38c3e3a2748bb5d9a58e7495d243d6b741078c8f7ee9c8813e473a323375702702b0afae1550c8341eedf5247627343a95240cb02e3e17d5dca16f8d8d3b2228e19c06399f8ec5c5e9dbe4caef6a0ea3ffb1d3c7eac03ae030e791fa12e537c80d56b55b764cadf27a8701052df1282ba8b5e3eb62b5dc7973ac40160e00722fa958d95102fc25c549d8c0e84bed95b7acb61ba65700c4de4feebf78d13b9682c52e937d23026fb4c6193e6644e2d3c99f91f4f39a8b9fc6d013f89c3793ef703987954dc0412b550652c01d922f525704d32d70d6d4079bc3551b563fb29577b3aecdc9505011701dddfd94830431e7a4918927ee44fb3831ce8c4513839e2deea1287f3fa1ab9b61a256c09637dbc7b4f0f8fbb783840f9c24526da883b0df0c473cf231656bd7bc1aaba7f321fec0971c8c2c3444bff2f55e1df7fea66ec3e440a612db9aa87bb505163a59e06b96d46f50d8120b92814ac5ab146bc78dbbf91065af26107815678ce6e33812e6bf3285d4ef3b7b04b076f21e7820dcbfdb4ad5218cf4ff6a65812d8fcb98ecc1e95e2fa58e3efe4ce26cd0bd400d6036ab2ad4f6c713082b5e3f1e04eb9e3b6c8f63f57953894b9e220e0130308e1fd91f72d398c1e7962ca2c31be83f31d6157633581a0a6910496de8d55d3d07090b6aa087159e388b7e7dec60f5d8a60d93ca2ae91296bd484d916bfaaa17c8f45ea4b1a91b37c82821199a2b7596672c37156d8701e7352aa48671d3b1bbbd2bd5f0a2268894a25b0cb2514af39c8743f8cce8ab4b523053739fd8a522222a09acf51ac704489cf17e4b7125455cb8f125b4d31af1eba1f8cf7f81a5a100a141a7ee72e8083e065616649c241f233645c5fc865d17f0285f5c52d9f45312c979bfb3ce5f2a1b951deddf280ffb3f370410cffd1583bfa90077835aa201a0712d1dcd1293ee177738b14e6b5e2a496d05220c3253bb6578d6aff774be91946a614dd7e879fb3dcf7451e0b9adb6a8c44f53c2c464bcc0019e9fad89cac7791a0a3f2974f759a9856351d4d2d7c5612c17cfc50f8479945df57716767b120a590f4bf656f4645029a525694d8a238446c5f5c2c1c995c09c1405b8b1eb9e0352ffdf766cc964f8dcf9f8f043dfab6d102cf4b298021abd78f1d9025fa1f8e1d710b38d9d1652f2d88d1305874ec41609b6617b65c5adb19b6295dc5c5da5fdf69f28144ea12f17c3c6fcce6b9b5157b3dfc969d6725fa5b098a4d9b1d31547ed4c9187452d281d0a5d456008caf1aa251fac8f950ca561982dc2dc908d3691ee3b6ad3ae3d22d002577264ca8e49c523bd51c4846be0d198ad9407bf6f7b82c79893eb2c05fe9981f687a97a4f01fe45ff8c8b7ecc551135cd960a0d6001ad35020be07ffb53cb9e731522ca8ae9364628914b9b8e8cc2f37f03393263603cc2b45295767eb0aac29b0930390eb89587ab2779d2e3decb8042acece725ba42eda650863f418f8d0d50d104e44fbbe5aa7389a4a144a8cecf00f45fb14c39112f9bfb56c0acbd44fa3ff261f5ce4acaa5134c2c1d0cca447040820c81ab1bcdc16aa075b7c68b10d06bbb7ce08b5b805e0238f24402cf24a4b4e00701935a0c68add3de090903f9b85b153cb179a582f57113bfc21c2093803f0cfa4d9d4672c2b05a24f7e4c34a8e9101b70303a7378b9c50b6cddd46814ef7fd73ef6923feceab8fc5aa8b0d185f2e83c7a99dcb1077c0ab5c1f5d5f01ba2f0420443f75c4417db9ebf1665efbb33dca224989920a64b44dc26f682cc77b4632c8454d49135e52503da855bc0f6ff8edc1145451a9772c06891f41064036b66c3119a0fc6e80dffeb65dc456108b7ca0296f4175fff3ed2b0f842cd46bd7e86f4c62dfaf1ddbf836263c00b34803de164983d0811cebfac86e7720c726d3048934c36c23189b02386a722ca9f0fe00233ab50db928d3bccea355cc681144b8b7edcaae4884d5a8f04425c0890ae2c74326e138066d8c05f4c82b29df99b034ea727afde590a1f2177ace3af99cfb1729d6539ce7f7f7314b046aab74497e63dd399e1f7d5f16517c23bd830d1fdee810f3c3b77573dd69c4b97d80d71fb5a632e00acdfa4f8e829faf3580d6a72c40b28a82172f8dcd4627663ebf6069736f21735fd84a226f427cd06bb055f94e7c92f31c48075a2955d82a5b9d2d0198ce0d4e131a112570a8ee40fb80462a81436a58e7db4e34b6e2c422e82f934ecda9949893da5730fc5c23c7c920f363f85ab28cc6a4206713c3152669b47efa8238fa826735f17b4e78750276162024ec85458cd5808e06f40dd9fd43775a456a3ff6cae90550d76d8b2899e0762ad9a371482b3e38083b1274708301d6346c22fea9bb4b73db490ff3ab05b2f7f9e187adef139a7794454b7300b8cc64d3ad76c0e4bc54e08833a4419251550655380d675bc91855aeb82585220bb97f03e976579c08f321b5f8f70988d3061f41465517d53ac571dbf1b24b94443d2e9a8e8a79b392b3d6a4ecdd7f626925c365ef6221305105ce9b5f5b6ecc5bed3d702bd4b7f5008aa8eb8c7aa3ade8ecf6251516fbefeea4e1082aa0e1848eddb31ffe44b04792d296054402826e4bd054e671f223e5557e4c94f89ca01c25c44f1a2ff2c05a70b43408250705e1b858bf0670679fdcd379203e36be3500dd981b1a6422c3cf15224f7fefdef0a5f225c5a09d15767598ecd9e262460bb33a4b5d09a64591efabc57c923d3be406979032ae0bc0997b65336a06dd75b253332ad6a8b63ef043f780a1b3fb6d0b6cad98b1ef4a02535eb39e14a866cfc5fc3a9c5deb2261300d71280ebe66a0776a151469551c3c5fa308757f956655278ec6330ae9e3625468c5f87e02cd9a6489910d4143c1f4ee13aa21a6859d907b788e28572fecee273d44e4a900fa0aa668dd861a60fb6b6b12c2c5ef3c8df1bd7ef5d4b0d1cdb8c15fffbb365b9784bd94abd001c6966216b9b67554ad7cb7f958b70092514f7800fc40244003e0fd1133a9b850fb17f4fcafde07fc87b07fb510670654a5d2d6fc9876ac74728ea41593beef003d6858786a52d3a40af7529596767c17000bfaf8dc52e871359f4ad8bf6e7b2853e5229bdf39657e213580294a5317c5df172865e1e17fe37093b585e04613f5f078f761b2b1752eb32983afda24b523af8851df9a02b37e77f543f18888a782a994a50563334282bf9cdfccc183fdf4fcd75ad86ee0d94f91ee2300a5befbccd14e03a77fc031a8cfe4f01e4c5290f5ac1da0d58ea054bd4837cfd93e5e34fc0eb16e48044ba76131f228d16cde9b0bb978ca7cdcd10653c358bdb26fdb723a530232c32ae0a4cecc06082f46e1c1d596bfe60621ad1e354e01e07b040cc7347c016653f44d926d13ca74e6cbc9d4ab4c99f4491c95c76fff5076b3936eb9d0a286b97c035ca88a3c6309f5febfd4cdaac869e4f58ed409b1e9eb4192fb2f9c2f12176d460fd98286c9d6df84598f260119fd29c63f800c07d8df83d5cc95f8c2fea2812e7890e8a0718bb1e031ecbebc0436dcf3e3b9a58bcc06b4c17f711f80fe1dffc3326a6eb6e00283055c6dabe20d311bfd5019591b7954f8163c9afad9ef8390a38f3582e0a79cdf0353de8eeb6b5f9f27b16ffdef7dd62869b4840ee226ccdce95e02c4545eb981b60571cd83f03dc5eaf8c97a0829a4318a9b3dc06c0e003db700b2260ff1fa8fee66890e637b109abb03ec901b05ca599775f48af50154c0e67d82bf0f558d7d3e0778dc38bea1eb5f74dc8d7f90abdf5511a424be66bf8b6a3cacb477d2e7ef4db68d2eba4d5289122d851f9501ba7e9c4957d8eba3be3fc8e785c4265a1d65c46f2809b70846c693864b169c9dcb78be26ea14b8613f145b01887222979a9e67aee5f800caa6f5c4229bdeefc901232ace6143c9865e4d9c07f51aa200afaf7e48a7d1d8faf366023beab12906ffcb3eaf72c0eb68075e4daf3c080e0c31911befc16f0cc4a09908bb7c1e26abab38bd7b788e1a09c0edf1a35a38d2ff1d3ed47fcdaae2f0934224694f5b56705b9409b6d3d64f3833b686f7576ec64bbdd6ff174e56c2d1edac0011f904681a73face26573fbba4e34652f7ae84acfb2fa5a5b3046f98178cd0831df7477de70e06a4c00e305f31aafc026ef064dd68fd3e4252b1b91d617b26c6d09b6891a00df68f105b5962e7f9d82da101dd595d286da721443b72b2aba2377f6e7772e33b3a5e3753da9c2578c5d1daab80187f55518c72a64ee150a7cb5649823c08c9f62cd7d020b45ec2cba8310db1a7785a46ab24785b4d54ff1660b5ca78e05a9a55edba9c60bf044737bc468101c4e8bd1480d749be5024adefca1d998abe33eaeb6b11fbb39da5d905fdd3f611b2e51517ccee4b8af72c2d948573505590d61a6783ab7278fc43fe55b1fcc0e7216444d3c8039bb8145ef1ce01c50e95a3f3feab0aee883fdb94cc13ee4d21c542aa795e18932228981690f4d4c57ca4db6eb5c092e29d8a05139d509a8aeb48baa1eb97a76e597a32b280b5e9d6c36859064c98ff96ef5126130264fa8d2f49213870d9fb036cff95da51f270311d9976208554e48ffd486470d0ecdb4e619ccbd8226147204baf8e235f54d8b1cba8fa34a9a4d055de515cdf180d2bb6739a175183c472e30b5c914d09eeb1b7dafd6872b38b48c6afc146101200e6e6a44fe5684e220adc11f5c403ddb15df8051e6bdef09117a3a5349938513776286473a3cf1d2788bb875052a2e6459fa7926da33380149c7f98d7700528a60c954e6f5ecb65842fde69d614be69eaa2040a4819ae6e756accf936e14c1e894489744a79c1f2c1eb295d13e2d767c09964b61f9cfe497649f712").unwrap();
-        let auth = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, Some(&aad), PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut auth = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut auth, PacketType::Genuine, Some(&aad))
             .unwrap();
         let challenge = Vec::from_hex("8da7de6ea7bf2a81a396a42880ba1f5756734c4821309ac9aeffa2a26ce86873b9dc4935a772de6ec5162c6d075b14536800fb174841153511bfb597e992e2fe8a450c4bce102cc550bb37fd564c4d60bf884e").unwrap();
         assert_eq!(auth, challenge);
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_4() {
         let alice =
             SecretKey::from_str("6c77432d1fda31e9f942f8af44607e10f3ad38a65f8a4bddae823e5eff90dc38")
@@ -1628,17 +1627,21 @@ mod tests {
             Vec::from_hex("7ec02fea8c1484e3d0875f978c5f36d63545e2e4acf56311394422f4b66af612")
                 .unwrap()
         );
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
         let contents: Vec<u8> = Vec::from_hex("7e0e78eb6990b059e6cf0ded66ea93ef82e72aa2f18ac24f2fc6ebab561ae557420729da103f64cecfa20527e15f9fb669a49bbbf274ef0389b3e43c8c44e5f60bf2ac38e2b55e7ec4273dba15ba41d21f8f5b3ee1688b3c29951218caf847a97fb50d75a86515d445699497d968164bf740012679b8962de573be941c62b7ef").unwrap();
         for _ in 0..223 {
-            alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&Vec::new(), None, PacketType::Decoy)
+            let packet_len = OutboundCipher::encryption_buffer_len(0);
+            let mut packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&Vec::new(), &mut packet, PacketType::Decoy, None)
                 .unwrap();
         }
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Decoy)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Decoy, None)
             .unwrap();
         assert!(
             enc.to_lower_hex_string().ends_with("729847a3e9eba7a5bff454b5de3b393431ee360736b6c030d7a5bd01d1203d2e98f528543fd2bf886ccaa1ada5e215a730a36b3f4abfc4e252c89eb01d9512f94916dae8a76bf16e4da28986ffe159090fe5267ee3394300b7ccf4dfad389a26321b3a3423e4594a82ccfbad16d6561ecb8772b0cb040280ff999a29e3d9d4fd"),
@@ -1646,7 +1649,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_5() {
         let alice =
             SecretKey::from_str("a6ec25127ca1aa4cf16b20084ba1e6516baae4d32422288e9b36d8bddd2de35a")
@@ -1661,17 +1663,21 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
         let contents = Vec::from_hex("00cf68f8f7ac49ffaa02c4864fdf6dfe7bbf2c740b88d98c50ebafe32c92f3427f57601ffcb21a3435979287db8fee6c302926741f9d5e464c647eeb9b7acaeda46e00abd7506fc9a719847e9a7328215801e96198dac141a15c7c2f68e0690dd1176292a0dded04d1f548aad88f1aebdc0a8f87da4bb22df32dd7c160c225b843e83f6525d6d484f502f16d923124fc538794e21da2eb689d18d87406ecced5b9f92137239ed1d37bcfa7836641a83cf5e0a1cf63f51b06f158e499a459ede41c").unwrap();
         for _ in 0..448 {
-            alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&Vec::new(), None, PacketType::Genuine)
+            let packet_len = OutboundCipher::encryption_buffer_len(0);
+            let mut packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&Vec::new(), &mut packet, PacketType::Genuine, None)
                 .unwrap();
         }
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert!(
             enc.to_lower_hex_string().ends_with("77b4656934a82de1a593d8481f020194ddafd8cac441f9d72aeb8721e6a14f49698ca6d9b2b6d59d07a01aa552fd4d5b68d0d1617574c77dea10bfadbaa31b83885b7ceac2fd45e3e4a331c51a74e7b1698d81b64c87c73c5b9258b4d83297f9debc2e9aa07f8572ff434dc792b83ecf07b3197de8dc9cf7be56acb59c66cff5"),
@@ -1679,7 +1685,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_6() {
         let alice =
             SecretKey::from_str("0af952659ed76f80f585966b95ab6e6fd68654672827878684c8b547b1b94f5a")
@@ -1694,7 +1699,7 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Responder);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
         let contents = Vec::from_hex(
             "5c6272ee55da855bbbf7b1246d9885aa7aa601a715ab86fa46c50da533badf82b97597c968293ae04e"
                 .repeat(97561)
@@ -1702,14 +1707,18 @@ mod tests {
         )
         .unwrap();
         for _ in 0..673 {
-            alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&Vec::new(), None, PacketType::Genuine)
+            let packet_len = OutboundCipher::encryption_buffer_len(0);
+            let mut packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&Vec::new(), &mut packet, PacketType::Genuine, None)
                 .unwrap();
         }
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Genuine)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert!(
             enc.to_lower_hex_string().ends_with("657a4a19711ce593c3844cb391b224f60124aba7e04266233bc50cafb971e26c7716b76e98376448f7d214dd11e629ef9a974d60e3770a695810a61c4ba66d78b936ee7892b98f0b48ddae9fcd8b599dca1c9b43e9b95e0226cf8d4459b8a7c2c4e6db80f1d58c7b20dd7208fa5c1057fb78734223ee801dbd851db601fee61e"),
@@ -1717,7 +1726,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_vector_7() {
         let alice =
             SecretKey::from_str("f90e080c64b05824c5a24b2501d5aeaf08af3872ee860aa80bdcd430f7b63494")
@@ -1732,7 +1740,7 @@ mod tests {
             Network::Bitcoin,
         )
         .unwrap();
-        let mut alice_packet_handler = PacketHandler::new(session_keys.clone(), Role::Initiator);
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
         let contents = Vec::from_hex(
             "5f67d15d22ca9b2804eeab0a66f7f8e3a10fa5de5809a046084348cbc5304e843ef96f59a59c7d7fdfe5946489f3ea297d941bac326225df316a25fc90f0e65b0d31a9c497e960fdbf8c482516bc8a9c1c77b7f6d0e1143810c737f76f9224e6f2c9af5186b4f7259c7e8d165b6e4fe3d38a60bdbdd4d06ecdcaaf62086070dbb68686b802d53dfd7db14b18743832605f5461ad81e2af4b7e8ff0eff0867a25b93cec7becf15c43131895fed09a83bf1ee4a87d44dd0f02a837bf5a1232e201cb882734eb9643dc2dc4d4e8b5690840766212c7ac8f38ad8a9ec47c7a9b3e022ae3eb6a32522128b518bd0d0085dd81c5"
                 .repeat(69615)
@@ -1740,14 +1748,18 @@ mod tests {
         )
         .unwrap();
         for _ in 0..1024 {
-            alice_packet_handler
-                .packet_writer
-                .encrypt_packet(&Vec::new(), None, PacketType::Genuine)
+            let packet_len = OutboundCipher::encryption_buffer_len(0);
+            let mut packet = vec![0u8; packet_len];
+            alice_cipher
+                .outbound()
+                .encrypt(&Vec::new(), &mut packet, PacketType::Genuine, None)
                 .unwrap();
         }
-        let enc = alice_packet_handler
-            .packet_writer
-            .encrypt_packet(&contents, None, PacketType::Decoy)
+        let packet_len = OutboundCipher::encryption_buffer_len(contents.len());
+        let mut enc = vec![0u8; packet_len];
+        alice_cipher
+            .outbound()
+            .encrypt(&contents, &mut enc, PacketType::Decoy, None)
             .unwrap();
         assert!(
             enc.to_lower_hex_string().ends_with("7c4b9e1e6c1ce69da7b01513cdc4588fd93b04dafefaf87f31561763d906c672bac3dfceb751ebd126728ac017d4d580e931b8e5c7d5dfe0123be4dc9b2d2238b655c8a7fadaf8082c31e310909b5b731efc12f0a56e849eae6bfeedcc86dd27ef9b91d159256aa8e8d2b71a311f73350863d70f18d0d7302cf551e4303c7733"),
