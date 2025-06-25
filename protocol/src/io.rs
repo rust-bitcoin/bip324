@@ -20,8 +20,9 @@ use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
+    handshake::{self, HandshakeAuthentication},
     Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
-    NUM_GARBAGE_TERMINTOR_BYTES, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES, VERSION_CONTENT,
+    NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
 };
 
 /// A decrypted BIP324 payload with its packet type.
@@ -141,6 +142,8 @@ pub struct AsyncProtocol {
 impl AsyncProtocol {
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
+    /// This function is *not* cancellation safe.
+    ///
     /// # Arguments
     ///
     /// * `network` - Network which both parties are operating on.
@@ -171,77 +174,68 @@ impl AsyncProtocol {
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send,
     {
-        let garbage_len = match garbage {
-            Some(slice) => slice.len(),
-            None => 0,
-        };
-        let mut ellswift_buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES + garbage_len];
-        let mut handshake = Handshake::new(network, role, garbage, &mut ellswift_buffer)?;
+        let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
 
-        // Send initial key to remote.
-        writer.write_all(&ellswift_buffer).await?;
+        // Send local public key and optional garbage.
+        let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage);
+        let mut key_buffer = vec![0u8; key_buffer_len];
+        let handshake = handshake.send_key(garbage, &mut key_buffer)?;
+        writer
+            .write_all(&key_buffer[..handshake.bytes_written()])
+            .await?;
         writer.flush().await?;
 
-        // Read remote's initial key.
-        let mut remote_ellswift_buffer = [0u8; 64];
+        // Read remote's public key.
+        let mut remote_ellswift_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         reader.read_exact(&mut remote_ellswift_buffer).await?;
+        let handshake = handshake.receive_key(remote_ellswift_buffer)?;
 
-        let num_version_packet_bytes = OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
-        let num_decoy_packets_bytes: usize = match decoys {
-            Some(decoys) => decoys
-                .iter()
-                .map(|decoy| OutboundCipher::encryption_buffer_len(decoy.len()))
-                .sum(),
-            None => 0,
-        };
-
-        // Complete materials and send terminator to remote.
-        // Not exposing decoy packets yet.
-        let mut terminator_and_version_buffer =
-            vec![
-                0u8;
-                NUM_GARBAGE_TERMINTOR_BYTES + num_version_packet_bytes + num_decoy_packets_bytes
-            ];
-        handshake.complete_materials(
-            remote_ellswift_buffer,
-            &mut terminator_and_version_buffer,
-            decoys,
-        )?;
-        writer.write_all(&terminator_and_version_buffer).await?;
+        // Send garbage terminator, decoys, and version.
+        let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys);
+        let mut version_buffer = vec![0u8; version_buffer_len];
+        let handshake = handshake.send_version(&mut version_buffer, decoys)?;
+        writer
+            .write_all(&version_buffer[..handshake.bytes_written()])
+            .await?;
         writer.flush().await?;
 
         // Receive and authenticate remote garbage and version.
-        // Keep pulling bytes from the buffer until the garbage is flushed.
         let mut remote_garbage_and_version_buffer =
             Vec::with_capacity(NUM_INITIAL_HANDSHAKE_BUFFER_BYTES);
         let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
+        let mut handshake = handshake;
 
         loop {
             let mut temp_buffer = [0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
             match reader.read(&mut temp_buffer).await {
-                // No data available right now, continue.
-                Ok(0) => {
-                    continue;
-                }
+                Ok(0) => continue,
                 Ok(bytes_read) => {
                     remote_garbage_and_version_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
 
-                    match handshake.authenticate_garbage_and_version(
-                        &remote_garbage_and_version_buffer,
-                        &mut packet_buffer,
-                    ) {
-                        Ok(()) => break,
-                        // Not enough data, continue reading.
-                        Err(Error::CiphertextTooSmall) => continue,
+                    handshake = match handshake
+                        .receive_version(&remote_garbage_and_version_buffer, &mut packet_buffer)
+                    {
+                        Ok(HandshakeAuthentication::Complete { cipher, .. }) => {
+                            let (inbound_cipher, outbound_cipher) = cipher.into_split();
+                            return Ok(Self {
+                                reader: AsyncProtocolReader {
+                                    inbound_cipher,
+                                    state: DecryptState::init_reading_length(),
+                                },
+                                writer: AsyncProtocolWriter { outbound_cipher },
+                            });
+                        }
+                        Ok(HandshakeAuthentication::NeedMoreData(handshake)) => handshake,
                         Err(Error::BufferTooSmall { required_bytes }) => {
                             packet_buffer.resize(required_bytes, 0);
-                            continue;
+                            return Err(ProtocolError::Internal(Error::BufferTooSmall {
+                                required_bytes,
+                            }));
                         }
                         Err(e) => return Err(ProtocolError::Internal(e)),
-                    }
+                    };
                 }
                 Err(e) => match e.kind() {
-                    // No data available or interrupted, retry.
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
                         continue;
                     }
@@ -249,17 +243,6 @@ impl AsyncProtocol {
                 },
             }
         }
-
-        let cipher_session = handshake.finalize()?;
-        let (inbound_cipher, outbound_cipher) = cipher_session.into_split();
-
-        Ok(Self {
-            reader: AsyncProtocolReader {
-                inbound_cipher,
-                state: DecryptState::init_reading_length(),
-            },
-            writer: AsyncProtocolWriter { outbound_cipher },
-        })
     }
 
     /// Read reference for packet reading operations.
@@ -365,7 +348,8 @@ impl AsyncProtocolReader {
                         self.inbound_cipher
                             .decrypt(packet_bytes, &mut plaintext_buffer, None)?;
                     self.state = DecryptState::init_reading_length();
-                    return Ok(Payload::new(plaintext_buffer, packet_type));
+                    // Skip the header byte (first byte) which contains the packet type
+                    return Ok(Payload::new(plaintext_buffer[1..].to_vec(), packet_type));
                 }
             }
         }
