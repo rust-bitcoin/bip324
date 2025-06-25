@@ -73,7 +73,7 @@ _default:
 
 # Run benchmarks.
 bench:
-  cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench packet_handler
+  cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench cipher_session
 
 # Run fuzz test: handshake.
 @fuzz target="handshake" time="60":
