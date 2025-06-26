@@ -7,10 +7,7 @@
 //! * The implementation should handle all inputs gracefully.
 
 #![no_main]
-use bip324::{
-    Handshake, HandshakeAuthentication, Initialized, Network, ReceivedKey, Role,
-    NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
-};
+use bip324::{Handshake, HandshakeAuthentication, Initialized, Network, ReceivedKey, Role};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -41,9 +38,8 @@ fuzz_target!(|data: &[u8]| {
     let handshake = handshake.send_version(&mut version_buffer, None).unwrap();
 
     // Try to receive and authenticate the fuzzed garbage and version data.
-    let garbage_and_version = Vec::from(&data[64..]);
-    let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-    match handshake.receive_version(&garbage_and_version, &mut packet_buffer) {
+    let mut garbage_and_version = Vec::from(&data[64..]);
+    match handshake.receive_version(&mut garbage_and_version) {
         Ok(HandshakeAuthentication::Complete { .. }) => {
             // Handshake completed successfully.
             // This should only happen with some very lucky random bytes.

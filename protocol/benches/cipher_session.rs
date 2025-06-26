@@ -6,7 +6,7 @@ extern crate test;
 
 use bip324::{
     CipherSession, Handshake, HandshakeAuthentication, InboundCipher, Initialized, Network,
-    OutboundCipher, PacketType, ReceivedKey, Role, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
+    OutboundCipher, PacketType, ReceivedKey, Role,
 };
 use test::{black_box, Bencher};
 
@@ -45,11 +45,9 @@ fn create_cipher_session_pair() -> (CipherSession, CipherSession) {
         .send_version(&mut bob_version_buffer, None)
         .unwrap();
 
-    let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
     // Alice receives Bob's version.
     let alice = match alice_handshake
-        .receive_version(&bob_version_buffer, &mut packet_buffer)
+        .receive_version(&mut bob_version_buffer)
         .unwrap()
     {
         HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -58,7 +56,7 @@ fn create_cipher_session_pair() -> (CipherSession, CipherSession) {
 
     // Bob receives Alice's version.
     let bob = match bob_handshake
-        .receive_version(&alice_version_buffer, &mut packet_buffer)
+        .receive_version(&mut alice_version_buffer)
         .unwrap()
     {
         HandshakeAuthentication::Complete { cipher, .. } => cipher,

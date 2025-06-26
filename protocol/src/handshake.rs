@@ -20,14 +20,17 @@ use bitcoin::{
 use rand::Rng;
 
 use crate::{
-    CipherSession, Error, InboundCipher, OutboundCipher, PacketType, Role, SessionKeyMaterial,
+    CipherSession, Error, OutboundCipher, PacketType, Role, SessionKeyMaterial,
     NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES, VERSION_CONTENT,
 };
 
-/// Initial buffer for decoy and version packets in the handshake.
-/// The buffer may have to be expanded if a party is sending large
-/// decoy packets.
-pub const NUM_INITIAL_HANDSHAKE_BUFFER_BYTES: usize = 4096;
+/// Initial buffer length hint to receive garbage, the garbage terminator,
+/// and the version packet from the remote peer. This assumes no decoy packets
+/// are sent (which is the default in Bitcoin Core) and no garbage bytes.
+/// Calculated as: garbage_terminator (16 bytes) + encrypted_version_packet
+/// where the version packet content is currently empty (0 bytes).
+pub const NUM_INITIAL_BUFFER_BYTES_HINT: usize =
+    NUM_GARBAGE_TERMINTOR_BYTES + OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
 // Maximum number of garbage bytes before the terminator.
 const MAX_NUM_GARBAGE_BYTES: usize = 4095;
 
@@ -60,6 +63,8 @@ pub struct SentVersion {
     cipher: CipherSession,
     remote_garbage_terminator: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
     bytes_written: usize,
+    ciphertext_index: usize,
+    remote_garbage_authenticated: bool,
 }
 
 /// Success variants for receive_version.
@@ -147,7 +152,22 @@ impl<'a> Handshake<'a, Initialized> {
         NUM_ELLIGATOR_SWIFT_BYTES + garbage.map(|g| g.len()).unwrap_or(0)
     }
 
-    /// Send local public key and optional garbage.
+    /// Send local public key and optional garbage to initiate the handshake.
+    ///
+    /// # Parameters
+    ///
+    /// * `garbage` - Optional garbage bytes to append after the public key. Limited to 4095 bytes.
+    /// * `output_buffer` - Buffer to write the key and garbage. Must have sufficient capacity
+    ///   as calculated by `send_key_len()`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<SentKey>)` - Ready to receive remote peer's key material.
+    ///
+    /// # Errors
+    ///
+    /// * `TooMuchGarbage` - Garbage exceeds 4095 byte limit.
+    /// * `BufferTooSmall` - Output buffer insufficient for key + garbage.
     pub fn send_key(
         mut self,
         garbage: Option<&'a [u8]>,
@@ -200,7 +220,25 @@ impl<'a> Handshake<'a, SentKey> {
         self.state.bytes_written
     }
 
-    /// Process received key material.
+    /// Process the remote peer's public key and derive shared session secrets.
+    ///
+    /// This is the **second state transition** in the handshake process, moving from
+    /// `SentKey` to `ReceivedKey` state. The method performs ECDH key exchange using
+    /// the received remote public key and generates all cryptographic material needed
+    /// for the secure session.
+    ///
+    /// # Parameters
+    ///
+    /// * `their_key` - The remote peer's 64-byte ElligatorSwift encoded public key.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<ReceivedKey>)` - Ready to send version packet with derived session keys.
+    ///
+    /// # Errors
+    ///
+    /// * `V1Protocol` - Remote peer is using the legacy V1 protocol.
+    /// * `SecretGeneration` - Failed to derive session keys from ECDH.
     pub fn receive_key(
         self,
         their_key: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
@@ -268,7 +306,27 @@ impl<'a> Handshake<'a, ReceivedKey> {
         len
     }
 
-    /// Send garbage terminator, optional decoys, and version packet.
+    /// Send garbage terminator, optional decoy packets, and version packet.
+    ///
+    /// This is the **third state transition** in the handshake process, moving from
+    /// `ReceivedKey` to `SentVersion` state. The method initiates encrypted communication
+    /// by sending the local garbage terminator followed by encrypted packets.
+    ///
+    /// # Parameters
+    ///
+    /// * `output_buffer` - Buffer to write terminator and encrypted packets. Must have
+    ///   sufficient capacity as calculated by `send_version_len()`.
+    /// * `decoys` - Optional array of decoy packet contents to send before version packet
+    ///   to help hide the shape of traffic.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<SentVersion>)` - Ready to receive and authenticate remote peer's version.
+    ///
+    /// # Errors
+    ///
+    /// * `BufferTooSmall` - Output buffer insufficient for terminator + packets.
+    /// * `Decryption` - Cipher operation failed.
     pub fn send_version(
         self,
         output_buffer: &mut [u8],
@@ -334,6 +392,8 @@ impl<'a> Handshake<'a, ReceivedKey> {
                 cipher,
                 remote_garbage_terminator,
                 bytes_written,
+                ciphertext_index: 0,
+                remote_garbage_authenticated: false,
             },
         })
     }
@@ -346,11 +406,30 @@ impl<'a> Handshake<'a, SentVersion> {
         self.state.bytes_written
     }
 
-    /// Authenticate garbage and version packet.
+    /// Authenticate remote peer's garbage, decoy packets, and version packet.
+    ///
+    /// This method is unique in the handshake process as it requires a **mutable** input buffer
+    /// to perform in-place decryption operations. The buffer contains everything after the 64
+    /// byte public key received from the remote peer: optional garbage bytes, garbage terminator,
+    /// and encrypted packets (decoys and final version packet).
+    ///
+    /// The input buffer is mutable in the case because the caller generally doesn't care
+    /// about the decoy and version packets, and definitely doesn't want to deal with
+    /// allocating memory for them.
+    ///
+    /// # Parameters
+    ///
+    /// * `input_buffer` - **Mutable** buffer containing garbage + terminator + encrypted packets.
+    ///   The buffer will be modified during in-place decryption operations.
+    ///
+    /// # Returns
+    ///
+    /// * `Complete { cipher, bytes_consumed }` - Handshake succeeded, secure session established.
+    /// * `NeedMoreData(handshake)` - Insufficient data, retry by extending the buffer.
+    /// ```
     pub fn receive_version(
         mut self,
-        input_buffer: &[u8],
-        output_buffer: &mut [u8],
+        input_buffer: &mut [u8],
     ) -> Result<HandshakeAuthentication<'a>, Error> {
         let (garbage, ciphertext) = match self.split_garbage(input_buffer) {
             Ok(split) => split,
@@ -360,22 +439,25 @@ impl<'a> Handshake<'a, SentVersion> {
             Err(e) => return Err(e),
         };
 
-        let mut aad = if garbage.is_empty() {
+        let mut aad = if garbage.is_empty() || self.state.remote_garbage_authenticated {
             None
         } else {
             Some(garbage)
         };
-        let mut ciphertext_index = 0;
-        let mut found_version = false;
 
         // First packet authenticates remote garbage.
         // Continue through decoys until we find version packet.
-        while !found_version {
-            match self.decrypt_packet(&ciphertext[ciphertext_index..], output_buffer, aad) {
+        loop {
+            match self.decrypt_packet(&mut ciphertext[self.state.ciphertext_index..], aad) {
                 Ok((packet_type, bytes_consumed)) => {
-                    aad = None;
-                    ciphertext_index += bytes_consumed;
-                    found_version = matches!(packet_type, PacketType::Genuine);
+                    if aad.is_some() {
+                        aad = None;
+                        self.state.remote_garbage_authenticated = true;
+                    }
+                    self.state.ciphertext_index += bytes_consumed;
+                    if matches!(packet_type, PacketType::Genuine) {
+                        break;
+                    }
                 }
                 Err(Error::CiphertextTooSmall) => {
                     return Ok(HandshakeAuthentication::NeedMoreData(self))
@@ -384,8 +466,9 @@ impl<'a> Handshake<'a, SentVersion> {
             }
         }
 
-        // Calculate total bytes consumed (garbage + terminator + packets)
-        let bytes_consumed = garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES + ciphertext_index;
+        // Calculate total bytes consumed.
+        let bytes_consumed =
+            garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES + self.state.ciphertext_index;
 
         Ok(HandshakeAuthentication::Complete {
             cipher: self.state.cipher,
@@ -394,14 +477,16 @@ impl<'a> Handshake<'a, SentVersion> {
     }
 
     /// Split buffer on garbage terminator.
-    fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
+    fn split_garbage<'b>(&self, buffer: &'b mut [u8]) -> Result<(&'b [u8], &'b mut [u8]), Error> {
         let terminator = &self.state.remote_garbage_terminator;
 
         if let Some(index) = buffer
             .windows(terminator.len())
             .position(|window| window == terminator)
         {
-            Ok((&buffer[..index], &buffer[index + terminator.len()..]))
+            let (garbage, rest) = buffer.split_at_mut(index);
+            let ciphertext = &mut rest[terminator.len()..];
+            Ok((garbage, ciphertext))
         } else if buffer.len() >= MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES {
             Err(Error::NoGarbageTerminator)
         } else {
@@ -409,10 +494,10 @@ impl<'a> Handshake<'a, SentVersion> {
         }
     }
 
+    /// Decrypts in place, returns the packet type and number of bytes consumed from the ciphertext.
     fn decrypt_packet(
         &mut self,
-        ciphertext: &[u8],
-        output_buffer: &mut [u8],
+        ciphertext: &mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<(PacketType, usize), Error> {
         if ciphertext.len() < NUM_LENGTH_BYTES {
@@ -429,17 +514,8 @@ impl<'a> Handshake<'a, SentVersion> {
             return Err(Error::CiphertextTooSmall);
         }
 
-        // Check output buffer is large enough.
-        let plaintext_len = InboundCipher::decryption_buffer_len(packet_len);
-        if output_buffer.len() < plaintext_len {
-            return Err(Error::BufferTooSmall {
-                required_bytes: plaintext_len,
-            });
-        }
-
-        let packet_type = self.state.cipher.inbound().decrypt(
-            &ciphertext[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len],
-            &mut output_buffer[..plaintext_len],
+        let (packet_type, _) = self.state.cipher.inbound().decrypt_in_place(
+            &mut ciphertext[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len],
             aad,
         )?;
 
@@ -512,12 +588,10 @@ mod tests {
             .send_version(&mut resp_version_buffer, Some(&resp_decoys))
             .unwrap();
 
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
         // Initiator receives responder's garbage, decoys, and version.
-        let full_resp_message = [&responder_garbage[..], &resp_version_buffer[..]].concat();
+        let mut full_resp_message = [&responder_garbage[..], &resp_version_buffer[..]].concat();
         match init_handshake
-            .receive_version(&full_resp_message, &mut packet_buffer)
+            .receive_version(&mut full_resp_message)
             .unwrap()
         {
             HandshakeAuthentication::Complete { bytes_consumed, .. } => {
@@ -527,9 +601,9 @@ mod tests {
         }
 
         // Responder receives initiator's garbage, decoys, and version.
-        let full_init_message = [&initiator_garbage[..], &init_version_buffer[..]].concat();
+        let mut full_init_message = [&initiator_garbage[..], &init_version_buffer[..]].concat();
         match resp_handshake
-            .receive_version(&full_init_message, &mut packet_buffer)
+            .receive_version(&mut full_init_message)
             .unwrap()
         {
             HandshakeAuthentication::Complete { bytes_consumed, .. } => {
@@ -601,13 +675,10 @@ mod tests {
             .send_version(&mut resp_version_buffer, None)
             .unwrap();
 
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
         // Feed data in very small chunks to trigger NeedMoreData.
         let partial_data_1 = &init_version_buffer[..1];
-        let returned_handshake = match resp_handshake
-            .receive_version(partial_data_1, &mut packet_buffer)
-            .unwrap()
+        let mut partial_data_1 = partial_data_1.to_vec();
+        let returned_handshake = match resp_handshake.receive_version(&mut partial_data_1).unwrap()
         {
             HandshakeAuthentication::NeedMoreData(handshake) => handshake,
             HandshakeAuthentication::Complete { .. } => {
@@ -617,8 +688,9 @@ mod tests {
 
         // Feed a bit more data - still probably not enough.
         let partial_data_2 = &init_version_buffer[..5];
+        let mut partial_data_2 = partial_data_2.to_vec();
         let returned_handshake = match returned_handshake
-            .receive_version(partial_data_2, &mut packet_buffer)
+            .receive_version(&mut partial_data_2)
             .unwrap()
         {
             HandshakeAuthentication::NeedMoreData(handshake) => handshake,
@@ -628,10 +700,8 @@ mod tests {
         };
 
         // Now provide the complete data.
-        match returned_handshake
-            .receive_version(&init_version_buffer, &mut packet_buffer)
-            .unwrap()
-        {
+        let mut full_data = init_version_buffer.clone();
+        match returned_handshake.receive_version(&mut full_data).unwrap() {
             HandshakeAuthentication::Complete { bytes_consumed, .. } => {
                 assert_eq!(bytes_consumed, init_version_buffer.len());
             }
@@ -657,13 +727,13 @@ mod tests {
         let handshake = handshake.send_version(&mut version_buffer, None).unwrap();
 
         // Test with a buffer that is too long (should fail to find terminator)
-        let test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
-        let result = handshake.split_garbage(&test_buffer);
+        let mut test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
+        let result = handshake.split_garbage(&mut test_buffer);
         assert!(matches!(result, Err(Error::NoGarbageTerminator)));
 
         // Test with a buffer that's just short of the required length
-        let short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
-        let result = handshake.split_garbage(&short_buffer);
+        let mut short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
+        let result = handshake.split_garbage(&mut short_buffer);
         assert!(matches!(result, Err(Error::CiphertextTooSmall)));
     }
 }

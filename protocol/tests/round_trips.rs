@@ -5,10 +5,7 @@ const PORT: u16 = 18444;
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
-    use bip324::{
-        Handshake, HandshakeAuthentication, Initialized, PacketType, ReceivedKey, Role,
-        NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
-    };
+    use bip324::{Handshake, HandshakeAuthentication, Initialized, PacketType, ReceivedKey, Role};
     use bitcoin::Network;
 
     // Create initiator handshake
@@ -47,12 +44,9 @@ fn hello_world_happy_path() {
         .send_version(&mut resp_version_buffer, None)
         .unwrap();
 
-    // Complete handshakes
-    let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
     // Initiator receives responder's version
     let mut alice = match init_handshake
-        .receive_version(&resp_version_buffer, &mut packet_buffer)
+        .receive_version(&mut resp_version_buffer)
         .unwrap()
     {
         HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -61,7 +55,7 @@ fn hello_world_happy_path() {
 
     // Responder receives initiator's version
     let mut bob = match resp_handshake
-        .receive_version(&init_version_buffer, &mut packet_buffer)
+        .receive_version(&mut init_version_buffer)
         .unwrap()
     {
         HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -132,7 +126,6 @@ fn regtest_handshake() {
     use bip324::{
         serde::{deserialize, serialize, NetworkMessage},
         Handshake, HandshakeAuthentication, Initialized, PacketType, ReceivedKey,
-        NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
     let bitcoind = regtest_process(TransportVersion::V2);
@@ -174,12 +167,8 @@ fn regtest_handshake() {
     let size = stream.read(&mut max_response).unwrap();
     let response = &mut max_response[..size];
     println!("Authenticating the handshake");
-    let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
 
-    let cipher_session = match handshake
-        .receive_version(response, &mut packet_buffer)
-        .unwrap()
-    {
+    let cipher_session = match handshake.receive_version(response).unwrap() {
         HandshakeAuthentication::Complete { cipher, .. } => {
             println!("Finalizing the handshake");
             cipher

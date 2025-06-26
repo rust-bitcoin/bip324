@@ -41,7 +41,7 @@ pub use bitcoin::Network;
 
 pub use handshake::{
     Handshake, HandshakeAuthentication, Initialized, ReceivedKey, SentKey, SentVersion,
-    NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
+    NUM_INITIAL_BUFFER_BYTES_HINT,
 };
 // Re-exports from io module (async I/O types for backwards compatibility)
 #[cfg(any(feature = "futures", feature = "tokio"))]
@@ -437,7 +437,7 @@ pub struct OutboundCipher {
 
 impl OutboundCipher {
     /// Calculate the required encryption buffer length for given plaintext length.
-    pub fn encryption_buffer_len(plaintext_len: usize) -> usize {
+    pub const fn encryption_buffer_len(plaintext_len: usize) -> usize {
         plaintext_len + NUM_PACKET_OVERHEAD_BYTES
     }
 
@@ -577,7 +577,6 @@ impl CipherSession {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use crate::handshake::NUM_INITIAL_HANDSHAKE_BUFFER_BYTES;
 
     use super::*;
     use bitcoin::secp256k1::ellswift::{ElligatorSwift, ElligatorSwiftParty};
@@ -875,17 +874,14 @@ mod tests {
             .unwrap();
         let resp_version_len = resp_handshake.bytes_written();
 
-        // Complete handshakes
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
         // Initiator receives responder's version
-        let full_resp_message = [
+        let mut full_resp_message = [
             &responder_garbage[..],
             &resp_version_buffer[..resp_version_len],
         ]
         .concat();
         let mut alice = match init_handshake
-            .receive_version(&full_resp_message, &mut packet_buffer)
+            .receive_version(&mut full_resp_message)
             .unwrap()
         {
             HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -893,13 +889,13 @@ mod tests {
         };
 
         // Responder receives initiator's version
-        let full_init_message = [
+        let mut full_init_message = [
             &initiator_garbage[..],
             &init_version_buffer[..init_version_len],
         ]
         .concat();
         let mut bob = match resp_handshake
-            .receive_version(&full_init_message, &mut packet_buffer)
+            .receive_version(&mut full_init_message)
             .unwrap()
         {
             HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -1006,12 +1002,9 @@ mod tests {
             .send_version(&mut resp_version_buffer, None)
             .unwrap();
 
-        // Complete handshakes
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-
         // Initiator receives responder's version
         let mut alice = match init_handshake
-            .receive_version(&resp_version_buffer, &mut packet_buffer)
+            .receive_version(&mut resp_version_buffer)
             .unwrap()
         {
             HandshakeAuthentication::Complete { cipher, .. } => cipher,
@@ -1020,7 +1013,7 @@ mod tests {
 
         // Responder receives initiator's version
         let mut bob = match resp_handshake
-            .receive_version(&init_version_buffer, &mut packet_buffer)
+            .receive_version(&mut init_version_buffer)
             .unwrap()
         {
             HandshakeAuthentication::Complete { cipher, .. } => cipher,

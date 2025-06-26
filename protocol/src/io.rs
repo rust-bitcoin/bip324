@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{
     handshake::{self, HandshakeAuthentication},
     Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
-    NUM_INITIAL_HANDSHAKE_BUFFER_BYTES,
+    NUM_INITIAL_BUFFER_BYTES_HINT,
 };
 
 /// A decrypted BIP324 payload with its packet type.
@@ -200,21 +200,31 @@ impl AsyncProtocol {
         writer.flush().await?;
 
         // Receive and authenticate remote garbage and version.
-        let mut remote_garbage_and_version_buffer =
-            Vec::with_capacity(NUM_INITIAL_HANDSHAKE_BUFFER_BYTES);
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
+        let mut remote_garbage_and_version_buffer = vec![0u8; NUM_INITIAL_BUFFER_BYTES_HINT];
+        let mut bytes_read_so_far = 0;
         let mut handshake = handshake;
 
         loop {
-            let mut temp_buffer = [0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-            match reader.read(&mut temp_buffer).await {
-                Ok(0) => continue,
+            match reader
+                .read(&mut remote_garbage_and_version_buffer[bytes_read_so_far..])
+                .await
+            {
+                Ok(0) => {
+                    // EOF - remote closed connection.
+                    return Err(ProtocolError::Io(
+                        std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "Remote peer closed connection during handshake",
+                        ),
+                        ProtocolFailureSuggestion::RetryV1,
+                    ));
+                }
                 Ok(bytes_read) => {
-                    remote_garbage_and_version_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
+                    bytes_read_so_far += bytes_read;
 
-                    handshake = match handshake
-                        .receive_version(&remote_garbage_and_version_buffer, &mut packet_buffer)
-                    {
+                    handshake = match handshake.receive_version(
+                        &mut remote_garbage_and_version_buffer[..bytes_read_so_far],
+                    ) {
                         Ok(HandshakeAuthentication::Complete { cipher, .. }) => {
                             let (inbound_cipher, outbound_cipher) = cipher.into_split();
                             return Ok(Self {
@@ -225,12 +235,11 @@ impl AsyncProtocol {
                                 writer: AsyncProtocolWriter { outbound_cipher },
                             });
                         }
-                        Ok(HandshakeAuthentication::NeedMoreData(handshake)) => handshake,
-                        Err(Error::BufferTooSmall { required_bytes }) => {
-                            packet_buffer.resize(required_bytes, 0);
-                            return Err(ProtocolError::Internal(Error::BufferTooSmall {
-                                required_bytes,
-                            }));
+                        Ok(HandshakeAuthentication::NeedMoreData(handshake)) => {
+                            // Need more data - extend buffer for next read.
+                            remote_garbage_and_version_buffer
+                                .resize(remote_garbage_and_version_buffer.len() + 1024, 0);
+                            handshake
                         }
                         Err(e) => return Err(ProtocolError::Internal(e)),
                     };
