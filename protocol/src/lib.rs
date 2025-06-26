@@ -311,7 +311,7 @@ pub struct InboundCipher {
 }
 
 impl InboundCipher {
-    /// Decrypt the length of the next inbound packet.
+    /// Decrypt the length of the packet's payload.
     ///
     /// Note that this returns the length of the remaining packet data
     /// to be read from the stream (header + contents + tag), not just the contents.
@@ -339,11 +339,50 @@ impl InboundCipher {
         packet_len - NUM_TAG_BYTES
     }
 
+    /// Decrypt an inbound packet in-place.
+    ///
+    /// # Arguments
+    ///
+    /// * `ciphertext` - A mutable buffer containing the packet from the peer excluding
+    ///   the first 3 length bytes. It should contain the header, contents, and authentication tag.
+    ///   This buffer will be modified in-place during decryption.
+    /// * `aad` - Optional associated authenticated data.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok((PacketType, &[u8]))`: A tuple of the packet type and a slice pointing to the
+    ///     decrypted plaintext within the input buffer. The first byte of the slice is the
+    ///     header byte containing protocol flags.
+    ///   * `Err(Error)`: An error that occurred during decryption.
+    ///
+    /// # Errors
+    ///
+    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
+    /// * Decryption errors for any failures such as a tag mismatch.
+    pub fn decrypt_in_place<'a>(
+        &mut self,
+        ciphertext: &'a mut [u8],
+        aad: Option<&[u8]>,
+    ) -> Result<(PacketType, &'a [u8]), Error> {
+        let auth = aad.unwrap_or_default();
+        // Check minimum size of ciphertext.
+        if ciphertext.len() < NUM_TAG_BYTES {
+            return Err(Error::CiphertextTooSmall);
+        }
+        let (msg, tag) = ciphertext.split_at_mut(ciphertext.len() - NUM_TAG_BYTES);
+
+        self.packet_cipher
+            .decrypt(auth, msg, tag.try_into().expect("16 byte tag"))?;
+
+        Ok((PacketType::from_byte(&msg[0]), msg))
+    }
+
     /// Decrypt an inbound packet.
     ///
     /// # Arguments
     ///
-    /// * `packet_payload` - The packet from the peer excluding the first 3 length bytes. It should contain
+    /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
     ///   the header, contents, and authentication tag.
     /// * `plaintext_buffer` - Mutable buffer to write plaintext. Note that the first byte is the header byte
     ///   containing protocol flags.
@@ -362,16 +401,16 @@ impl InboundCipher {
     /// * Decryption errors for any failures such as a tag mismatch.
     pub fn decrypt(
         &mut self,
-        packet_payload: &[u8],
+        ciphertext: &[u8],
         plaintext_buffer: &mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<PacketType, Error> {
         let auth = aad.unwrap_or_default();
         // Check minimum size of ciphertext.
-        if packet_payload.len() < NUM_TAG_BYTES {
+        if ciphertext.len() < NUM_TAG_BYTES {
             return Err(Error::CiphertextTooSmall);
         }
-        let (msg, tag) = packet_payload.split_at(packet_payload.len() - NUM_TAG_BYTES);
+        let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
         // Check that the contents buffer is large enough.
         if plaintext_buffer.len() < msg.len() {
             return Err(Error::BufferTooSmall {
@@ -407,7 +446,7 @@ impl OutboundCipher {
     /// # Arguments
     ///
     /// * `plaintext` - Plaintext contents to be encrypted.
-    /// * `packet_buffer` - Buffer to write packet bytes to which must have enough capacity
+    /// * `ciphertext_buffer` - Buffer to write packet bytes to which must have enough capacity
     ///   as calculated by `encryption_buffer_len(plaintext.len())`.
     /// * `packet_type` - Is this a genuine packet or a decoy.
     /// * `aad` - Optional associated authenticated data.
@@ -419,12 +458,12 @@ impl OutboundCipher {
     pub fn encrypt(
         &mut self,
         plaintext: &[u8],
-        packet_buffer: &mut [u8],
+        ciphertext_buffer: &mut [u8],
         packet_type: PacketType,
         aad: Option<&[u8]>,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet_buffer.len() < Self::encryption_buffer_len(plaintext.len()) {
+        if ciphertext_buffer.len() < Self::encryption_buffer_len(plaintext.len()) {
             return Err(Error::BufferTooSmall {
                 required_bytes: Self::encryption_buffer_len(plaintext.len()),
             });
@@ -436,14 +475,15 @@ impl OutboundCipher {
         let plaintext_end_index = plaintext_start_index + plaintext_length;
 
         // Set header byte.
-        packet_buffer[header_index] = packet_type.to_byte();
-        packet_buffer[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
+        ciphertext_buffer[header_index] = packet_type.to_byte();
+        ciphertext_buffer[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
 
         // Encrypt header byte and plaintext in place and produce authentication tag.
         let auth = aad.unwrap_or_default();
-        let tag = self
-            .packet_cipher
-            .encrypt(auth, &mut packet_buffer[header_index..plaintext_end_index]);
+        let tag = self.packet_cipher.encrypt(
+            auth,
+            &mut ciphertext_buffer[header_index..plaintext_end_index],
+        );
 
         // Encrypt plaintext length.
         let mut content_len = [0u8; 3];
@@ -451,8 +491,8 @@ impl OutboundCipher {
         self.length_cipher.crypt(&mut content_len);
 
         // Copy over encrypted length and the tag to the final packet (plaintext already encrypted).
-        packet_buffer[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
-        packet_buffer[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)]
+        ciphertext_buffer[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
+        ciphertext_buffer[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)]
             .copy_from_slice(&tag);
 
         Ok(())
@@ -607,6 +647,62 @@ mod tests {
             .unwrap();
         assert_eq!(PacketType::Genuine, packet_type);
         assert_eq!(message, plaintext_buffer[1..].to_vec()); // Skip header byte
+    }
+
+    #[test]
+    fn test_decrypt_in_place() {
+        let alice =
+            SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
+                .unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
+        let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
+        let session_keys = SessionKeyMaterial::from_ecdh(
+            elliswift_alice,
+            elliswift_bob,
+            alice,
+            ElligatorSwiftParty::A,
+            Network::Bitcoin,
+        )
+        .unwrap();
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
+
+        // Test with a genuine packet
+        let message = b"Test in-place decryption".to_vec();
+        let mut enc_packet = vec![0u8; OutboundCipher::encryption_buffer_len(message.len())];
+        alice_cipher
+            .outbound()
+            .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
+            .unwrap();
+
+        // Decrypt in-place
+        let mut ciphertext = enc_packet[NUM_LENGTH_BYTES..].to_vec();
+        let (packet_type, plaintext) = bob_cipher
+            .inbound()
+            .decrypt_in_place(&mut ciphertext, None)
+            .unwrap();
+
+        assert_eq!(PacketType::Genuine, packet_type);
+        assert_eq!(message, plaintext[1..].to_vec()); // Skip header byte
+
+        // Test with a decoy packet and AAD
+        let message2 = b"Decoy with AAD".to_vec();
+        let aad = b"additional authenticated data";
+        let mut enc_packet2 = vec![0u8; OutboundCipher::encryption_buffer_len(message2.len())];
+        bob_cipher
+            .outbound()
+            .encrypt(&message2, &mut enc_packet2, PacketType::Decoy, Some(aad))
+            .unwrap();
+
+        // Decrypt in-place with AAD
+        let mut ciphertext2 = enc_packet2[NUM_LENGTH_BYTES..].to_vec();
+        let (packet_type2, plaintext2) = alice_cipher
+            .inbound()
+            .decrypt_in_place(&mut ciphertext2, Some(aad))
+            .unwrap();
+
+        assert_eq!(PacketType::Decoy, packet_type2);
+        assert_eq!(message2, plaintext2[1..].to_vec()); // Skip header byte
     }
 
     #[test]
