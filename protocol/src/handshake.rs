@@ -47,15 +47,17 @@ pub struct Initialized {
 }
 
 /// **Second state** after sending the local public key.
-pub struct SentKey {
+pub struct SentKey<'a> {
     point: EcdhPoint,
     bytes_written: usize,
+    local_garbage: Option<&'a [u8]>,
 }
 
 /// **Third state** after receiving the remote's public key and
 /// generating the shared secret materials for the session.
-pub struct ReceivedKey {
+pub struct ReceivedKey<'a> {
     session_keys: SessionKeyMaterial,
+    local_garbage: Option<&'a [u8]>,
 }
 
 /// **Fourth state** after sending the version packet.
@@ -68,14 +70,14 @@ pub struct SentVersion {
 }
 
 /// Success variants for receive_version.
-pub enum HandshakeAuthentication<'a> {
+pub enum HandshakeAuthentication {
     /// Successfully completed.
     Complete {
         cipher: CipherSession,
         bytes_consumed: usize,
     },
     /// Need more data - returns handshake for caller to retry with more ciphertext.
-    NeedMoreData(Handshake<'a, SentVersion>),
+    NeedMoreData(Handshake<SentVersion>),
 }
 
 /// Handshake state-machine to establish the secret material in the communication channel.
@@ -87,19 +89,17 @@ pub enum HandshakeAuthentication<'a> {
 /// 3. `ReceivedKey` - After receiving remote's public key.
 /// 4. `SentVersion` - After sending local garbage terminator and version packet.
 /// 5. Complete - After receiving and authenticating remote's garbage, garbage terminator, decoy packets, and version packet.
-pub struct Handshake<'a, State> {
+pub struct Handshake<State> {
     /// Bitcoin network both peers are operating on.
     network: Network,
     /// Local role in the handshake, initiator or responder.
     role: Role,
-    /// Optional local garbage bytes to send along in handshake.
-    garbage: Option<&'a [u8]>,
     /// State-specific data.
     state: State,
 }
 
 // Methods available in all states
-impl<'a, State> Handshake<'a, State> {
+impl<State> Handshake<State> {
     /// Get the network this handshake is operating on.
     pub fn network(&self) -> Network {
         self.network
@@ -112,7 +112,7 @@ impl<'a, State> Handshake<'a, State> {
 }
 
 // Initialized state implementation
-impl<'a> Handshake<'a, Initialized> {
+impl Handshake<Initialized> {
     /// Initialize a V2 transport handshake with a remote peer.
     #[cfg(feature = "std")]
     pub fn new(network: Network, role: Role) -> Result<Self, Error> {
@@ -142,7 +142,6 @@ impl<'a> Handshake<'a, Initialized> {
         Ok(Handshake {
             network,
             role,
-            garbage: None,
             state: Initialized { point },
         })
     }
@@ -168,11 +167,11 @@ impl<'a> Handshake<'a, Initialized> {
     ///
     /// * `TooMuchGarbage` - Garbage exceeds 4095 byte limit.
     /// * `BufferTooSmall` - Output buffer insufficient for key + garbage.
-    pub fn send_key(
-        mut self,
+    pub fn send_key<'a>(
+        self,
         garbage: Option<&'a [u8]>,
         output_buffer: &mut [u8],
-    ) -> Result<Handshake<'a, SentKey>, Error> {
+    ) -> Result<Handshake<SentKey<'a>>, Error> {
         // Validate garbage length
         if let Some(g) = garbage {
             if g.len() > MAX_NUM_GARBAGE_BYTES {
@@ -198,23 +197,20 @@ impl<'a> Handshake<'a, Initialized> {
             written += g.len();
         }
 
-        // Store garbage for later use.
-        self.garbage = garbage;
-
         Ok(Handshake {
             network: self.network,
             role: self.role,
-            garbage: self.garbage,
             state: SentKey {
                 point: self.state.point,
                 bytes_written: written,
+                local_garbage: garbage,
             },
         })
     }
 }
 
 // SentKey state implementation
-impl<'a> Handshake<'a, SentKey> {
+impl<'a> Handshake<SentKey<'a>> {
     /// Get how many bytes were written by send_key().
     pub fn bytes_written(&self) -> usize {
         self.state.bytes_written
@@ -242,7 +238,7 @@ impl<'a> Handshake<'a, SentKey> {
     pub fn receive_key(
         self,
         their_key: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
-    ) -> Result<Handshake<'a, ReceivedKey>, Error> {
+    ) -> Result<Handshake<ReceivedKey<'a>>, Error> {
         let their_ellswift = ElligatorSwift::from_array(their_key);
 
         // Check for V1 protocol magic bytes
@@ -283,14 +279,16 @@ impl<'a> Handshake<'a, SentKey> {
         Ok(Handshake {
             network: self.network,
             role: self.role,
-            garbage: self.garbage,
-            state: ReceivedKey { session_keys },
+            state: ReceivedKey {
+                session_keys,
+                local_garbage: self.state.local_garbage,
+            },
         })
     }
 }
 
 // ReceivedKey state implementation
-impl<'a> Handshake<'a, ReceivedKey> {
+impl<'a> Handshake<ReceivedKey<'a>> {
     /// Calculate how many bytes send_version() will write to buffer.
     pub fn send_version_len(decoys: Option<&[&[u8]]>) -> usize {
         let mut len = NUM_GARBAGE_TERMINTOR_BYTES
@@ -331,7 +329,7 @@ impl<'a> Handshake<'a, ReceivedKey> {
         self,
         output_buffer: &mut [u8],
         decoys: Option<&[&[u8]]>,
-    ) -> Result<Handshake<'a, SentVersion>, Error> {
+    ) -> Result<Handshake<SentVersion>, Error> {
         let required_len = Self::send_version_len(decoys);
         if output_buffer.len() < required_len {
             return Err(Error::BufferTooSmall {
@@ -358,7 +356,7 @@ impl<'a> Handshake<'a, ReceivedKey> {
         let mut bytes_written = NUM_GARBAGE_TERMINTOR_BYTES;
         // Local garbage is authenticated in first packet no
         // matter if it is a decoy or genuine.
-        let mut aad = self.garbage;
+        let mut aad = self.state.local_garbage;
 
         if let Some(decoys) = decoys {
             for decoy in decoys {
@@ -387,7 +385,6 @@ impl<'a> Handshake<'a, ReceivedKey> {
         Ok(Handshake {
             network: self.network,
             role: self.role,
-            garbage: self.garbage,
             state: SentVersion {
                 cipher,
                 remote_garbage_terminator,
@@ -400,7 +397,7 @@ impl<'a> Handshake<'a, ReceivedKey> {
 }
 
 // SentVersion state implementation
-impl<'a> Handshake<'a, SentVersion> {
+impl Handshake<SentVersion> {
     /// Get how many bytes were written by send_version().
     pub fn bytes_written(&self) -> usize {
         self.state.bytes_written
@@ -430,7 +427,7 @@ impl<'a> Handshake<'a, SentVersion> {
     pub fn receive_version(
         mut self,
         input_buffer: &mut [u8],
-    ) -> Result<HandshakeAuthentication<'a>, Error> {
+    ) -> Result<HandshakeAuthentication, Error> {
         let (garbage, ciphertext) = match self.split_garbage(input_buffer) {
             Ok(split) => split,
             Err(Error::CiphertextTooSmall) => {
@@ -576,14 +573,14 @@ mod tests {
 
         // Initiator sends decoys and version.
         let mut init_version_buffer =
-            vec![0u8; Handshake::<ReceivedKey>::send_version_len(Some(&init_decoys))];
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(Some(&init_decoys))];
         let init_handshake = init_handshake
             .send_version(&mut init_version_buffer, Some(&init_decoys))
             .unwrap();
 
         // Responder sends decoys and version.
         let mut resp_version_buffer =
-            vec![0u8; Handshake::<ReceivedKey>::send_version_len(Some(&resp_decoys))];
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(Some(&resp_decoys))];
         let resp_handshake = resp_handshake
             .send_version(&mut resp_version_buffer, Some(&resp_decoys))
             .unwrap();
@@ -665,12 +662,14 @@ mod tests {
             .receive_key(init_buffer[..64].try_into().unwrap())
             .unwrap();
 
-        let mut init_version_buffer = vec![0u8; Handshake::<ReceivedKey>::send_version_len(None)];
+        let mut init_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(None)];
         let _init_handshake = init_handshake
             .send_version(&mut init_version_buffer, None)
             .unwrap();
 
-        let mut resp_version_buffer = vec![0u8; Handshake::<ReceivedKey>::send_version_len(None)];
+        let mut resp_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(None)];
         let resp_handshake = resp_handshake
             .send_version(&mut resp_version_buffer, None)
             .unwrap();
