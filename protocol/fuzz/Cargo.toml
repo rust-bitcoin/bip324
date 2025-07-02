@@ -12,8 +12,22 @@ libfuzzer-sys = "0.4"
 bip324 = { path = ".." }
 
 [[bin]]
-name = "handshake"
-path = "fuzz_targets/handshake.rs"
+name = "receive_garbage"
+path = "fuzz_targets/receive_garbage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receive_version"
+path = "fuzz_targets/receive_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "receive_key"
+path = "fuzz_targets/receive_key.rs"
 test = false
 doc = false
 bench = false

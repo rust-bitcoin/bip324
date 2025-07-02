@@ -20,9 +20,9 @@ use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    handshake::{self, HandshakeAuthentication},
+    handshake::{self, GarbageResult, VersionResult},
     Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
-    NUM_INITIAL_BUFFER_BYTES_HINT,
+    NUM_GARBAGE_TERMINTOR_BYTES,
 };
 
 /// A decrypted BIP324 payload with its packet type.
@@ -98,6 +98,23 @@ impl From<std::io::Error> for ProtocolError {
 impl From<Error> for ProtocolError {
     fn from(error: Error) -> Self {
         ProtocolError::Internal(error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl ProtocolError {
+    /// Create an EOF error that suggests retrying with V1 protocol.
+    ///
+    /// This is used when the remote peer closes the connection during handshake,
+    /// which often indicates they don't support the V2 protocol.
+    fn eof() -> Self {
+        ProtocolError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Remote peer closed connection during handshake",
+            ),
+            ProtocolFailureSuggestion::RetryV1,
+        )
     }
 }
 
@@ -180,9 +197,7 @@ impl AsyncProtocol {
         let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage);
         let mut key_buffer = vec![0u8; key_buffer_len];
         let handshake = handshake.send_key(garbage, &mut key_buffer)?;
-        writer
-            .write_all(&key_buffer[..handshake.bytes_written()])
-            .await?;
+        writer.write_all(&key_buffer).await?;
         writer.flush().await?;
 
         // Read remote's public key.
@@ -194,62 +209,73 @@ impl AsyncProtocol {
         let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys);
         let mut version_buffer = vec![0u8; version_buffer_len];
         let handshake = handshake.send_version(&mut version_buffer, decoys)?;
-        writer
-            .write_all(&version_buffer[..handshake.bytes_written()])
-            .await?;
+        writer.write_all(&version_buffer).await?;
         writer.flush().await?;
 
-        // Receive and authenticate remote garbage and version.
-        let mut remote_garbage_and_version_buffer = vec![0u8; NUM_INITIAL_BUFFER_BYTES_HINT];
-        let mut bytes_read_so_far = 0;
+        // Receive and process garbage terminator
+        let mut garbage_buffer = vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES];
+        reader.read_exact(&mut garbage_buffer).await?;
+
         let mut handshake = handshake;
-
-        loop {
-            match reader
-                .read(&mut remote_garbage_and_version_buffer[bytes_read_so_far..])
-                .await
-            {
-                Ok(0) => {
-                    // EOF - remote closed connection.
-                    return Err(ProtocolError::Io(
-                        std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "Remote peer closed connection during handshake",
-                        ),
-                        ProtocolFailureSuggestion::RetryV1,
-                    ));
+        let (mut handshake, garbage_bytes) = loop {
+            match handshake.receive_garbage(&garbage_buffer) {
+                Ok(GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                }) => {
+                    break (handshake, consumed_bytes);
                 }
-                Ok(bytes_read) => {
-                    bytes_read_so_far += bytes_read;
-
-                    handshake = match handshake.receive_version(
-                        &mut remote_garbage_and_version_buffer[..bytes_read_so_far],
-                    ) {
-                        Ok(HandshakeAuthentication::Complete { cipher, .. }) => {
-                            let (inbound_cipher, outbound_cipher) = cipher.into_split();
-                            return Ok(Self {
-                                reader: AsyncProtocolReader {
-                                    inbound_cipher,
-                                    state: DecryptState::init_reading_length(),
-                                },
-                                writer: AsyncProtocolWriter { outbound_cipher },
-                            });
+                Ok(GarbageResult::NeedMoreData(h)) => {
+                    handshake = h;
+                    // Use small chunks to avoid reading past garbage, decoys, and version.
+                    let mut temp = vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES];
+                    match reader.read(&mut temp).await {
+                        Ok(0) => return Err(ProtocolError::eof()),
+                        Ok(n) => {
+                            garbage_buffer.extend_from_slice(&temp[..n]);
                         }
-                        Ok(HandshakeAuthentication::NeedMoreData(handshake)) => {
-                            // Need more data - extend buffer for next read.
-                            remote_garbage_and_version_buffer
-                                .resize(remote_garbage_and_version_buffer.len() + 1024, 0);
-                            handshake
-                        }
-                        Err(e) => return Err(ProtocolError::Internal(e)),
-                    };
-                }
-                Err(e) => match e.kind() {
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
-                        continue;
+                        Err(e) => return Err(ProtocolError::from(e)),
                     }
-                    _ => return Err(ProtocolError::Io(e, ProtocolFailureSuggestion::Abort)),
-                },
+                }
+                Err(e) => return Err(ProtocolError::Internal(e)),
+            }
+        };
+
+        // Process remaining bytes and read version packets.
+        let mut version_buffer = garbage_buffer[garbage_bytes..].to_vec();
+        loop {
+            // Decrypt packet length.
+            if version_buffer.len() < 3 {
+                let old_len = version_buffer.len();
+                version_buffer.resize(3, 0);
+                reader.read_exact(&mut version_buffer[old_len..]).await?;
+            }
+            let packet_len =
+                handshake.decrypt_packet_len(version_buffer[..3].try_into().unwrap())?;
+            version_buffer.drain(..3);
+
+            // Process packet.
+            if version_buffer.len() < packet_len {
+                let old_len = version_buffer.len();
+                version_buffer.resize(packet_len, 0);
+                reader.read_exact(&mut version_buffer[old_len..]).await?;
+            }
+            match handshake.receive_version(&mut version_buffer) {
+                Ok(VersionResult::Complete { cipher }) => {
+                    let (inbound_cipher, outbound_cipher) = cipher.into_split();
+                    return Ok(Self {
+                        reader: AsyncProtocolReader {
+                            inbound_cipher,
+                            state: DecryptState::init_reading_length(),
+                        },
+                        writer: AsyncProtocolWriter { outbound_cipher },
+                    });
+                }
+                Ok(VersionResult::Decoy(h)) => {
+                    handshake = h;
+                    version_buffer.drain(..packet_len);
+                }
+                Err(e) => return Err(ProtocolError::Internal(e)),
             }
         }
     }

@@ -21,16 +21,9 @@ use rand::Rng;
 
 use crate::{
     CipherSession, Error, OutboundCipher, PacketType, Role, SessionKeyMaterial,
-    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES, VERSION_CONTENT,
+    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, VERSION_CONTENT,
 };
 
-/// Initial buffer length hint to receive garbage, the garbage terminator,
-/// and the version packet from the remote peer. This assumes no decoy packets
-/// are sent (which is the default in Bitcoin Core) and no garbage bytes.
-/// Calculated as: garbage_terminator (16 bytes) + encrypted_version_packet
-/// where the version packet content is currently empty (0 bytes).
-pub const NUM_INITIAL_BUFFER_BYTES_HINT: usize =
-    NUM_GARBAGE_TERMINTOR_BYTES + OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
 // Maximum number of garbage bytes before the terminator.
 const MAX_NUM_GARBAGE_BYTES: usize = 4095;
 
@@ -49,7 +42,6 @@ pub struct Initialized {
 /// **Second state** after sending the local public key.
 pub struct SentKey<'a> {
     point: EcdhPoint,
-    bytes_written: usize,
     local_garbage: Option<&'a [u8]>,
 }
 
@@ -60,24 +52,35 @@ pub struct ReceivedKey<'a> {
     local_garbage: Option<&'a [u8]>,
 }
 
-/// **Fourth state** after sending the version packet.
+/// **Fourth state** after sending the decoy and version packets.
 pub struct SentVersion {
     cipher: CipherSession,
     remote_garbage_terminator: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
-    bytes_written: usize,
-    ciphertext_index: usize,
-    remote_garbage_authenticated: bool,
 }
 
-/// Success variants for receive_version.
-pub enum HandshakeAuthentication {
-    /// Successfully completed.
-    Complete {
-        cipher: CipherSession,
-        bytes_consumed: usize,
+/// **Fifth state** after receiving the remote's garbage and garbage terminator.
+pub struct ReceivedGarbage<'a> {
+    cipher: CipherSession,
+    remote_garbage: Option<&'a [u8]>,
+}
+
+/// Success variants for reading remote garbage.
+pub enum GarbageResult<'a> {
+    /// Successfully found garbage.
+    FoundGarbage {
+        handshake: Handshake<ReceivedGarbage<'a>>,
+        consumed_bytes: usize,
     },
-    /// Need more data - returns handshake for caller to retry with more ciphertext.
+    /// No garbage terminator found, the input buffer needs to be extended.
     NeedMoreData(Handshake<SentVersion>),
+}
+
+/// Success variants for receiving remote version.
+pub enum VersionResult<'a> {
+    /// Successfully completed handshake.
+    Complete { cipher: CipherSession },
+    /// Packet was a decoy, read the next to see if version.
+    Decoy(Handshake<ReceivedGarbage<'a>>),
 }
 
 /// Handshake state-machine to establish the secret material in the communication channel.
@@ -98,7 +101,7 @@ pub struct Handshake<State> {
     state: State,
 }
 
-// Methods available in all states
+// Methods available in all states.
 impl<State> Handshake<State> {
     /// Get the network this handshake is operating on.
     pub fn network(&self) -> Network {
@@ -111,7 +114,6 @@ impl<State> Handshake<State> {
     }
 }
 
-// Initialized state implementation
 impl Handshake<Initialized> {
     /// Initialize a V2 transport handshake with a remote peer.
     #[cfg(feature = "std")]
@@ -189,12 +191,11 @@ impl Handshake<Initialized> {
         // Write local ellswift public key.
         output_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
             .copy_from_slice(&self.state.point.elligator_swift.to_array());
-        let mut written = NUM_ELLIGATOR_SWIFT_BYTES;
 
         // Write garbage if provided.
         if let Some(g) = garbage {
-            output_buffer[written..written + g.len()].copy_from_slice(g);
-            written += g.len();
+            output_buffer[NUM_ELLIGATOR_SWIFT_BYTES..NUM_ELLIGATOR_SWIFT_BYTES + g.len()]
+                .copy_from_slice(g);
         }
 
         Ok(Handshake {
@@ -202,20 +203,13 @@ impl Handshake<Initialized> {
             role: self.role,
             state: SentKey {
                 point: self.state.point,
-                bytes_written: written,
                 local_garbage: garbage,
             },
         })
     }
 }
 
-// SentKey state implementation
 impl<'a> Handshake<SentKey<'a>> {
-    /// Get how many bytes were written by send_key().
-    pub fn bytes_written(&self) -> usize {
-        self.state.bytes_written
-    }
-
     /// Process the remote peer's public key and derive shared session secrets.
     ///
     /// This is the **second state transition** in the handshake process, moving from
@@ -287,7 +281,6 @@ impl<'a> Handshake<SentKey<'a>> {
     }
 }
 
-// ReceivedKey state implementation
 impl<'a> Handshake<ReceivedKey<'a>> {
     /// Calculate how many bytes send_version() will write to buffer.
     pub fn send_version_len(decoys: Option<&[&[u8]]>) -> usize {
@@ -372,7 +365,6 @@ impl<'a> Handshake<ReceivedKey<'a>> {
             }
         }
 
-        // Write version packet
         let version_packet_len = OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
         cipher.outbound().encrypt(
             &VERSION_CONTENT,
@@ -380,7 +372,6 @@ impl<'a> Handshake<ReceivedKey<'a>> {
             PacketType::Genuine,
             aad,
         )?;
-        bytes_written += version_packet_len;
 
         Ok(Handshake {
             network: self.network,
@@ -388,101 +379,105 @@ impl<'a> Handshake<ReceivedKey<'a>> {
             state: SentVersion {
                 cipher,
                 remote_garbage_terminator,
-                bytes_written,
-                ciphertext_index: 0,
-                remote_garbage_authenticated: false,
             },
         })
     }
 }
 
-// SentVersion state implementation
 impl Handshake<SentVersion> {
-    /// Get how many bytes were written by send_version().
-    pub fn bytes_written(&self) -> usize {
-        self.state.bytes_written
-    }
-
-    /// Authenticate remote peer's garbage, decoy packets, and version packet.
+    /// Process remote peer's garbage bytes and locate the garbage terminator.
     ///
-    /// This method is unique in the handshake process as it requires a **mutable** input buffer
-    /// to perform in-place decryption operations. The buffer contains everything after the 64
-    /// byte public key received from the remote peer: optional garbage bytes, garbage terminator,
-    /// and encrypted packets (decoys and final version packet).
-    ///
-    /// The input buffer is mutable in the case because the caller generally doesn't care
-    /// about the decoy and version packets, and definitely doesn't want to deal with
-    /// allocating memory for them.
+    /// This is a critical step in the handshake process, transitioning from
+    /// `SentVersion` to `ReceivedGarbage` state. The method searches for the remote peer's
+    /// garbage terminator within the input buffer and separates garbage bytes from the
+    /// subsequent encrypted packet data.
     ///
     /// # Parameters
     ///
-    /// * `input_buffer` - **Mutable** buffer containing garbage + terminator + encrypted packets.
-    ///   The buffer will be modified during in-place decryption operations.
+    /// * `input_buffer` - Buffer containing remote peer's garbage bytes followed by encrypted
+    ///   packet data. The garbage terminator marks the boundary between these sections.
     ///
     /// # Returns
     ///
-    /// * `Complete { cipher, bytes_consumed }` - Handshake succeeded, secure session established.
-    /// * `NeedMoreData(handshake)` - Insufficient data, retry by extending the buffer.
+    /// * `Ok(GarbageResult::FoundGarbage)` - Successfully located garbage terminator.
+    ///   Contains the next handshake state and number of bytes consumed from input buffer.
+    /// * `Ok(GarbageResult::NeedMoreData)` - Garbage terminator not found in current buffer.
+    ///   More data needed to locate the terminator boundary.
+    ///
+    /// # Errors
+    ///
+    /// * `NoGarbageTerminator` - Input exceeds maximum garbage size without finding terminator.
+    ///   Indicates protocol violation or potential attack.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bip324::{Handshake, GarbageResult, SentVersion};
+    /// # use bip324::{Role, Network};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # // ... complete handshake to SentVersion state ...
+    /// # let handshake: Handshake<SentVersion> = todo!();
+    ///
+    /// let mut network_buffer = Vec::new();
+    ///
+    /// loop {
+    ///     // Read more network data...
+    ///     // network_buffer.extend_from_slice(&new_data);
+    ///     
+    ///     match handshake.receive_garbage(&network_buffer)? {
+    ///         GarbageResult::FoundGarbage { handshake: next_state, consumed_bytes } => {
+    ///             // Success! Process remaining data for version packets
+    ///             let remaining_data = &network_buffer[consumed_bytes..];
+    ///             // Continue with next_state.receive_version()...
+    ///             break;
+    ///         }
+    ///         GarbageResult::NeedMoreData(handshake) => {
+    ///             // Continue accumulating network data
+    ///             continue;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
     /// ```
-    pub fn receive_version(
-        mut self,
-        input_buffer: &mut [u8],
-    ) -> Result<HandshakeAuthentication, Error> {
-        let (garbage, ciphertext) = match self.split_garbage(input_buffer) {
-            Ok(split) => split,
-            Err(Error::CiphertextTooSmall) => {
-                return Ok(HandshakeAuthentication::NeedMoreData(self))
-            }
-            Err(e) => return Err(e),
-        };
+    pub fn receive_garbage<'a>(self, input_buffer: &'a [u8]) -> Result<GarbageResult<'a>, Error> {
+        match self.split_garbage(input_buffer) {
+            Ok((garbage, _ciphertext)) => {
+                let consumed_bytes = garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES;
+                let handshake = Handshake {
+                    network: self.network,
+                    role: self.role,
+                    state: ReceivedGarbage {
+                        cipher: self.state.cipher,
+                        remote_garbage: if garbage.is_empty() {
+                            None
+                        } else {
+                            Some(garbage)
+                        },
+                    },
+                };
 
-        let mut aad = if garbage.is_empty() || self.state.remote_garbage_authenticated {
-            None
-        } else {
-            Some(garbage)
-        };
-
-        // First packet authenticates remote garbage.
-        // Continue through decoys until we find version packet.
-        loop {
-            match self.decrypt_packet(&mut ciphertext[self.state.ciphertext_index..], aad) {
-                Ok((packet_type, bytes_consumed)) => {
-                    if aad.is_some() {
-                        aad = None;
-                        self.state.remote_garbage_authenticated = true;
-                    }
-                    self.state.ciphertext_index += bytes_consumed;
-                    if matches!(packet_type, PacketType::Genuine) {
-                        break;
-                    }
-                }
-                Err(Error::CiphertextTooSmall) => {
-                    return Ok(HandshakeAuthentication::NeedMoreData(self))
-                }
-                Err(e) => return Err(e),
+                Ok(GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                })
             }
+            Err(Error::CiphertextTooSmall) => Ok(GarbageResult::NeedMoreData(self)),
+            Err(e) => Err(e),
         }
-
-        // Calculate total bytes consumed.
-        let bytes_consumed =
-            garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES + self.state.ciphertext_index;
-
-        Ok(HandshakeAuthentication::Complete {
-            cipher: self.state.cipher,
-            bytes_consumed,
-        })
     }
 
     /// Split buffer on garbage terminator.
-    fn split_garbage<'b>(&self, buffer: &'b mut [u8]) -> Result<(&'b [u8], &'b mut [u8]), Error> {
+    fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
         let terminator = &self.state.remote_garbage_terminator;
 
         if let Some(index) = buffer
             .windows(terminator.len())
             .position(|window| window == terminator)
         {
-            let (garbage, rest) = buffer.split_at_mut(index);
-            let ciphertext = &mut rest[terminator.len()..];
+            let (garbage, rest) = buffer.split_at(index);
+            let ciphertext = &rest[terminator.len()..];
             Ok((garbage, ciphertext))
         } else if buffer.len() >= MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES {
             Err(Error::NoGarbageTerminator)
@@ -490,33 +485,100 @@ impl Handshake<SentVersion> {
             Err(Error::CiphertextTooSmall)
         }
     }
+}
 
-    /// Decrypts in place, returns the packet type and number of bytes consumed from the ciphertext.
-    fn decrypt_packet(
-        &mut self,
-        ciphertext: &mut [u8],
-        aad: Option<&[u8]>,
-    ) -> Result<(PacketType, usize), Error> {
-        if ciphertext.len() < NUM_LENGTH_BYTES {
-            return Err(Error::CiphertextTooSmall);
+impl<'a> Handshake<ReceivedGarbage<'a>> {
+    /// Decrypt the packet length from the encrypted length bytes.
+    pub fn decrypt_packet_len(&mut self, length_bytes: [u8; 3]) -> Result<usize, Error> {
+        Ok(self.state.cipher.inbound().decrypt_packet_len(length_bytes))
+    }
+
+    /// Decrypt and authenticate the next packet to complete the handshake.
+    ///
+    /// This is the **final state transition** in the handshake process, completing the
+    /// BIP-324 protocol by processing the remote peer's version packet. The method performs
+    /// in-place decryption of encrypted packet data and determines whether the handshake
+    /// is complete or if additional decoy packets need processing.
+    ///
+    /// # Unique Characteristics
+    ///
+    /// **Mutable Buffer Requirement**: Unlike other handshake methods, `receive_version()`
+    /// requires a mutable input buffer because it performs in-place decryption operations,
+    /// modifying ciphertext directly to produce plaintext for memory efficiency.
+    ///
+    /// # Parameters
+    ///
+    /// * `input_buffer` - **Mutable** buffer containing encrypted packet data (excluding
+    ///   the 3-byte length prefix). The ciphertext will be overwritten with plaintext
+    ///   during decryption. Buffer size must match the decrypted packet length.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(VersionResult::Complete { cipher })` - Handshake completed successfully.
+    ///   The returned `CipherSession` is ready for secure message exchange.
+    /// * `Ok(VersionResult::Decoy(handshake))` - Packet was a decoy, continue processing
+    ///   with the returned handshake state for the next packet.
+    ///
+    /// # Errors
+    ///
+    /// * `Decryption` - Packet authentication failed or ciphertext is malformed.
+    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bip324::{Handshake, VersionResult, ReceivedGarbage, NUM_LENGTH_BYTES};
+    /// # use bip324::{Role, Network};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # // ... complete handshake to ReceivedGarbage state ...
+    /// # let mut handshake: Handshake<ReceivedGarbage> = todo!();
+    /// # let encrypted_data: &[u8] = todo!();
+    ///
+    /// let mut remaining_data = encrypted_data;
+    ///
+    /// // Process packets until version packet found
+    /// loop {
+    ///     // Read packet length (first 3 bytes)
+    ///     let packet_len = handshake.decrypt_packet_len(
+    ///         remaining_data[..NUM_LENGTH_BYTES].try_into()?
+    ///     )?;
+    ///     
+    ///     // Extract packet data (excluding length prefix)
+    ///     let mut packet = remaining_data[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    ///     remaining_data = &remaining_data[NUM_LENGTH_BYTES + packet_len..];
+    ///     
+    ///     // Process the packet
+    ///     match handshake.receive_version(&mut packet)? {
+    ///         VersionResult::Complete { cipher } => {
+    ///             // Handshake complete! Ready for secure messaging
+    ///             break;
+    ///         }
+    ///         VersionResult::Decoy(next_handshake) => {
+    ///             // Decoy packet processed, continue with next packet
+    ///             handshake = next_handshake;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn receive_version(mut self, input_buffer: &mut [u8]) -> Result<VersionResult<'a>, Error> {
+        // Take the garbage on first call to ensure AAD is only used once.
+        let aad = self.state.remote_garbage.take();
+
+        let (packet_type, _) = self
+            .state
+            .cipher
+            .inbound()
+            .decrypt_in_place(input_buffer, aad)?;
+
+        match packet_type {
+            PacketType::Genuine => Ok(VersionResult::Complete {
+                cipher: self.state.cipher,
+            }),
+            PacketType::Decoy => Ok(VersionResult::Decoy(self)),
         }
-
-        let packet_len = self.state.cipher.inbound().decrypt_packet_len(
-            ciphertext[..NUM_LENGTH_BYTES]
-                .try_into()
-                .expect("Checked length above"),
-        );
-
-        if ciphertext.len() < NUM_LENGTH_BYTES + packet_len {
-            return Err(Error::CiphertextTooSmall);
-        }
-
-        let (packet_type, _) = self.state.cipher.inbound().decrypt_in_place(
-            &mut ciphertext[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len],
-            aad,
-        )?;
-
-        Ok((packet_type, NUM_LENGTH_BYTES + packet_len))
     }
 }
 
@@ -524,8 +586,12 @@ impl Handshake<SentVersion> {
 mod tests {
     use std::vec;
 
+    use crate::NUM_LENGTH_BYTES;
+
     use super::*;
 
+    // Test that the handshake completes successfully with garbage and decoy packets
+    // from both parties. This is a comprehensive integration test of the full protocol.
     #[test]
     fn test_handshake() {
         let initiator_garbage = vec![1u8, 2u8, 3u8];
@@ -540,7 +606,6 @@ mod tests {
         let init_handshake = init_handshake
             .send_key(Some(&initiator_garbage), &mut init_buffer)
             .unwrap();
-        assert_eq!(init_handshake.bytes_written(), 64 + initiator_garbage.len());
 
         let resp_handshake =
             Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
@@ -551,16 +616,15 @@ mod tests {
         let resp_handshake = resp_handshake
             .send_key(Some(&responder_garbage), &mut resp_buffer)
             .unwrap();
-        assert_eq!(resp_handshake.bytes_written(), 64 + responder_garbage.len());
 
         // Initiator receives responder's key.
         let init_handshake = init_handshake
-            .receive_key(resp_buffer[..64].try_into().unwrap())
+            .receive_key(resp_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
             .unwrap();
 
         // Responder receives initiator's key.
         let resp_handshake = resp_handshake
-            .receive_key(init_buffer[..64].try_into().unwrap())
+            .receive_key(init_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
             .unwrap();
 
         // Create decoy packets for both sides.
@@ -585,33 +649,91 @@ mod tests {
             .send_version(&mut resp_version_buffer, Some(&resp_decoys))
             .unwrap();
 
-        // Initiator receives responder's garbage, decoys, and version.
-        let mut full_resp_message = [&responder_garbage[..], &resp_version_buffer[..]].concat();
-        match init_handshake
-            .receive_version(&mut full_resp_message)
-            .unwrap()
-        {
-            HandshakeAuthentication::Complete { bytes_consumed, .. } => {
-                assert_eq!(bytes_consumed, full_resp_message.len());
-            }
-            HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        // Initiator processes responder's response
+        let full_resp_message = [&responder_garbage[..], &resp_version_buffer[..]].concat();
+
+        // First, find the garbage terminator
+        let (mut init_handshake, consumed) =
+            match init_handshake.receive_garbage(&full_resp_message).unwrap() {
+                GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                } => (handshake, consumed_bytes),
+                GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+            };
+
+        // Process the encrypted packets (1 decoy + 1 version)
+        let mut remaining = &full_resp_message[consumed..];
+
+        // First packet is a decoy
+        let packet_len = init_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+        remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+
+        init_handshake = match init_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Decoy(handshake) => handshake,
+            VersionResult::Complete { .. } => panic!("First packet should be decoy"),
+        };
+
+        // Second packet is the version
+        let packet_len = init_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match init_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Second packet should be version"),
+        };
+
+        // Responder processes initiator's response
+        let full_init_message = [&initiator_garbage[..], &init_version_buffer[..]].concat();
+
+        // First, find the garbage terminator
+        let (mut resp_handshake, consumed) =
+            match resp_handshake.receive_garbage(&full_init_message).unwrap() {
+                GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                } => (handshake, consumed_bytes),
+                GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+            };
+
+        // Process the encrypted packets (2 decoys + 1 version)
+        let mut remaining = &full_init_message[consumed..];
+
+        // First two packets are decoys
+        for i in 0..2 {
+            let packet_len = resp_handshake
+                .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+                .unwrap();
+            let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+            remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+
+            resp_handshake = match resp_handshake.receive_version(&mut packet).unwrap() {
+                VersionResult::Decoy(handshake) => handshake,
+                VersionResult::Complete { .. } => panic!("Packet {} should be decoy", i),
+            };
         }
 
-        // Responder receives initiator's garbage, decoys, and version.
-        let mut full_init_message = [&initiator_garbage[..], &init_version_buffer[..]].concat();
-        match resp_handshake
-            .receive_version(&mut full_init_message)
-            .unwrap()
-        {
-            HandshakeAuthentication::Complete { bytes_consumed, .. } => {
-                assert_eq!(bytes_consumed, full_init_message.len());
-            }
-            HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
-        }
+        // Third packet is the version
+        let packet_len = resp_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match resp_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Third packet should be version"),
+        };
     }
 
+    // Test that send_key properly validates garbage length limits (max 4095 bytes)
+    // and buffer size requirements.
     #[test]
-    fn test_handshake_garbage_length_check() {
+    fn test_handshake_send_key() {
         // Test with valid garbage length
         let valid_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES];
         let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
@@ -641,9 +763,11 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // Test the NeedMoreData scenario where receive_garbage is called with partial data.
+    // The local peer doesn't know how much garbage the remote will send, so just needs
+    // to pull and do some buffer mangament.
     #[test]
-    fn test_handshake_receive_version_buffer() {
-        // Test the scenario where receive_version needs more data.
+    fn test_handshake_receive_garbage_buffer() {
         let init_handshake =
             Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
         let resp_handshake =
@@ -656,10 +780,10 @@ mod tests {
         let resp_handshake = resp_handshake.send_key(None, &mut resp_buffer).unwrap();
 
         let init_handshake = init_handshake
-            .receive_key(resp_buffer[..64].try_into().unwrap())
+            .receive_key(resp_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
             .unwrap();
         let resp_handshake = resp_handshake
-            .receive_key(init_buffer[..64].try_into().unwrap())
+            .receive_key(init_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
             .unwrap();
 
         let mut init_version_buffer =
@@ -674,47 +798,61 @@ mod tests {
             .send_version(&mut resp_version_buffer, None)
             .unwrap();
 
-        // Feed data in very small chunks to trigger NeedMoreData.
+        // Test streaming scenario with receive_garbage
         let partial_data_1 = &init_version_buffer[..1];
-        let mut partial_data_1 = partial_data_1.to_vec();
-        let returned_handshake = match resp_handshake.receive_version(&mut partial_data_1).unwrap()
-        {
-            HandshakeAuthentication::NeedMoreData(handshake) => handshake,
-            HandshakeAuthentication::Complete { .. } => {
+        let returned_handshake = match resp_handshake.receive_garbage(partial_data_1).unwrap() {
+            GarbageResult::NeedMoreData(handshake) => handshake,
+            GarbageResult::FoundGarbage { .. } => {
                 panic!("Should have needed more data with 1 byte")
             }
         };
 
         // Feed a bit more data - still probably not enough.
         let partial_data_2 = &init_version_buffer[..5];
-        let mut partial_data_2 = partial_data_2.to_vec();
-        let returned_handshake = match returned_handshake
-            .receive_version(&mut partial_data_2)
-            .unwrap()
-        {
-            HandshakeAuthentication::NeedMoreData(handshake) => handshake,
-            HandshakeAuthentication::Complete { .. } => {
+        let returned_handshake = match returned_handshake.receive_garbage(partial_data_2).unwrap() {
+            GarbageResult::NeedMoreData(handshake) => handshake,
+            GarbageResult::FoundGarbage { .. } => {
                 panic!("Should have needed more data with 5 bytes")
             }
         };
 
-        // Now provide the complete data.
-        let mut full_data = init_version_buffer.clone();
-        match returned_handshake.receive_version(&mut full_data).unwrap() {
-            HandshakeAuthentication::Complete { bytes_consumed, .. } => {
-                assert_eq!(bytes_consumed, init_version_buffer.len());
+        // Now provide enough data to find the garbage terminator.
+        // Since there's no garbage, the terminator should be at the beginning.
+        let (mut handshake, consumed) = match returned_handshake
+            .receive_garbage(&init_version_buffer)
+            .unwrap()
+        {
+            GarbageResult::FoundGarbage {
+                handshake,
+                consumed_bytes,
+            } => (handshake, consumed_bytes),
+            GarbageResult::NeedMoreData(_) => {
+                panic!("Should have found garbage terminator with full data")
             }
-            HandshakeAuthentication::NeedMoreData(_) => {
-                panic!("Should have completed with full data")
-            }
-        }
+        };
+
+        // Process the version packet
+        let remaining = &init_version_buffer[consumed..];
+        let packet_len = handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Should be version packet"),
+        };
     }
 
+    // Test split_garbage error conditions.
+    //
+    // 1. NoGarbageTerminator - when buffer exceeds max size without finding terminator
+    // 2. CiphertextTooSmall - when buffer is too short to possibly contain terminator
     #[test]
-    fn test_handshake_no_garbage_terminator() {
+    fn test_handshake_split_garbage() {
         // Create a handshake and bring it to the SentVersion state to test split_garbage
         let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
-        let mut buffer = vec![0u8; 64];
+        let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
         // Create a fake peer key to receive
@@ -726,13 +864,39 @@ mod tests {
         let handshake = handshake.send_version(&mut version_buffer, None).unwrap();
 
         // Test with a buffer that is too long (should fail to find terminator)
-        let mut test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
-        let result = handshake.split_garbage(&mut test_buffer);
+        let test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
+        let result = handshake.split_garbage(&test_buffer);
         assert!(matches!(result, Err(Error::NoGarbageTerminator)));
 
         // Test with a buffer that's just short of the required length
-        let mut short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
-        let result = handshake.split_garbage(&mut short_buffer);
+        let short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
+        let result = handshake.split_garbage(&short_buffer);
         assert!(matches!(result, Err(Error::CiphertextTooSmall)));
+    }
+
+    // Test that receive_key detects V1 protocol when peer's key starts with network magic.
+    #[test]
+    fn test_v1_protocol_detection() {
+        // Test that receive_key properly detects V1 protocol magic bytes
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let handshake = handshake.send_key(None, &mut buffer).unwrap();
+
+        // Create a key that starts with Bitcoin mainnet magic bytes
+        let mut v1_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        v1_key[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+
+        let result = handshake.receive_key(v1_key);
+        assert!(matches!(result, Err(Error::V1Protocol)));
+
+        // Test with different networks
+        let handshake = Handshake::<Initialized>::new(Network::Testnet, Role::Responder).unwrap();
+        let handshake = handshake.send_key(None, &mut buffer).unwrap();
+
+        let mut v1_testnet_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        v1_testnet_key[..4].copy_from_slice(&Network::Testnet.magic().to_bytes());
+
+        let result = handshake.receive_key(v1_testnet_key);
+        assert!(matches!(result, Err(Error::V1Protocol)));
     }
 }

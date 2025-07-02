@@ -5,7 +5,10 @@ const PORT: u16 = 18444;
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
-    use bip324::{Handshake, HandshakeAuthentication, Initialized, PacketType, ReceivedKey, Role};
+    use bip324::{
+        GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, Role, VersionResult,
+        NUM_LENGTH_BYTES,
+    };
     use bitcoin::Network;
 
     // Create initiator handshake
@@ -44,22 +47,50 @@ fn hello_world_happy_path() {
         .send_version(&mut resp_version_buffer, None)
         .unwrap();
 
-    // Initiator receives responder's version
-    let mut alice = match init_handshake
-        .receive_version(&mut resp_version_buffer)
+    // Initiator receives responder's garbage and version
+    let (mut init_handshake, consumed) = match init_handshake
+        .receive_garbage(&resp_version_buffer)
         .unwrap()
     {
-        HandshakeAuthentication::Complete { cipher, .. } => cipher,
-        HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
     };
 
-    // Responder receives initiator's version
-    let mut bob = match resp_handshake
-        .receive_version(&mut init_version_buffer)
+    // Process the version packet properly
+    let remaining = &resp_version_buffer[consumed..];
+    let packet_len = init_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut version_packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    let mut alice = match init_handshake.receive_version(&mut version_packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
+    };
+
+    // Responder receives initiator's garbage and version
+    let (mut resp_handshake, consumed) = match resp_handshake
+        .receive_garbage(&init_version_buffer)
         .unwrap()
     {
-        HandshakeAuthentication::Complete { cipher, .. } => cipher,
-        HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
+    };
+
+    // Process the version packet properly
+    let remaining = &init_version_buffer[consumed..];
+    let packet_len = resp_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut version_packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    let mut bob = match resp_handshake.receive_version(&mut version_packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
     };
 
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
@@ -75,15 +106,17 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
-    let alice_message_len = alice
-        .inbound()
-        .decrypt_packet_len(encrypted_message_to_alice[..3].try_into().unwrap());
+    let alice_message_len = alice.inbound().decrypt_packet_len(
+        encrypted_message_to_alice[..NUM_LENGTH_BYTES]
+            .try_into()
+            .unwrap(),
+    );
     let mut decrypted_message =
         vec![0u8; bip324::InboundCipher::decryption_buffer_len(alice_message_len)];
     alice
         .inbound()
         .decrypt(
-            &encrypted_message_to_alice[3..],
+            &encrypted_message_to_alice[NUM_LENGTH_BYTES..],
             &mut decrypted_message,
             None,
         )
@@ -103,13 +136,19 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
-    let bob_message_len = bob
-        .inbound()
-        .decrypt_packet_len(encrypted_message_to_bob[..3].try_into().unwrap());
+    let bob_message_len = bob.inbound().decrypt_packet_len(
+        encrypted_message_to_bob[..NUM_LENGTH_BYTES]
+            .try_into()
+            .unwrap(),
+    );
     let mut decrypted_message =
         vec![0u8; bip324::InboundCipher::decryption_buffer_len(bob_message_len)];
     bob.inbound()
-        .decrypt(&encrypted_message_to_bob[3..], &mut decrypted_message, None)
+        .decrypt(
+            &encrypted_message_to_bob[NUM_LENGTH_BYTES..],
+            &mut decrypted_message,
+            None,
+        )
         .unwrap();
     assert_eq!(message, decrypted_message[1..].to_vec()); // Skip header byte
 }
@@ -125,7 +164,8 @@ fn regtest_handshake() {
 
     use bip324::{
         serde::{deserialize, serialize, NetworkMessage},
-        Handshake, HandshakeAuthentication, Initialized, PacketType, ReceivedKey,
+        GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, VersionResult,
+        NUM_LENGTH_BYTES,
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
     let bitcoind = regtest_process(TransportVersion::V2);
@@ -165,15 +205,52 @@ fn regtest_handshake() {
     let mut max_response = [0; 4096];
     println!("Reading the response buffer");
     let size = stream.read(&mut max_response).unwrap();
-    let response = &mut max_response[..size];
+    let response = &max_response[..size];
     println!("Authenticating the handshake");
 
-    let cipher_session = match handshake.receive_version(response).unwrap() {
-        HandshakeAuthentication::Complete { cipher, .. } => {
-            println!("Finalizing the handshake");
-            cipher
+    // First receive garbage
+    let (mut handshake, consumed) = match handshake.receive_garbage(response).unwrap() {
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => {
+            println!("Found garbage terminator after {consumed_bytes} bytes");
+            (handshake, consumed_bytes)
         }
-        HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
+    };
+
+    // Then receive version - properly handle packet length and potential decoys.
+    let mut remaining = &response[consumed..];
+    let cipher_session = loop {
+        // Check if we have enough data for packet length
+        if remaining.len() < NUM_LENGTH_BYTES {
+            panic!("Not enough data for packet length");
+        }
+
+        let packet_len = handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+
+        if remaining.len() < NUM_LENGTH_BYTES + packet_len {
+            panic!("Not enough data for full packet");
+        }
+
+        let mut version_packet =
+            remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match handshake.receive_version(&mut version_packet).unwrap() {
+            VersionResult::Complete { cipher } => {
+                println!("Finalizing the handshake");
+                break cipher;
+            }
+            VersionResult::Decoy(h) => {
+                println!("Received decoy packet, continuing...");
+                handshake = h;
+                remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+                continue;
+            }
+        }
     };
 
     let (mut decrypter, mut encrypter) = cipher_session.into_split();
@@ -203,7 +280,7 @@ fn regtest_handshake() {
     println!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
     println!("Reading the response length buffer");
-    let mut response_len = [0; 3];
+    let mut response_len = [0; NUM_LENGTH_BYTES];
     stream.read_exact(&mut response_len).unwrap();
     let message_len = decrypter.decrypt_packet_len(response_len);
     let mut response_message = vec![0; message_len];

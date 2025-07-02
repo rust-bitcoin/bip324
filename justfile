@@ -75,8 +75,8 @@ _default:
 bench:
   cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench cipher_session
 
-# Run fuzz test: handshake.
-@fuzz target="handshake" time="60":
+# Run fuzz test: receive_key, receive_garbage, receive_version.
+@fuzz target="receive_garbage" time="60":
   cargo install cargo-fuzz@0.12.0
   cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_total_time={{time}}
 

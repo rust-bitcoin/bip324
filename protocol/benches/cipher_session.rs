@@ -5,8 +5,8 @@
 extern crate test;
 
 use bip324::{
-    CipherSession, Handshake, HandshakeAuthentication, InboundCipher, Initialized, Network,
-    OutboundCipher, PacketType, ReceivedKey, Role,
+    CipherSession, GarbageResult, Handshake, InboundCipher, Initialized, Network, OutboundCipher,
+    PacketType, ReceivedKey, Role, VersionResult, NUM_LENGTH_BYTES,
 };
 use test::{black_box, Bencher};
 
@@ -46,21 +46,53 @@ fn create_cipher_session_pair() -> (CipherSession, CipherSession) {
         .unwrap();
 
     // Alice receives Bob's version.
-    let alice = match alice_handshake
-        .receive_version(&mut bob_version_buffer)
+    // First handle Bob's garbage terminator
+    let (mut alice_handshake, consumed) = match alice_handshake
+        .receive_garbage(&bob_version_buffer)
         .unwrap()
     {
-        HandshakeAuthentication::Complete { cipher, .. } => cipher,
-        HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+    };
+
+    // Process Bob's version packet
+    let remaining = &bob_version_buffer[consumed..];
+    let packet_len = alice_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+    let alice = match alice_handshake.receive_version(&mut packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
     };
 
     // Bob receives Alice's version.
-    let bob = match bob_handshake
-        .receive_version(&mut alice_version_buffer)
+    // First handle Alice's garbage terminator
+    let (mut bob_handshake, consumed) = match bob_handshake
+        .receive_garbage(&alice_version_buffer)
         .unwrap()
     {
-        HandshakeAuthentication::Complete { cipher, .. } => cipher,
-        HandshakeAuthentication::NeedMoreData(_) => panic!("Should have completed"),
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+    };
+
+    // Process Alice's version packet
+    let remaining = &alice_version_buffer[consumed..];
+    let packet_len = bob_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+    let bob = match bob_handshake.receive_version(&mut packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
     };
 
     (alice, bob)
@@ -85,16 +117,16 @@ fn bench_round_trip_small_packet(b: &mut Bencher) {
             )
             .unwrap();
 
-        // Decrypt the length from first 3 bytes (real-world step).
-        let packet_length = bob
-            .inbound()
-            .decrypt_packet_len(black_box(encrypted[0..3].try_into().unwrap()));
+        // Decrypt the length from first NUM_LENGTH_BYTES bytes (real-world step).
+        let packet_length = bob.inbound().decrypt_packet_len(black_box(
+            encrypted[0..NUM_LENGTH_BYTES].try_into().unwrap(),
+        ));
 
         // Decrypt the payload using the decrypted length.
         let mut decrypted = vec![0u8; InboundCipher::decryption_buffer_len(packet_length)];
         bob.inbound()
             .decrypt(
-                black_box(&encrypted[3..3 + packet_length]),
+                black_box(&encrypted[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_length]),
                 &mut decrypted,
                 None,
             )
@@ -124,16 +156,16 @@ fn bench_round_trip_large_packet(b: &mut Bencher) {
             )
             .unwrap();
 
-        // Decrypt the length from first 3 bytes (real-world step).
-        let packet_length = bob
-            .inbound()
-            .decrypt_packet_len(black_box(encrypted[0..3].try_into().unwrap()));
+        // Decrypt the length from first NUM_LENGTH_BYTES bytes (real-world step).
+        let packet_length = bob.inbound().decrypt_packet_len(black_box(
+            encrypted[0..NUM_LENGTH_BYTES].try_into().unwrap(),
+        ));
 
         // Decrypt the payload using the decrypted length.
         let mut decrypted = vec![0u8; InboundCipher::decryption_buffer_len(packet_length)];
         bob.inbound()
             .decrypt(
-                black_box(&encrypted[3..3 + packet_length]),
+                black_box(&encrypted[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_length]),
                 &mut decrypted,
                 None,
             )
