@@ -23,7 +23,7 @@ extern crate std;
 
 mod fschacha20poly1305;
 mod handshake;
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "std")]
 pub mod io;
 #[cfg(feature = "std")]
 pub mod serde;
@@ -43,14 +43,7 @@ pub use handshake::{
     GarbageResult, Handshake, Initialized, ReceivedGarbage, ReceivedKey, SentKey, SentVersion,
     VersionResult,
 };
-// Re-exports from io module (async I/O types for backwards compatibility)
-#[cfg(any(feature = "futures", feature = "tokio"))]
-pub use io::{
-    AsyncProtocol, AsyncProtocolReader, AsyncProtocolWriter, Payload, ProtocolError,
-    ProtocolFailureSuggestion,
-};
 
-// Internal imports
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
 
 /// Value for header byte with the decoy flag flipped to true.

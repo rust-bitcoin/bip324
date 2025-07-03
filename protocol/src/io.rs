@@ -4,35 +4,31 @@
 //! connections over Read/Write transports.
 
 use core::fmt;
-
-#[cfg(feature = "std")]
+#[cfg(feature = "tokio")]
 use std::vec;
-#[cfg(feature = "std")]
 use std::vec::Vec;
 
+use crate::{Error, PacketType};
+
+#[cfg(feature = "tokio")]
 use bitcoin::Network;
 
-// Default to the futures-rs traits, but can overwrite with more specific
-// tokio implementations for easier caller integration.
-#[cfg(all(feature = "futures", not(feature = "tokio")))]
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(feature = "tokio")]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
-    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
+    Handshake, InboundCipher, OutboundCipher, Role, NUM_ELLIGATOR_SWIFT_BYTES,
     NUM_GARBAGE_TERMINTOR_BYTES,
 };
 
+#[cfg(feature = "tokio")]
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 /// A decrypted BIP324 payload with its packet type.
-#[cfg(feature = "std")]
 pub struct Payload {
     contents: Vec<u8>,
     packet_type: PacketType,
 }
 
-#[cfg(feature = "std")]
 impl Payload {
     /// Create a new payload.
     pub fn new(contents: Vec<u8>, packet_type: PacketType) -> Self {
@@ -54,7 +50,6 @@ impl Payload {
 }
 
 /// High level error type for the protocol interface.
-#[cfg(feature = "std")]
 #[derive(Debug)]
 pub enum ProtocolError {
     /// Wrap all IO errors with suggestion for next step on failure.
@@ -64,7 +59,6 @@ pub enum ProtocolError {
 }
 
 /// Suggest to caller next step on protocol failure.
-#[cfg(feature = "std")]
 #[derive(Debug)]
 pub enum ProtocolFailureSuggestion {
     /// Caller could attempt to retry the connection with protocol V1 if desired.
@@ -73,7 +67,6 @@ pub enum ProtocolFailureSuggestion {
     Abort,
 }
 
-#[cfg(feature = "std")]
 impl From<std::io::Error> for ProtocolError {
     fn from(error: std::io::Error) -> Self {
         // Detect IO errors which possibly mean the remote doesn't understand
@@ -94,19 +87,18 @@ impl From<std::io::Error> for ProtocolError {
     }
 }
 
-#[cfg(feature = "std")]
 impl From<Error> for ProtocolError {
     fn from(error: Error) -> Self {
         ProtocolError::Internal(error)
     }
 }
 
-#[cfg(feature = "std")]
 impl ProtocolError {
     /// Create an EOF error that suggests retrying with V1 protocol.
     ///
     /// This is used when the remote peer closes the connection during handshake,
     /// which often indicates they don't support the V2 protocol.
+    #[cfg(feature = "tokio")]
     fn eof() -> Self {
         ProtocolError::Io(
             std::io::Error::new(
@@ -118,7 +110,6 @@ impl ProtocolError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for ProtocolError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -128,7 +119,6 @@ impl std::error::Error for ProtocolError {
     }
 }
 
-#[cfg(feature = "std")]
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -149,13 +139,13 @@ impl fmt::Display for ProtocolError {
 }
 
 /// A protocol session with handshake and send/receive packet management.
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 pub struct AsyncProtocol {
     reader: AsyncProtocolReader,
     writer: AsyncProtocolWriter,
 }
 
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 impl AsyncProtocol {
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
@@ -297,7 +287,9 @@ impl AsyncProtocol {
 }
 
 /// State machine of an asynchronous packet read.
-#[cfg(any(feature = "futures", feature = "tokio"))]
+///
+/// This maintains state between await points to ensure cancellation safety.
+#[cfg(feature = "tokio")]
 #[derive(Debug)]
 enum DecryptState {
     ReadingLength {
@@ -310,7 +302,7 @@ enum DecryptState {
     },
 }
 
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 impl DecryptState {
     /// Transition state to reading the length bytes.
     fn init_reading_length() -> Self {
@@ -330,13 +322,13 @@ impl DecryptState {
 }
 
 /// Manages an async buffer to automatically decrypt contents of received packets.
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 pub struct AsyncProtocolReader {
     inbound_cipher: InboundCipher,
     state: DecryptState,
 }
 
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 impl AsyncProtocolReader {
     /// Decrypt contents of received packet from buffer.
     ///
@@ -397,12 +389,12 @@ impl AsyncProtocolReader {
 }
 
 /// Manages an async buffer to automatically encrypt and send contents in packets.
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 pub struct AsyncProtocolWriter {
     outbound_cipher: OutboundCipher,
 }
 
-#[cfg(any(feature = "futures", feature = "tokio"))]
+#[cfg(feature = "tokio")]
 impl AsyncProtocolWriter {
     /// Encrypt contents and write packet buffer.
     ///
