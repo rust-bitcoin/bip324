@@ -17,7 +17,6 @@ pub use bitcoin::p2p::message::{CommandString, NetworkMessage};
 
 #[derive(Debug)]
 pub enum Error {
-    Serialize(bitcoin::io::Error),
     Deserialize(bitcoin::consensus::encode::Error),
     UnknownShortID(u8),
 }
@@ -25,7 +24,6 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Serialize(e) => write!(f, "Unable to serialize {e}"),
             Error::Deserialize(e) => write!(f, "Unable to deserialize {e}"),
             Error::UnknownShortID(b) => write!(f, "Unrecognized short ID when deserializing {b}"),
         }
@@ -35,7 +33,6 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Serialize(e) => Some(e),
             Error::Deserialize(e) => Some(e),
             Error::UnknownShortID(_) => None,
         }
@@ -43,7 +40,10 @@ impl std::error::Error for Error {
 }
 
 /// Serialize a [`NetworkMessage`] into a buffer.
-pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
+///
+/// This function is infallible because the underlying `consensus_encode()`
+/// operations only fail on I/O errors, which cannot occur when writing to an in-memory `Vec<u8>`.
+pub fn serialize(msg: NetworkMessage) -> Vec<u8> {
     let mut buffer = Vec::new();
     match &msg {
         NetworkMessage::Addr(_) => {
@@ -142,7 +142,7 @@ pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
             buffer.push(0u8);
             msg.command()
                 .consensus_encode(&mut buffer)
-                .map_err(Error::Serialize)?;
+                .expect("Encoding to Vec<u8> never fails");
         }
         NetworkMessage::Unknown {
             command,
@@ -151,14 +151,14 @@ pub fn serialize(msg: NetworkMessage) -> Result<Vec<u8>, Error> {
             buffer.push(0u8);
             command
                 .consensus_encode(&mut buffer)
-                .map_err(Error::Serialize)?;
+                .expect("Encoding to Vec<u8> never fails");
         }
     }
 
     msg.consensus_encode(&mut buffer)
-        .map_err(Error::Serialize)?;
+        .expect("Encoding to Vec<u8> never fails");
 
-    Ok(buffer)
+    buffer
 }
 
 /// Deserialize v2 message into [`NetworkMessage`].
