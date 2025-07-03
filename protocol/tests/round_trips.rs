@@ -271,7 +271,7 @@ fn regtest_handshake() {
         start_height: 0,
         relay: false,
     };
-    let message = serialize(NetworkMessage::Version(msg)).unwrap();
+    let message = serialize(NetworkMessage::Version(msg));
     let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
     let mut packet = vec![0u8; packet_len];
     encrypter

@@ -114,7 +114,7 @@ async fn v2_proxy(
                     msg.command()
                 );
 
-                let contents = serialize(msg).expect("serialize-able contents into network message");
+                let contents = serialize(msg);
                 v2_remote_writer
                     .encrypt_and_write(&contents, &mut remote_writer)
                     .await
