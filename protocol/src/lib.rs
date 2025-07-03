@@ -419,6 +419,41 @@ impl InboundCipher {
 
         Ok(PacketType::from_byte(&plaintext_buffer[0]))
     }
+
+    /// Decrypt an inbound packet with automatic allocation.
+    ///
+    /// This is a convenience method that handles buffer allocation automatically.
+    /// For zero-allocation scenarios, use [`decrypt`] instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
+    ///   the header, contents, and authentication tag.
+    /// * `aad` - Optional associated authenticated data.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok((PacketType, Vec<u8>))`: The packet type and decrypted plaintext including header byte.
+    ///   * `Err(Error)`: An error that occurred during decryption.
+    ///
+    /// # Errors
+    ///
+    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
+    /// * Decryption errors for any failures such as a tag mismatch.
+    #[cfg(feature = "std")]
+    pub fn decrypt_to_vec(
+        &mut self,
+        ciphertext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<(PacketType, std::vec::Vec<u8>), Error> {
+        let plaintext_len = Self::decryption_buffer_len(ciphertext.len());
+        let mut plaintext_buffer = std::vec![0u8; plaintext_len];
+
+        let packet_type = self.decrypt(ciphertext, &mut plaintext_buffer, aad)?;
+
+        Ok((packet_type, plaintext_buffer))
+    }
 }
 
 /// Encrypts packets to send to the remote peer.
@@ -489,6 +524,37 @@ impl OutboundCipher {
             .copy_from_slice(&tag);
 
         Ok(())
+    }
+
+    /// Encrypt plaintext into a packet with automatic allocation.
+    ///
+    /// This is a convenience method that handles buffer allocation automatically.
+    /// For zero-allocation scenarios, use [`encrypt`] instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `plaintext` - Plaintext contents to be encrypted.
+    /// * `packet_type` - Is this a genuine packet or a decoy.
+    /// * `aad` - Optional associated authenticated data.
+    ///
+    /// # Returns
+    ///
+    /// The complete encrypted packet ready for transmission.
+    #[cfg(feature = "std")]
+    pub fn encrypt_to_vec(
+        &mut self,
+        plaintext: &[u8],
+        packet_type: PacketType,
+        aad: Option<&[u8]>,
+    ) -> std::vec::Vec<u8> {
+        let packet_len = Self::encryption_buffer_len(plaintext.len());
+        let mut ciphertext_buffer = std::vec![0u8; packet_len];
+
+        // This will never fail since we allocate the exact required size
+        self.encrypt(plaintext, &mut ciphertext_buffer, packet_type, aad)
+            .expect("encrypt should never fail with correctly sized buffer");
+
+        ciphertext_buffer
     }
 }
 
