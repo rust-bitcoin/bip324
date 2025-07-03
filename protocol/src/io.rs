@@ -4,14 +4,19 @@
 //! connections over Read/Write transports.
 
 use core::fmt;
+#[cfg(feature = "tokio")]
 use std::vec;
 use std::vec::Vec;
 
+use crate::{Error, PacketType};
+
+#[cfg(feature = "tokio")]
 use bitcoin::Network;
 
+#[cfg(feature = "tokio")]
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
-    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
+    Handshake, InboundCipher, OutboundCipher, Role, NUM_ELLIGATOR_SWIFT_BYTES,
     NUM_GARBAGE_TERMINTOR_BYTES,
 };
 
@@ -93,6 +98,7 @@ impl ProtocolError {
     ///
     /// This is used when the remote peer closes the connection during handshake,
     /// which often indicates they don't support the V2 protocol.
+    #[cfg(feature = "tokio")]
     fn eof() -> Self {
         ProtocolError::Io(
             std::io::Error::new(

@@ -88,7 +88,9 @@ async fn v2_proxy(
     .await
     {
         Ok(p) => p,
-        Err(bip324::io::ProtocolError::Io(_, ProtocolFailureSuggestion::RetryV1)) if v1_fallback => {
+        Err(bip324::io::ProtocolError::Io(_, ProtocolFailureSuggestion::RetryV1))
+            if v1_fallback =>
+        {
             info!("V2 protocol failed, falling back to V1...");
             return v1_proxy(client, network).await;
         }
