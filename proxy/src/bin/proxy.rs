@@ -6,8 +6,9 @@
 use std::str::FromStr;
 
 use bip324::{
+    io::{AsyncProtocol, ProtocolFailureSuggestion},
     serde::{deserialize, serialize},
-    AsyncProtocol, PacketType, ProtocolFailureSuggestion, Role,
+    PacketType, Role,
 };
 use bip324_proxy::{V1ProtocolReader, V1ProtocolWriter};
 use bitcoin::Network;
@@ -87,7 +88,7 @@ async fn v2_proxy(
     .await
     {
         Ok(p) => p,
-        Err(bip324::ProtocolError::Io(_, ProtocolFailureSuggestion::RetryV1)) if v1_fallback => {
+        Err(bip324::io::ProtocolError::Io(_, ProtocolFailureSuggestion::RetryV1)) if v1_fallback => {
             info!("V2 protocol failed, falling back to V1...");
             return v1_proxy(client, network).await;
         }

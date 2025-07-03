@@ -34,7 +34,7 @@ pub enum Error {
     WrongCommand,
     Serde,
     Io(std::io::Error),
-    Protocol(bip324::ProtocolError),
+    Protocol(bip324::io::ProtocolError),
 }
 
 impl fmt::Display for Error {
@@ -61,8 +61,8 @@ impl std::error::Error for Error {
     }
 }
 
-impl From<bip324::ProtocolError> for Error {
-    fn from(e: bip324::ProtocolError) -> Self {
+impl From<bip324::io::ProtocolError> for Error {
+    fn from(e: bip324::io::ProtocolError) -> Self {
         Error::Protocol(e)
     }
 }

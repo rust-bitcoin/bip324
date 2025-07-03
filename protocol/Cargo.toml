@@ -11,14 +11,11 @@ rust-version = "1.63.0"
 
 [features]
 default = ["std"]
-# High-level wrappers using futures traits.
-futures = ["std", "dep:futures"]
 # High-level wrappers using tokio traits - may affect MSRV requirements.
 tokio = ["std", "dep:tokio"]
 std = ["bitcoin/std", "bitcoin_hashes/std", "chacha20-poly1305/std", "rand/std", "rand/std_rng"]
 
 [dependencies]
-futures = { version = "0.3.30", default-features = false, optional = true, features = ["std"] }
 # The tokio feature may increase the MSRV beyond 1.63.0
 # depending on which version of tokio is selected by the caller.
 tokio = { version = "1", default-features = false, optional = true, features = ["io-util"] }
