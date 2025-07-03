@@ -5,43 +5,93 @@ const PORT: u16 = 18444;
 #[test]
 #[cfg(feature = "std")]
 fn hello_world_happy_path() {
-    use bip324::{Handshake, PacketType, Role};
+    use bip324::{
+        GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, Role, VersionResult,
+        NUM_LENGTH_BYTES,
+    };
     use bitcoin::Network;
 
-    let mut init_message = vec![0u8; 64];
-    let mut init_handshake =
-        Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
+    // Create initiator handshake
+    let init_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
 
-    let mut resp_message = vec![0u8; 100];
-    let mut resp_handshake =
-        Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
+    // Send initiator key
+    let mut init_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
+    let init_handshake = init_handshake.send_key(None, &mut init_key_buffer).unwrap();
 
-    resp_handshake
-        .complete_materials(
-            init_message.try_into().unwrap(),
-            &mut resp_message[64..],
-            None,
-        )
-        .unwrap();
-    let mut init_finalize_message = vec![0u8; 36];
-    init_handshake
-        .complete_materials(
-            resp_message[0..64].try_into().unwrap(),
-            &mut init_finalize_message,
-            None,
-        )
+    // Create responder handshake
+    let resp_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+
+    // Send responder key
+    let mut resp_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
+    let resp_handshake = resp_handshake.send_key(None, &mut resp_key_buffer).unwrap();
+
+    // Initiator receives responder's key
+    let init_handshake = init_handshake
+        .receive_key(resp_key_buffer[..64].try_into().unwrap())
         .unwrap();
 
-    let mut packet_buffer = vec![0u8; 4096];
-    init_handshake
-        .authenticate_garbage_and_version(&resp_message[64..], &mut packet_buffer)
-        .unwrap();
-    resp_handshake
-        .authenticate_garbage_and_version(&init_finalize_message, &mut packet_buffer)
+    // Responder receives initiator's key
+    let resp_handshake = resp_handshake
+        .receive_key(init_key_buffer[..64].try_into().unwrap())
         .unwrap();
 
-    let mut alice = init_handshake.finalize().unwrap();
-    let mut bob = resp_handshake.finalize().unwrap();
+    // Initiator sends version
+    let mut init_version_buffer = vec![0u8; Handshake::<ReceivedKey>::send_version_len(None)];
+    let init_handshake = init_handshake
+        .send_version(&mut init_version_buffer, None)
+        .unwrap();
+
+    // Responder sends version
+    let mut resp_version_buffer = vec![0u8; Handshake::<ReceivedKey>::send_version_len(None)];
+    let resp_handshake = resp_handshake
+        .send_version(&mut resp_version_buffer, None)
+        .unwrap();
+
+    // Initiator receives responder's garbage and version
+    let (mut init_handshake, consumed) = match init_handshake
+        .receive_garbage(&resp_version_buffer)
+        .unwrap()
+    {
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
+    };
+
+    // Process the version packet properly
+    let remaining = &resp_version_buffer[consumed..];
+    let packet_len = init_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut version_packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    let mut alice = match init_handshake.receive_version(&mut version_packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
+    };
+
+    // Responder receives initiator's garbage and version
+    let (mut resp_handshake, consumed) = match resp_handshake
+        .receive_garbage(&init_version_buffer)
+        .unwrap()
+    {
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => (handshake, consumed_bytes),
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
+    };
+
+    // Process the version packet properly
+    let remaining = &init_version_buffer[consumed..];
+    let packet_len = resp_handshake
+        .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+        .unwrap();
+    let mut version_packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    let mut bob = match resp_handshake.receive_version(&mut version_packet).unwrap() {
+        VersionResult::Complete { cipher } => cipher,
+        VersionResult::Decoy(_) => panic!("Should have completed"),
+    };
 
     // Alice and Bob can freely exchange encrypted messages using the packet handler returned by each handshake.
     let message = b"Hello world".to_vec();
@@ -56,15 +106,17 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
-    let alice_message_len = alice
-        .inbound()
-        .decrypt_packet_len(encrypted_message_to_alice[..3].try_into().unwrap());
+    let alice_message_len = alice.inbound().decrypt_packet_len(
+        encrypted_message_to_alice[..NUM_LENGTH_BYTES]
+            .try_into()
+            .unwrap(),
+    );
     let mut decrypted_message =
         vec![0u8; bip324::InboundCipher::decryption_buffer_len(alice_message_len)];
     alice
         .inbound()
         .decrypt(
-            &encrypted_message_to_alice[3..],
+            &encrypted_message_to_alice[NUM_LENGTH_BYTES..],
             &mut decrypted_message,
             None,
         )
@@ -84,13 +136,19 @@ fn hello_world_happy_path() {
         )
         .unwrap();
 
-    let bob_message_len = bob
-        .inbound()
-        .decrypt_packet_len(encrypted_message_to_bob[..3].try_into().unwrap());
+    let bob_message_len = bob.inbound().decrypt_packet_len(
+        encrypted_message_to_bob[..NUM_LENGTH_BYTES]
+            .try_into()
+            .unwrap(),
+    );
     let mut decrypted_message =
         vec![0u8; bip324::InboundCipher::decryption_buffer_len(bob_message_len)];
     bob.inbound()
-        .decrypt(&encrypted_message_to_bob[3..], &mut decrypted_message, None)
+        .decrypt(
+            &encrypted_message_to_bob[NUM_LENGTH_BYTES..],
+            &mut decrypted_message,
+            None,
+        )
         .unwrap();
     assert_eq!(message, decrypted_message[1..].to_vec()); // Skip header byte
 }
@@ -106,48 +164,95 @@ fn regtest_handshake() {
 
     use bip324::{
         serde::{deserialize, serialize, NetworkMessage},
-        Handshake, PacketType,
+        GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, VersionResult,
+        NUM_LENGTH_BYTES,
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
     let bitcoind = regtest_process(TransportVersion::V2);
 
     let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
-    let mut public_key = [0u8; 64];
-    let mut handshake = Handshake::new(
-        bip324::Network::Regtest,
-        bip324::Role::Initiator,
-        None,
-        &mut public_key,
-    )
-    .unwrap();
+
+    // Initialize handshake
+    let handshake =
+        Handshake::<Initialized>::new(bip324::Network::Regtest, bip324::Role::Initiator).unwrap();
+
+    // Send our public key
+    let mut public_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
+    let handshake = handshake.send_key(None, &mut public_key).unwrap();
     println!("Writing public key to the remote node");
     stream.write_all(&public_key).unwrap();
     stream.flush().unwrap();
+
+    // Read remote public key
     let mut remote_public_key = [0u8; 64];
     println!("Reading the remote node public key");
     stream.read_exact(&mut remote_public_key).unwrap();
-    let mut local_garbage_terminator_message = [0u8; 36];
+
+    // Process remote key
+    let handshake = handshake.receive_key(remote_public_key).unwrap();
+
+    // Send garbage terminator and version
+    let mut local_garbage_terminator_message =
+        vec![0u8; Handshake::<ReceivedKey>::send_version_len(None)];
     println!("Sending our garbage terminator");
-    handshake
-        .complete_materials(
-            remote_public_key,
-            &mut local_garbage_terminator_message,
-            None,
-        )
+    let handshake = handshake
+        .send_version(&mut local_garbage_terminator_message, None)
         .unwrap();
     stream.write_all(&local_garbage_terminator_message).unwrap();
     stream.flush().unwrap();
+
+    // Read and authenticate remote response
     let mut max_response = [0; 4096];
     println!("Reading the response buffer");
     let size = stream.read(&mut max_response).unwrap();
-    let response = &mut max_response[..size];
+    let response = &max_response[..size];
     println!("Authenticating the handshake");
-    let mut packet_buffer = vec![0u8; 4096];
-    handshake
-        .authenticate_garbage_and_version(response, &mut packet_buffer)
-        .unwrap();
-    println!("Finalizing the handshake");
-    let cipher_session = handshake.finalize().unwrap();
+
+    // First receive garbage
+    let (mut handshake, consumed) = match handshake.receive_garbage(response).unwrap() {
+        GarbageResult::FoundGarbage {
+            handshake,
+            consumed_bytes,
+        } => {
+            println!("Found garbage terminator after {consumed_bytes} bytes");
+            (handshake, consumed_bytes)
+        }
+        GarbageResult::NeedMoreData(_) => panic!("Should have found garbage"),
+    };
+
+    // Then receive version - properly handle packet length and potential decoys.
+    let mut remaining = &response[consumed..];
+    let cipher_session = loop {
+        // Check if we have enough data for packet length
+        if remaining.len() < NUM_LENGTH_BYTES {
+            panic!("Not enough data for packet length");
+        }
+
+        let packet_len = handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+
+        if remaining.len() < NUM_LENGTH_BYTES + packet_len {
+            panic!("Not enough data for full packet");
+        }
+
+        let mut version_packet =
+            remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match handshake.receive_version(&mut version_packet).unwrap() {
+            VersionResult::Complete { cipher } => {
+                println!("Finalizing the handshake");
+                break cipher;
+            }
+            VersionResult::Decoy(h) => {
+                println!("Received decoy packet, continuing...");
+                handshake = h;
+                remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+                continue;
+            }
+        }
+    };
+
     let (mut decrypter, mut encrypter) = cipher_session.into_split();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -175,7 +280,7 @@ fn regtest_handshake() {
     println!("Serializing and writing version message");
     stream.write_all(&packet).unwrap();
     println!("Reading the response length buffer");
-    let mut response_len = [0; 3];
+    let mut response_len = [0; NUM_LENGTH_BYTES];
     stream.read_exact(&mut response_len).unwrap();
     let message_len = decrypter.decrypt_packet_len(response_len);
     let mut response_message = vec![0; message_len];
@@ -198,18 +303,15 @@ fn regtest_handshake_v1_only() {
         net::TcpStream,
     };
 
-    use bip324::Handshake;
+    use bip324::{Handshake, Initialized};
     let bitcoind = regtest_process(TransportVersion::V1);
 
     let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
-    let mut public_key = [0u8; 64];
-    let _ = Handshake::new(
-        bip324::Network::Regtest,
-        bip324::Role::Initiator,
-        None,
-        &mut public_key,
-    )
-    .unwrap();
+
+    let handshake =
+        Handshake::<Initialized>::new(bip324::Network::Regtest, bip324::Role::Initiator).unwrap();
+    let mut public_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
+    let _handshake = handshake.send_key(None, &mut public_key).unwrap();
     println!("Writing public key to the remote node");
     stream.write_all(&public_key).unwrap();
     stream.flush().unwrap();

@@ -39,7 +39,10 @@ use bitcoin_hashes::{hkdf, sha256, Hkdf};
 
 pub use bitcoin::Network;
 
-pub use handshake::{Handshake, NUM_INITIAL_HANDSHAKE_BUFFER_BYTES};
+pub use handshake::{
+    GarbageResult, Handshake, Initialized, ReceivedGarbage, ReceivedKey, SentKey, SentVersion,
+    VersionResult,
+};
 // Re-exports from io module (async I/O types for backwards compatibility)
 #[cfg(any(feature = "futures", feature = "tokio"))]
 pub use io::{
@@ -82,8 +85,6 @@ pub enum Error {
     /// The remote sent the maximum amount of garbage bytes without
     /// a garbage terminator in the handshake.
     NoGarbageTerminator,
-    /// A handshake step was not completed in the proper order.
-    HandshakeOutOfOrder,
     /// The remote peer is communicating on the V1 protocol.
     V1Protocol,
     /// Not able to generate secret material.
@@ -108,7 +109,6 @@ impl fmt::Display for Error {
             Error::NoGarbageTerminator => {
                 write!(f, "More than 4095 bytes of garbage recieved in the handshake before a terminator was sent.")
             }
-            Error::HandshakeOutOfOrder => write!(f, "Handshake flow out of sequence."),
             Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {e:?}."),
             Error::Decryption(e) => write!(f, "Decrytion error: {e:?}."),
             Error::V1Protocol => write!(f, "The remote peer is communicating on the V1 protocol."),
@@ -127,7 +127,6 @@ impl std::error::Error for Error {
             Error::CiphertextTooSmall => None,
             Error::BufferTooSmall { .. } => None,
             Error::NoGarbageTerminator => None,
-            Error::HandshakeOutOfOrder => None,
             Error::V1Protocol => None,
             Error::SecretGeneration(e) => Some(e),
             Error::Decryption(e) => Some(e),
@@ -312,7 +311,7 @@ pub struct InboundCipher {
 }
 
 impl InboundCipher {
-    /// Decrypt the length of the next inbound packet.
+    /// Decrypt the length of the packet's payload.
     ///
     /// Note that this returns the length of the remaining packet data
     /// to be read from the stream (header + contents + tag), not just the contents.
@@ -340,11 +339,50 @@ impl InboundCipher {
         packet_len - NUM_TAG_BYTES
     }
 
+    /// Decrypt an inbound packet in-place.
+    ///
+    /// # Arguments
+    ///
+    /// * `ciphertext` - A mutable buffer containing the packet from the peer excluding
+    ///   the first 3 length bytes. It should contain the header, contents, and authentication tag.
+    ///   This buffer will be modified in-place during decryption.
+    /// * `aad` - Optional associated authenticated data.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing:
+    ///   * `Ok((PacketType, &[u8]))`: A tuple of the packet type and a slice pointing to the
+    ///     decrypted plaintext within the input buffer. The first byte of the slice is the
+    ///     header byte containing protocol flags.
+    ///   * `Err(Error)`: An error that occurred during decryption.
+    ///
+    /// # Errors
+    ///
+    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
+    /// * Decryption errors for any failures such as a tag mismatch.
+    pub fn decrypt_in_place<'a>(
+        &mut self,
+        ciphertext: &'a mut [u8],
+        aad: Option<&[u8]>,
+    ) -> Result<(PacketType, &'a [u8]), Error> {
+        let auth = aad.unwrap_or_default();
+        // Check minimum size of ciphertext.
+        if ciphertext.len() < NUM_TAG_BYTES {
+            return Err(Error::CiphertextTooSmall);
+        }
+        let (msg, tag) = ciphertext.split_at_mut(ciphertext.len() - NUM_TAG_BYTES);
+
+        self.packet_cipher
+            .decrypt(auth, msg, tag.try_into().expect("16 byte tag"))?;
+
+        Ok((PacketType::from_byte(&msg[0]), msg))
+    }
+
     /// Decrypt an inbound packet.
     ///
     /// # Arguments
     ///
-    /// * `packet_payload` - The packet from the peer excluding the first 3 length bytes. It should contain
+    /// * `ciphertext` - The packet from the peer excluding the first 3 length bytes. It should contain
     ///   the header, contents, and authentication tag.
     /// * `plaintext_buffer` - Mutable buffer to write plaintext. Note that the first byte is the header byte
     ///   containing protocol flags.
@@ -363,16 +401,16 @@ impl InboundCipher {
     /// * Decryption errors for any failures such as a tag mismatch.
     pub fn decrypt(
         &mut self,
-        packet_payload: &[u8],
+        ciphertext: &[u8],
         plaintext_buffer: &mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<PacketType, Error> {
         let auth = aad.unwrap_or_default();
         // Check minimum size of ciphertext.
-        if packet_payload.len() < NUM_TAG_BYTES {
+        if ciphertext.len() < NUM_TAG_BYTES {
             return Err(Error::CiphertextTooSmall);
         }
-        let (msg, tag) = packet_payload.split_at(packet_payload.len() - NUM_TAG_BYTES);
+        let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
         // Check that the contents buffer is large enough.
         if plaintext_buffer.len() < msg.len() {
             return Err(Error::BufferTooSmall {
@@ -399,7 +437,7 @@ pub struct OutboundCipher {
 
 impl OutboundCipher {
     /// Calculate the required encryption buffer length for given plaintext length.
-    pub fn encryption_buffer_len(plaintext_len: usize) -> usize {
+    pub const fn encryption_buffer_len(plaintext_len: usize) -> usize {
         plaintext_len + NUM_PACKET_OVERHEAD_BYTES
     }
 
@@ -408,7 +446,7 @@ impl OutboundCipher {
     /// # Arguments
     ///
     /// * `plaintext` - Plaintext contents to be encrypted.
-    /// * `packet_buffer` - Buffer to write packet bytes to which must have enough capacity
+    /// * `ciphertext_buffer` - Buffer to write packet bytes to which must have enough capacity
     ///   as calculated by `encryption_buffer_len(plaintext.len())`.
     /// * `packet_type` - Is this a genuine packet or a decoy.
     /// * `aad` - Optional associated authenticated data.
@@ -420,12 +458,12 @@ impl OutboundCipher {
     pub fn encrypt(
         &mut self,
         plaintext: &[u8],
-        packet_buffer: &mut [u8],
+        ciphertext_buffer: &mut [u8],
         packet_type: PacketType,
         aad: Option<&[u8]>,
     ) -> Result<(), Error> {
         // Validate buffer capacity.
-        if packet_buffer.len() < Self::encryption_buffer_len(plaintext.len()) {
+        if ciphertext_buffer.len() < Self::encryption_buffer_len(plaintext.len()) {
             return Err(Error::BufferTooSmall {
                 required_bytes: Self::encryption_buffer_len(plaintext.len()),
             });
@@ -437,14 +475,15 @@ impl OutboundCipher {
         let plaintext_end_index = plaintext_start_index + plaintext_length;
 
         // Set header byte.
-        packet_buffer[header_index] = packet_type.to_byte();
-        packet_buffer[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
+        ciphertext_buffer[header_index] = packet_type.to_byte();
+        ciphertext_buffer[plaintext_start_index..plaintext_end_index].copy_from_slice(plaintext);
 
         // Encrypt header byte and plaintext in place and produce authentication tag.
         let auth = aad.unwrap_or_default();
-        let tag = self
-            .packet_cipher
-            .encrypt(auth, &mut packet_buffer[header_index..plaintext_end_index]);
+        let tag = self.packet_cipher.encrypt(
+            auth,
+            &mut ciphertext_buffer[header_index..plaintext_end_index],
+        );
 
         // Encrypt plaintext length.
         let mut content_len = [0u8; 3];
@@ -452,8 +491,8 @@ impl OutboundCipher {
         self.length_cipher.crypt(&mut content_len);
 
         // Copy over encrypted length and the tag to the final packet (plaintext already encrypted).
-        packet_buffer[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
-        packet_buffer[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)]
+        ciphertext_buffer[0..NUM_LENGTH_BYTES].copy_from_slice(&content_len);
+        ciphertext_buffer[plaintext_end_index..(plaintext_end_index + NUM_TAG_BYTES)]
             .copy_from_slice(&tag);
 
         Ok(())
@@ -472,7 +511,7 @@ pub struct CipherSession {
 }
 
 impl CipherSession {
-    fn new(materials: SessionKeyMaterial, role: Role) -> Self {
+    pub(crate) fn new(materials: SessionKeyMaterial, role: Role) -> Self {
         match role {
             Role::Initiator => {
                 let initiator_length_cipher = FSChaCha20::new(materials.initiator_length_key);
@@ -538,7 +577,6 @@ impl CipherSession {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use crate::handshake::NUM_INITIAL_HANDSHAKE_BUFFER_BYTES;
 
     use super::*;
     use bitcoin::secp256k1::ellswift::{ElligatorSwift, ElligatorSwiftParty};
@@ -611,6 +649,62 @@ mod tests {
     }
 
     #[test]
+    fn test_decrypt_in_place() {
+        let alice =
+            SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
+                .unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
+        let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
+        let session_keys = SessionKeyMaterial::from_ecdh(
+            elliswift_alice,
+            elliswift_bob,
+            alice,
+            ElligatorSwiftParty::A,
+            Network::Bitcoin,
+        )
+        .unwrap();
+        let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
+        let mut bob_cipher = CipherSession::new(session_keys, Role::Responder);
+
+        // Test with a genuine packet
+        let message = b"Test in-place decryption".to_vec();
+        let mut enc_packet = vec![0u8; OutboundCipher::encryption_buffer_len(message.len())];
+        alice_cipher
+            .outbound()
+            .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
+            .unwrap();
+
+        // Decrypt in-place
+        let mut ciphertext = enc_packet[NUM_LENGTH_BYTES..].to_vec();
+        let (packet_type, plaintext) = bob_cipher
+            .inbound()
+            .decrypt_in_place(&mut ciphertext, None)
+            .unwrap();
+
+        assert_eq!(PacketType::Genuine, packet_type);
+        assert_eq!(message, plaintext[1..].to_vec()); // Skip header byte
+
+        // Test with a decoy packet and AAD
+        let message2 = b"Decoy with AAD".to_vec();
+        let aad = b"additional authenticated data";
+        let mut enc_packet2 = vec![0u8; OutboundCipher::encryption_buffer_len(message2.len())];
+        bob_cipher
+            .outbound()
+            .encrypt(&message2, &mut enc_packet2, PacketType::Decoy, Some(aad))
+            .unwrap();
+
+        // Decrypt in-place with AAD
+        let mut ciphertext2 = enc_packet2[NUM_LENGTH_BYTES..].to_vec();
+        let (packet_type2, plaintext2) = alice_cipher
+            .inbound()
+            .decrypt_in_place(&mut ciphertext2, Some(aad))
+            .unwrap();
+
+        assert_eq!(PacketType::Decoy, packet_type2);
+        assert_eq!(message2, plaintext2[1..].to_vec()); // Skip header byte
+    }
+
+    #[test]
     fn test_fuzz_packets() {
         let mut rng = rand::thread_rng();
         let alice =
@@ -678,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn test_authenticated_garbage() {
+    fn test_additional_authenticated_data() {
         let mut rng = rand::thread_rng();
         let alice =
             SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
@@ -722,230 +816,6 @@ mod tests {
                 Some(&auth_garbage),
             )
             .unwrap();
-    }
-
-    #[test]
-    fn test_handshake_with_garbage_and_decoys() {
-        // Define the garbage and decoys that the initiator is sending to the responder.
-        let initiator_garbage = vec![1u8, 2u8, 3u8];
-        let initiator_decoys: Vec<&[u8]> = vec![&[6u8, 7u8], &[8u8, 0u8]];
-        let num_initiator_decoys_bytes = initiator_decoys
-            .iter()
-            .map(|slice| slice.len())
-            .sum::<usize>()
-            + NUM_PACKET_OVERHEAD_BYTES * initiator_decoys.len();
-        let num_initiator_version_bytes = VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES;
-        // Buffer for initiator to write to and responder to read from.
-        let mut initiator_buffer = vec![
-            0u8;
-            NUM_ELLIGATOR_SWIFT_BYTES
-                + initiator_garbage.len()
-                + NUM_GARBAGE_TERMINTOR_BYTES
-                + num_initiator_decoys_bytes
-                + num_initiator_version_bytes
-        ];
-
-        // Define the garbage and decoys that the responder is sending to the initiator.
-        let responder_garbage = vec![4u8, 5u8];
-        let responder_decoys: Vec<&[u8]> = vec![&[10u8, 11u8], &[12u8], &[13u8, 14u8, 15u8]];
-        let num_responder_decoys_bytes = responder_decoys
-            .iter()
-            .map(|slice| slice.len())
-            .sum::<usize>()
-            + NUM_PACKET_OVERHEAD_BYTES * responder_decoys.len();
-        let num_responder_version_bytes = VERSION_CONTENT.len() + NUM_PACKET_OVERHEAD_BYTES;
-        // Buffer for responder to write to and initiator to read from.
-        let mut responder_buffer = vec![
-            0u8;
-            NUM_ELLIGATOR_SWIFT_BYTES
-                + responder_garbage.len()
-                + NUM_GARBAGE_TERMINTOR_BYTES
-                + num_responder_decoys_bytes
-                + num_responder_version_bytes
-        ];
-
-        // The initiator's handshake writes its 64 byte elligator swift key and garbage to their buffer to send to the responder.
-        let mut initiator_handshake = Handshake::new(
-            Network::Bitcoin,
-            Role::Initiator,
-            Some(&initiator_garbage),
-            &mut initiator_buffer[..NUM_ELLIGATOR_SWIFT_BYTES + initiator_garbage.len()],
-        )
-        .unwrap();
-
-        // The responder also writes its 64 byte elligator swift key and garbage to their buffer to send to the initiator.
-        let mut responder_handshake = Handshake::new(
-            Network::Bitcoin,
-            Role::Responder,
-            Some(&responder_garbage),
-            &mut responder_buffer[..NUM_ELLIGATOR_SWIFT_BYTES + responder_garbage.len()],
-        )
-        .unwrap();
-
-        // The responder has received the initiator's initial material so can complete the secrets.
-        // With the secrets calculated, the responder can send along the garbage terminator, decoys, and version packet.
-        responder_handshake
-            .complete_materials(
-                initiator_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
-                    .try_into()
-                    .unwrap(),
-                &mut responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES + responder_garbage.len()..],
-                Some(&responder_decoys),
-            )
-            .unwrap();
-
-        // Once the initiator receives the responder's response it can also complete the secrets.
-        // The initiator then needs to send along their recently calculated garbage terminator, decoys, and the version packet.
-        initiator_handshake
-            .complete_materials(
-                responder_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
-                    .try_into()
-                    .unwrap(),
-                &mut initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES + initiator_garbage.len()..],
-                Some(&initiator_decoys),
-            )
-            .unwrap();
-
-        // The initiator verifies the second half of the responders message which
-        // includes the garbage, garbage terminator, decoys, and version packet.
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-        initiator_handshake
-            .authenticate_garbage_and_version(
-                &responder_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
-                &mut packet_buffer,
-            )
-            .unwrap();
-
-        // The responder verifies the second message from the initiator which
-        // includes the garbage, garbage terminator, decoys, and version packet.
-        responder_handshake
-            .authenticate_garbage_and_version(
-                &initiator_buffer[NUM_ELLIGATOR_SWIFT_BYTES..],
-                &mut packet_buffer,
-            )
-            .unwrap();
-
-        let mut alice = initiator_handshake.finalize().unwrap();
-        let mut bob = responder_handshake.finalize().unwrap();
-
-        let message = b"Hello world".to_vec();
-        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
-        let mut encrypted_message_to_alice = vec![0u8; packet_len];
-        bob.outbound()
-            .encrypt(
-                &message,
-                &mut encrypted_message_to_alice,
-                PacketType::Genuine,
-                None,
-            )
-            .unwrap();
-
-        let bob_message_len = alice.inbound().decrypt_packet_len(
-            encrypted_message_to_alice[..NUM_LENGTH_BYTES]
-                .try_into()
-                .unwrap(),
-        );
-        let mut dec = vec![0u8; InboundCipher::decryption_buffer_len(bob_message_len)];
-        alice
-            .inbound()
-            .decrypt(
-                &encrypted_message_to_alice[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + bob_message_len],
-                &mut dec,
-                None,
-            )
-            .unwrap();
-        assert_eq!(message, dec[1..].to_vec()); // Skip header byte
-
-        let message = b"g!".to_vec();
-        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
-        let mut encrypted_message_to_bob = vec![0u8; packet_len];
-        alice
-            .outbound()
-            .encrypt(
-                &message,
-                &mut encrypted_message_to_bob,
-                PacketType::Genuine,
-                None,
-            )
-            .unwrap();
-
-        let alice_message_len = bob.inbound().decrypt_packet_len(
-            encrypted_message_to_bob[..NUM_LENGTH_BYTES]
-                .try_into()
-                .unwrap(),
-        );
-        let mut dec = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
-        bob.inbound()
-            .decrypt(
-                &encrypted_message_to_bob[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + alice_message_len],
-                &mut dec,
-                None,
-            )
-            .unwrap();
-        assert_eq!(message, dec[1..].to_vec()); // Skip header byte
-    }
-
-    #[test]
-    fn test_partial_decodings() {
-        let mut rng = rand::thread_rng();
-
-        let mut init_message = vec![0u8; 64];
-        let mut init_handshake =
-            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut init_message).unwrap();
-
-        let mut resp_message = vec![0u8; 100];
-        let mut resp_handshake =
-            Handshake::new(Network::Bitcoin, Role::Responder, None, &mut resp_message).unwrap();
-
-        resp_handshake
-            .complete_materials(
-                init_message.try_into().unwrap(),
-                &mut resp_message[64..],
-                None,
-            )
-            .unwrap();
-        let mut init_finalize_message = vec![0u8; 36];
-        init_handshake
-            .complete_materials(
-                resp_message[0..64].try_into().unwrap(),
-                &mut init_finalize_message,
-                None,
-            )
-            .unwrap();
-
-        let mut packet_buffer = vec![0u8; NUM_INITIAL_HANDSHAKE_BUFFER_BYTES];
-        init_handshake
-            .authenticate_garbage_and_version(&resp_message[64..], &mut packet_buffer)
-            .unwrap();
-        resp_handshake
-            .authenticate_garbage_and_version(&init_finalize_message, &mut packet_buffer)
-            .unwrap();
-
-        let mut alice = init_handshake.finalize().unwrap();
-        let mut bob = resp_handshake.finalize().unwrap();
-
-        let mut message_to_bob = Vec::new();
-        let message = gen_garbage(420, &mut rng);
-        let packet_len = OutboundCipher::encryption_buffer_len(message.len());
-        let mut enc_packet = vec![0u8; packet_len];
-        alice
-            .outbound()
-            .encrypt(&message, &mut enc_packet, PacketType::Genuine, None)
-            .unwrap();
-        message_to_bob.extend(&enc_packet);
-
-        let alice_message_len = bob
-            .inbound()
-            .decrypt_packet_len(message_to_bob[..3].try_into().unwrap());
-        let mut contents = vec![0u8; InboundCipher::decryption_buffer_len(alice_message_len)];
-        bob.inbound()
-            .decrypt(
-                &message_to_bob[3..3 + alice_message_len],
-                &mut contents,
-                None,
-            )
-            .unwrap();
-        assert_eq!(message, contents[1..].to_vec()); // Skip header byte
     }
 
     // The rest are sourced from [the BIP324 test vectors](https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv).

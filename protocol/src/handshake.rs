@@ -1,3 +1,14 @@
+// SPDX-License-Identifier: CC0-1.0
+
+//! # BIP-324 V2 Transport Protocol Handshake
+//!
+//! 1. **Key Exchange**: Both peers generate and exchange public keys using ElligatorSwift encoding.
+//! 2. **Garbage**: Optional garbage bytes are sent to obscure traffic patterns.
+//! 3. **Decoy Packets**: Optional decoy packets can be sent to further obscure traffic patterns.
+//! 4. **Version Authentication**: Version packets are exchanged to negotiate the protocol version for the channel.
+//! 5. **Session Establishment**: The secure communication channel is ready for message exchange.
+//! ```
+
 use bitcoin::{
     key::Secp256k1,
     secp256k1::{
@@ -10,13 +21,9 @@ use rand::Rng;
 
 use crate::{
     CipherSession, Error, OutboundCipher, PacketType, Role, SessionKeyMaterial,
-    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES, VERSION_CONTENT,
+    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, VERSION_CONTENT,
 };
 
-/// Initial buffer for decoy and version packets in the handshake.
-/// The buffer may have to be expanded if a party is sending large
-/// decoy packets.
-pub const NUM_INITIAL_HANDSHAKE_BUFFER_BYTES: usize = 4096;
 // Maximum number of garbage bytes before the terminator.
 const MAX_NUM_GARBAGE_BYTES: usize = 4095;
 
@@ -27,94 +34,102 @@ pub struct EcdhPoint {
     elligator_swift: ElligatorSwift,
 }
 
+/// **Initial state** of the handshake state machine which holds local secret materials.
+pub struct Initialized {
+    point: EcdhPoint,
+}
+
+/// **Second state** after sending the local public key.
+pub struct SentKey<'a> {
+    point: EcdhPoint,
+    local_garbage: Option<&'a [u8]>,
+}
+
+/// **Third state** after receiving the remote's public key and
+/// generating the shared secret materials for the session.
+pub struct ReceivedKey<'a> {
+    session_keys: SessionKeyMaterial,
+    local_garbage: Option<&'a [u8]>,
+}
+
+/// **Fourth state** after sending the decoy and version packets.
+pub struct SentVersion {
+    cipher: CipherSession,
+    remote_garbage_terminator: [u8; NUM_GARBAGE_TERMINTOR_BYTES],
+}
+
+/// **Fifth state** after receiving the remote's garbage and garbage terminator.
+pub struct ReceivedGarbage<'a> {
+    cipher: CipherSession,
+    remote_garbage: Option<&'a [u8]>,
+}
+
+/// Success variants for reading remote garbage.
+pub enum GarbageResult<'a> {
+    /// Successfully found garbage.
+    FoundGarbage {
+        handshake: Handshake<ReceivedGarbage<'a>>,
+        consumed_bytes: usize,
+    },
+    /// No garbage terminator found, the input buffer needs to be extended.
+    NeedMoreData(Handshake<SentVersion>),
+}
+
+/// Success variants for receiving remote version.
+pub enum VersionResult<'a> {
+    /// Successfully completed handshake.
+    Complete { cipher: CipherSession },
+    /// Packet was a decoy, read the next to see if version.
+    Decoy(Handshake<ReceivedGarbage<'a>>),
+}
+
 /// Handshake state-machine to establish the secret material in the communication channel.
 ///
-/// A handshake is first initialized to create local materials needed to setup communication
-/// channel between an *initiator* and a *responder*. The next step is to call `complete_materials`
-/// no matter if initiator or responder, however the responder should already have the
-/// necessary materials from their peers request. `complete_materials` creates the response
-/// packet to be sent from each peer and `authenticate_garbage_and_version` is then used
-/// to verify the handshake. Finally, the `finalized` method is used to consumer the handshake
-/// and return a cipher session for further communication on the channel.
-pub struct Handshake<'a> {
+/// The handshake progresses through multiple states, enforcing the protocol sequence at compile time.
+///
+/// 1. `Initialized` - Initial state with local secret materials.
+/// 2. `SentKey` - After sending local public key and optional garbage.  
+/// 3. `ReceivedKey` - After receiving remote's public key.
+/// 4. `SentVersion` - After sending local garbage terminator and version packet.
+/// 5. Complete - After receiving and authenticating remote's garbage, garbage terminator, decoy packets, and version packet.
+pub struct Handshake<State> {
     /// Bitcoin network both peers are operating on.
     network: Network,
     /// Local role in the handshake, initiator or responder.
     role: Role,
-    /// Local point for key exchange.
-    point: EcdhPoint,
-    /// Optional garbage bytes to send along in handshake.
-    garbage: Option<&'a [u8]>,
-    /// Peers expected garbage terminator.
-    remote_garbage_terminator: Option<[u8; NUM_GARBAGE_TERMINTOR_BYTES]>,
-    /// Cipher session output.
-    cipher_session: Option<CipherSession>,
-    /// Decrypted length for next packet. Store state between authentication attempts to avoid resetting ciphers.
-    current_packet_length_bytes: Option<usize>,
-    /// Processesed buffer index. Store state between authentication attempts to avoid resetting ciphers.
-    current_buffer_index: usize,
+    /// State-specific data.
+    state: State,
 }
 
-impl<'a> Handshake<'a> {
-    /// Initialize a V2 transport handshake with a peer.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - The bitcoin network which both peers operate on.
-    /// * `garbage` - Optional garbage to send in handshake.
-    /// * `buffer` - Packet buffer to send to peer which will include initial materials for handshake + garbage.
-    ///
-    /// # Returns
-    ///
-    /// An initialized handshake which must be finalized.
-    ///
-    /// # Errors
-    ///
-    /// Fails if their was an error generating the keypair.
-    #[cfg(feature = "std")]
-    pub fn new(
-        network: Network,
-        role: Role,
-        garbage: Option<&'a [u8]>,
-        buffer: &mut [u8],
-    ) -> Result<Self, Error> {
-        let mut rng = rand::thread_rng();
-        let curve = Secp256k1::signing_only();
-        Self::new_with_rng(network, role, garbage, buffer, &mut rng, &curve)
+// Methods available in all states.
+impl<State> Handshake<State> {
+    /// Get the network this handshake is operating on.
+    pub fn network(&self) -> Network {
+        self.network
     }
 
-    /// Initialize a V2 transport handshake with a peer.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - The bitcoin network which both peers operate on.
-    /// * `garbage` - Optional garbage to send in handshake.    
-    /// * `buffer` - Packet buffer to send to peer which will include initial materials for handshake + garbage.
-    /// * `rng` - Supplied Random Number Generator.
-    /// * `curve` - Supplied secp256k1 context.
-    ///
-    /// # Returns
-    ///
-    /// An initialized handshake which must be finalized.
-    ///
-    /// # Errors
-    ///
-    /// Fails if their was an error generating the keypair.
+    /// Get the local role in the handshake.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+}
+
+impl Handshake<Initialized> {
+    /// Initialize a V2 transport handshake with a remote peer.
+    #[cfg(feature = "std")]
+    pub fn new(network: Network, role: Role) -> Result<Self, Error> {
+        let mut rng = rand::thread_rng();
+        let curve = Secp256k1::signing_only();
+        Self::new_with_rng(network, role, &mut rng, &curve)
+    }
+
+    /// Initialize a V2 transport handshake with remote peer using supplied RNG and secp context.
     pub fn new_with_rng<C: Signing>(
         network: Network,
         role: Role,
-        garbage: Option<&'a [u8]>,
-        buffer: &mut [u8],
         rng: &mut impl Rng,
         curve: &Secp256k1<C>,
     ) -> Result<Self, Error> {
-        if garbage
-            .as_ref()
-            .map_or(false, |g| g.len() > MAX_NUM_GARBAGE_BYTES)
-        {
-            return Err(Error::TooMuchGarbage);
-        };
-
         let mut secret_key_buffer = [0u8; 32];
         rng.fill(&mut secret_key_buffer[..]);
         let sk = SecretKey::from_slice(&secret_key_buffer)?;
@@ -126,54 +141,104 @@ impl<'a> Handshake<'a> {
             elligator_swift: es,
         };
 
-        // Bounds check on the output buffer.
-        let required_bytes = garbage.map_or(NUM_ELLIGATOR_SWIFT_BYTES, |g| {
-            NUM_ELLIGATOR_SWIFT_BYTES + g.len()
-        });
-        if buffer.len() < required_bytes {
-            return Err(Error::BufferTooSmall { required_bytes });
-        };
-
-        buffer[0..64].copy_from_slice(&point.elligator_swift.to_array());
-        if let Some(garbage) = garbage {
-            buffer[64..64 + garbage.len()].copy_from_slice(garbage);
-        }
-
         Ok(Handshake {
             network,
             role,
-            point,
-            garbage,
-            remote_garbage_terminator: None,
-            cipher_session: None,
-            current_packet_length_bytes: None,
-            current_buffer_index: 0,
+            state: Initialized { point },
         })
     }
 
-    /// Complete the secret material handshake and send the version packet to peer.
+    /// Calculate how many bytes send_key() will write to buffer.
+    pub fn send_key_len(garbage: Option<&[u8]>) -> usize {
+        NUM_ELLIGATOR_SWIFT_BYTES + garbage.map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// Send local public key and optional garbage to initiate the handshake.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
-    /// * `their_elliswift` - The key material of the remote peer.
-    /// * `response_buffer` - Buffer to write response for remote peer which includes the garbage terminator and version packet.
-    /// * `decoys` - Contents for decoy packets sent before version packet.
+    /// * `garbage` - Optional garbage bytes to append after the public key. Limited to 4095 bytes.
+    /// * `output_buffer` - Buffer to write the key and garbage. Must have sufficient capacity
+    ///   as calculated by `send_key_len()`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<SentKey>)` - Ready to receive remote peer's key material.
     ///
     /// # Errors
     ///
-    /// * `V1Protocol` - The remote is communicating on the V1 protocol instead of V2. Caller can fallback
-    ///   to V1 if they want.
-    pub fn complete_materials(
-        &mut self,
-        their_elliswift: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
-        response_buffer: &mut [u8],
-        decoys: Option<&[&[u8]]>,
-    ) -> Result<(), Error> {
-        // Short circuit if the remote is sending the V1 protocol network bytes.
-        // Gives the caller an opportunity to fallback to V1 if they choose.
+    /// * `TooMuchGarbage` - Garbage exceeds 4095 byte limit.
+    /// * `BufferTooSmall` - Output buffer insufficient for key + garbage.
+    pub fn send_key<'a>(
+        self,
+        garbage: Option<&'a [u8]>,
+        output_buffer: &mut [u8],
+    ) -> Result<Handshake<SentKey<'a>>, Error> {
+        // Validate garbage length
+        if let Some(g) = garbage {
+            if g.len() > MAX_NUM_GARBAGE_BYTES {
+                return Err(Error::TooMuchGarbage);
+            }
+        }
+
+        let required_len = Self::send_key_len(garbage);
+        if output_buffer.len() < required_len {
+            return Err(Error::BufferTooSmall {
+                required_bytes: required_len,
+            });
+        }
+
+        // Write local ellswift public key.
+        output_buffer[..NUM_ELLIGATOR_SWIFT_BYTES]
+            .copy_from_slice(&self.state.point.elligator_swift.to_array());
+
+        // Write garbage if provided.
+        if let Some(g) = garbage {
+            output_buffer[NUM_ELLIGATOR_SWIFT_BYTES..NUM_ELLIGATOR_SWIFT_BYTES + g.len()]
+                .copy_from_slice(g);
+        }
+
+        Ok(Handshake {
+            network: self.network,
+            role: self.role,
+            state: SentKey {
+                point: self.state.point,
+                local_garbage: garbage,
+            },
+        })
+    }
+}
+
+impl<'a> Handshake<SentKey<'a>> {
+    /// Process the remote peer's public key and derive shared session secrets.
+    ///
+    /// This is the **second state transition** in the handshake process, moving from
+    /// `SentKey` to `ReceivedKey` state. The method performs ECDH key exchange using
+    /// the received remote public key and generates all cryptographic material needed
+    /// for the secure session.
+    ///
+    /// # Parameters
+    ///
+    /// * `their_key` - The remote peer's 64-byte ElligatorSwift encoded public key.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<ReceivedKey>)` - Ready to send version packet with derived session keys.
+    ///
+    /// # Errors
+    ///
+    /// * `V1Protocol` - Remote peer is using the legacy V1 protocol.
+    /// * `SecretGeneration` - Failed to derive session keys from ECDH.
+    pub fn receive_key(
+        self,
+        their_key: [u8; NUM_ELLIGATOR_SWIFT_BYTES],
+    ) -> Result<Handshake<ReceivedKey<'a>>, Error> {
+        let their_ellswift = ElligatorSwift::from_array(their_key);
+
+        // Check for V1 protocol magic bytes
         if self.network.magic()
             == bitcoin::p2p::Magic::from_bytes(
-                their_elliswift[..4]
+                their_key[..4]
                     .try_into()
                     .expect("64 byte array to have 4 byte prefix"),
             )
@@ -181,382 +246,657 @@ impl<'a> Handshake<'a> {
             return Err(Error::V1Protocol);
         }
 
-        let theirs = ElligatorSwift::from_array(their_elliswift);
+        // Compute session keys using ECDH
+        let (initiator_ellswift, responder_ellswift, secret, party) = match self.role {
+            Role::Initiator => (
+                self.state.point.elligator_swift,
+                their_ellswift,
+                self.state.point.secret_key,
+                ElligatorSwiftParty::A,
+            ),
+            Role::Responder => (
+                their_ellswift,
+                self.state.point.elligator_swift,
+                self.state.point.secret_key,
+                ElligatorSwiftParty::B,
+            ),
+        };
 
-        // Check if the buffer is large enough for the garbage terminator.
-        if response_buffer.len() < NUM_GARBAGE_TERMINTOR_BYTES {
+        let session_keys = SessionKeyMaterial::from_ecdh(
+            initiator_ellswift,
+            responder_ellswift,
+            secret,
+            party,
+            self.network,
+        )?;
+
+        Ok(Handshake {
+            network: self.network,
+            role: self.role,
+            state: ReceivedKey {
+                session_keys,
+                local_garbage: self.state.local_garbage,
+            },
+        })
+    }
+}
+
+impl<'a> Handshake<ReceivedKey<'a>> {
+    /// Calculate how many bytes send_version() will write to buffer.
+    pub fn send_version_len(decoys: Option<&[&[u8]]>) -> usize {
+        let mut len = NUM_GARBAGE_TERMINTOR_BYTES
+            + OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
+
+        // Add decoy packets length.
+        if let Some(decoys) = decoys {
+            for decoy in decoys {
+                len += OutboundCipher::encryption_buffer_len(decoy.len());
+            }
+        }
+
+        len
+    }
+
+    /// Send garbage terminator, optional decoy packets, and version packet.
+    ///
+    /// This is the **third state transition** in the handshake process, moving from
+    /// `ReceivedKey` to `SentVersion` state. The method initiates encrypted communication
+    /// by sending the local garbage terminator followed by encrypted packets.
+    ///
+    /// # Parameters
+    ///
+    /// * `output_buffer` - Buffer to write terminator and encrypted packets. Must have
+    ///   sufficient capacity as calculated by `send_version_len()`.
+    /// * `decoys` - Optional array of decoy packet contents to send before version packet
+    ///   to help hide the shape of traffic.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Handshake<SentVersion>)` - Ready to receive and authenticate remote peer's version.
+    ///
+    /// # Errors
+    ///
+    /// * `BufferTooSmall` - Output buffer insufficient for terminator + packets.
+    /// * `Decryption` - Cipher operation failed.
+    pub fn send_version(
+        self,
+        output_buffer: &mut [u8],
+        decoys: Option<&[&[u8]]>,
+    ) -> Result<Handshake<SentVersion>, Error> {
+        let required_len = Self::send_version_len(decoys);
+        if output_buffer.len() < required_len {
             return Err(Error::BufferTooSmall {
-                required_bytes: NUM_GARBAGE_TERMINTOR_BYTES,
+                required_bytes: required_len,
             });
         }
 
-        // Line up appropriate materials based on role and some
-        // garbage terminator haggling.
-        let materials = match self.role {
-            Role::Initiator => {
-                let materials = SessionKeyMaterial::from_ecdh(
-                    self.point.elligator_swift,
-                    theirs,
-                    self.point.secret_key,
-                    ElligatorSwiftParty::A,
-                    self.network,
-                )?;
-                response_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
-                    .copy_from_slice(&materials.initiator_garbage_terminator);
-                self.remote_garbage_terminator = Some(materials.responder_garbage_terminator);
+        let mut cipher = CipherSession::new(self.state.session_keys.clone(), self.role);
 
-                materials
+        // Write garbage terminator and determine remote terminator.
+        let remote_garbage_terminator = match self.role {
+            Role::Initiator => {
+                output_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
+                    .copy_from_slice(&self.state.session_keys.initiator_garbage_terminator);
+                self.state.session_keys.responder_garbage_terminator
             }
             Role::Responder => {
-                let materials = SessionKeyMaterial::from_ecdh(
-                    theirs,
-                    self.point.elligator_swift,
-                    self.point.secret_key,
-                    ElligatorSwiftParty::B,
-                    self.network,
-                )?;
-                response_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
-                    .copy_from_slice(&materials.responder_garbage_terminator);
-                self.remote_garbage_terminator = Some(materials.initiator_garbage_terminator);
-
-                materials
+                output_buffer[..NUM_GARBAGE_TERMINTOR_BYTES]
+                    .copy_from_slice(&self.state.session_keys.responder_garbage_terminator);
+                self.state.session_keys.initiator_garbage_terminator
             }
         };
 
-        let mut cipher_session = CipherSession::new(materials, self.role);
-        let mut start_index = NUM_GARBAGE_TERMINTOR_BYTES;
+        let mut bytes_written = NUM_GARBAGE_TERMINTOR_BYTES;
+        // Local garbage is authenticated in first packet no
+        // matter if it is a decoy or genuine.
+        let mut aad = self.state.local_garbage;
 
-        // Write any decoy packets and then the version packet.
-        // The first packet, no matter if decoy or genuinie version packet, needs
-        // to authenticate the garbage previously sent.
         if let Some(decoys) = decoys {
-            for (i, decoy) in decoys.iter().enumerate() {
-                let end_index = start_index + OutboundCipher::encryption_buffer_len(decoy.len());
-                cipher_session.outbound().encrypt(
+            for decoy in decoys {
+                let packet_len = OutboundCipher::encryption_buffer_len(decoy.len());
+                cipher.outbound().encrypt(
                     decoy,
-                    &mut response_buffer[start_index..end_index],
+                    &mut output_buffer[bytes_written..bytes_written + packet_len],
                     PacketType::Decoy,
-                    if i == 0 { self.garbage } else { None },
+                    aad,
                 )?;
-
-                start_index = end_index;
+                aad = None;
+                bytes_written += packet_len;
             }
         }
 
-        cipher_session.outbound().encrypt(
+        let version_packet_len = OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len());
+        cipher.outbound().encrypt(
             &VERSION_CONTENT,
-            &mut response_buffer[start_index
-                ..start_index + OutboundCipher::encryption_buffer_len(VERSION_CONTENT.len())],
+            &mut output_buffer[bytes_written..bytes_written + version_packet_len],
             PacketType::Genuine,
-            if decoys.is_none() { self.garbage } else { None },
+            aad,
         )?;
 
-        self.cipher_session = Some(cipher_session);
-
-        Ok(())
+        Ok(Handshake {
+            network: self.network,
+            role: self.role,
+            state: SentVersion {
+                cipher,
+                remote_garbage_terminator,
+            },
+        })
     }
+}
 
-    /// Authenticate the channel.
+impl Handshake<SentVersion> {
+    /// Process remote peer's garbage bytes and locate the garbage terminator.
     ///
-    /// Designed to be called multiple times until succesful in order to flush
-    /// garbage and decoy packets from channel. If a `BufferTooSmall ` is
-    /// returned, the buffer should be extended until `BufferTooSmall ` is
-    /// not returned. All other errors are fatal for the handshake and it should
-    /// be completely restarted.
+    /// This is a critical step in the handshake process, transitioning from
+    /// `SentVersion` to `ReceivedGarbage` state. The method searches for the remote peer's
+    /// garbage terminator within the input buffer and separates garbage bytes from the
+    /// subsequent encrypted packet data.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
-    /// * `buffer` - Should contain all garbage, the garbage terminator, any decoy packets, and finally the version packet received from peer.
-    /// * `packet_buffer` - Required memory allocation for decrypting decoy and version packets.
-    ///
-    /// # Error    
-    ///
-    /// * `CiphertextTooSmall` - The buffer did not contain all required information and should be extended (e.g. read more off a socket) and authentication re-tried.
-    /// * `BufferTooSmall` - The supplied packet_buffer is not large enough for decrypting the decoy and version packets.
-    /// * `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
-    /// * `MaxGarbageLength` - Buffer did not contain the garbage terminator, should not be retried.
-    pub fn authenticate_garbage_and_version(
-        &mut self,
-        buffer: &[u8],
-        packet_buffer: &mut [u8],
-    ) -> Result<(), Error> {
-        // Find the end of the garbage.
-        let (garbage, ciphertext) = self.split_garbage(buffer)?;
-
-        // Flag to track if the version packet has been received to signal the end of the handshake.
-        let mut found_version_packet = false;
-
-        // The first packet, even if it is a decoy packet,
-        // is used to authenticate the received garbage through
-        // the AAD.
-        if self.current_buffer_index == 0 {
-            found_version_packet = self.decrypt_packet(ciphertext, packet_buffer, Some(garbage))?;
-        }
-
-        // If the first packet is a decoy, or if this is a follow up
-        // authentication attempt, the decoys need to be flushed and
-        // the version packet found.
-        //
-        // The version packet is essentially ignored in the current
-        // version of the protocol, but it does move the cipher
-        // states forward. It could be extended in the future.
-        while !found_version_packet {
-            found_version_packet = self.decrypt_packet(ciphertext, packet_buffer, None)?;
-        }
-
-        Ok(())
-    }
-
-    /// Decrypt the next packet in the buffer while
-    /// book keeping relevant lengths and indexes. This allows
-    /// the buffer to be re-processed without throwing off
-    /// the state of the ciphers.
+    /// * `input_buffer` - Buffer containing remote peer's garbage bytes followed by encrypted
+    ///   packet data. The garbage terminator marks the boundary between these sections.
     ///
     /// # Returns
     ///
-    /// True if the decrypted packet is the version packet.
-    fn decrypt_packet(
-        &mut self,
-        ciphertext: &[u8],
-        packet_buffer: &mut [u8],
-        garbage: Option<&[u8]>,
-    ) -> Result<bool, Error> {
-        let cipher_session = self
-            .cipher_session
-            .as_mut()
-            .ok_or(Error::HandshakeOutOfOrder)?;
+    /// * `Ok(GarbageResult::FoundGarbage)` - Successfully located garbage terminator.
+    ///   Contains the next handshake state and number of bytes consumed from input buffer.
+    /// * `Ok(GarbageResult::NeedMoreData)` - Garbage terminator not found in current buffer.
+    ///   More data needed to locate the terminator boundary.
+    ///
+    /// # Errors
+    ///
+    /// * `NoGarbageTerminator` - Input exceeds maximum garbage size without finding terminator.
+    ///   Indicates protocol violation or potential attack.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bip324::{Handshake, GarbageResult, SentVersion};
+    /// # use bip324::{Role, Network};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # // ... complete handshake to SentVersion state ...
+    /// # let handshake: Handshake<SentVersion> = todo!();
+    ///
+    /// let mut network_buffer = Vec::new();
+    ///
+    /// loop {
+    ///     // Read more network data...
+    ///     // network_buffer.extend_from_slice(&new_data);
+    ///     
+    ///     match handshake.receive_garbage(&network_buffer)? {
+    ///         GarbageResult::FoundGarbage { handshake: next_state, consumed_bytes } => {
+    ///             // Success! Process remaining data for version packets
+    ///             let remaining_data = &network_buffer[consumed_bytes..];
+    ///             // Continue with next_state.receive_version()...
+    ///             break;
+    ///         }
+    ///         GarbageResult::NeedMoreData(handshake) => {
+    ///             // Continue accumulating network data
+    ///             continue;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn receive_garbage<'a>(self, input_buffer: &'a [u8]) -> Result<GarbageResult<'a>, Error> {
+        match self.split_garbage(input_buffer) {
+            Ok((garbage, _ciphertext)) => {
+                let consumed_bytes = garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES;
+                let handshake = Handshake {
+                    network: self.network,
+                    role: self.role,
+                    state: ReceivedGarbage {
+                        cipher: self.state.cipher,
+                        remote_garbage: if garbage.is_empty() {
+                            None
+                        } else {
+                            Some(garbage)
+                        },
+                    },
+                };
 
-        if self.current_packet_length_bytes.is_none() {
-            // Bounds check on the input buffer.
-            if ciphertext.len() < self.current_buffer_index + NUM_LENGTH_BYTES {
-                return Err(Error::CiphertextTooSmall);
+                Ok(GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                })
             }
-            let packet_length = cipher_session.inbound().decrypt_packet_len(
-                ciphertext[self.current_buffer_index..self.current_buffer_index + NUM_LENGTH_BYTES]
-                    .try_into()
-                    .expect("Buffer slice must be exactly 3 bytes long"),
-            );
-            // Hang on to decrypted length incase follow up steps fail
-            // and another authentication attempt is required. Avoids
-            // throwing off the cipher state.
-            self.current_packet_length_bytes = Some(packet_length);
+            Err(Error::CiphertextTooSmall) => Ok(GarbageResult::NeedMoreData(self)),
+            Err(e) => Err(e),
         }
-
-        let packet_length = self
-            .current_packet_length_bytes
-            .ok_or(Error::HandshakeOutOfOrder)?;
-
-        // Bounds check on input buffer.
-        if ciphertext.len() < self.current_buffer_index + NUM_LENGTH_BYTES + packet_length {
-            return Err(Error::CiphertextTooSmall);
-        }
-        let packet_type = cipher_session.inbound().decrypt(
-            &ciphertext[self.current_buffer_index + NUM_LENGTH_BYTES
-                ..self.current_buffer_index + NUM_LENGTH_BYTES + packet_length],
-            packet_buffer,
-            garbage,
-        )?;
-
-        // Mark current decryption point in the buffer.
-        self.current_buffer_index = self.current_buffer_index + NUM_LENGTH_BYTES + packet_length;
-        self.current_packet_length_bytes = None;
-
-        Ok(matches!(packet_type, PacketType::Genuine))
     }
 
-    /// Complete the handshake and return the cipher session for further communication.
-    ///
-    /// # Error    
-    ///
-    /// * `HandshakeOutOfOrder` - The handshake sequence is in a bad state and should be restarted.
-    pub fn finalize(self) -> Result<CipherSession, Error> {
-        let cipher_session = self.cipher_session.ok_or(Error::HandshakeOutOfOrder)?;
-        Ok(cipher_session)
-    }
-
-    /// Split off garbage in the given buffer on the remote garbage terminator.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the garbage and the remaining ciphertext not including the terminator.
-    ///
-    /// # Error
-    ///
-    /// * `CiphertextTooSmall` - Buffer did not contain a garbage terminator.
-    /// * `MaxGarbageLength` - Buffer did not contain the garbage terminator and contains too much garbage, should not be retried.
+    /// Split buffer on garbage terminator.
     fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
-        let garbage_term = self
-            .remote_garbage_terminator
-            .ok_or(Error::HandshakeOutOfOrder)?;
+        let terminator = &self.state.remote_garbage_terminator;
+
         if let Some(index) = buffer
-            .windows(garbage_term.len())
-            .position(|window| window == garbage_term)
+            .windows(terminator.len())
+            .position(|window| window == terminator)
         {
-            Ok((&buffer[..index], &buffer[(index + garbage_term.len())..]))
-        } else if buffer.len() >= (MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES) {
+            let (garbage, rest) = buffer.split_at(index);
+            let ciphertext = &rest[terminator.len()..];
+            Ok((garbage, ciphertext))
+        } else if buffer.len() >= MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES {
             Err(Error::NoGarbageTerminator)
         } else {
-            // Terminator not found, the buffer needs more information.
             Err(Error::CiphertextTooSmall)
+        }
+    }
+}
+
+impl<'a> Handshake<ReceivedGarbage<'a>> {
+    /// Decrypt the packet length from the encrypted length bytes.
+    pub fn decrypt_packet_len(&mut self, length_bytes: [u8; 3]) -> Result<usize, Error> {
+        Ok(self.state.cipher.inbound().decrypt_packet_len(length_bytes))
+    }
+
+    /// Decrypt and authenticate the next packet to complete the handshake.
+    ///
+    /// This is the **final state transition** in the handshake process, completing the
+    /// BIP-324 protocol by processing the remote peer's version packet. The method performs
+    /// in-place decryption of encrypted packet data and determines whether the handshake
+    /// is complete or if additional decoy packets need processing.
+    ///
+    /// # Unique Characteristics
+    ///
+    /// **Mutable Buffer Requirement**: Unlike other handshake methods, `receive_version()`
+    /// requires a mutable input buffer because it performs in-place decryption operations,
+    /// modifying ciphertext directly to produce plaintext for memory efficiency.
+    ///
+    /// # Parameters
+    ///
+    /// * `input_buffer` - **Mutable** buffer containing encrypted packet data (excluding
+    ///   the 3-byte length prefix). The ciphertext will be overwritten with plaintext
+    ///   during decryption. Buffer size must match the decrypted packet length.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(VersionResult::Complete { cipher })` - Handshake completed successfully.
+    ///   The returned `CipherSession` is ready for secure message exchange.
+    /// * `Ok(VersionResult::Decoy(handshake))` - Packet was a decoy, continue processing
+    ///   with the returned handshake state for the next packet.
+    ///
+    /// # Errors
+    ///
+    /// * `Decryption` - Packet authentication failed or ciphertext is malformed.
+    /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bip324::{Handshake, VersionResult, ReceivedGarbage, NUM_LENGTH_BYTES};
+    /// # use bip324::{Role, Network};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # // ... complete handshake to ReceivedGarbage state ...
+    /// # let mut handshake: Handshake<ReceivedGarbage> = todo!();
+    /// # let encrypted_data: &[u8] = todo!();
+    ///
+    /// let mut remaining_data = encrypted_data;
+    ///
+    /// // Process packets until version packet found
+    /// loop {
+    ///     // Read packet length (first 3 bytes)
+    ///     let packet_len = handshake.decrypt_packet_len(
+    ///         remaining_data[..NUM_LENGTH_BYTES].try_into()?
+    ///     )?;
+    ///     
+    ///     // Extract packet data (excluding length prefix)
+    ///     let mut packet = remaining_data[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+    ///     remaining_data = &remaining_data[NUM_LENGTH_BYTES + packet_len..];
+    ///     
+    ///     // Process the packet
+    ///     match handshake.receive_version(&mut packet)? {
+    ///         VersionResult::Complete { cipher } => {
+    ///             // Handshake complete! Ready for secure messaging
+    ///             break;
+    ///         }
+    ///         VersionResult::Decoy(next_handshake) => {
+    ///             // Decoy packet processed, continue with next packet
+    ///             handshake = next_handshake;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn receive_version(mut self, input_buffer: &mut [u8]) -> Result<VersionResult<'a>, Error> {
+        // Take the garbage on first call to ensure AAD is only used once.
+        let aad = self.state.remote_garbage.take();
+
+        let (packet_type, _) = self
+            .state
+            .cipher
+            .inbound()
+            .decrypt_in_place(input_buffer, aad)?;
+
+        match packet_type {
+            PacketType::Genuine => Ok(VersionResult::Complete {
+                cipher: self.state.cipher,
+            }),
+            PacketType::Decoy => Ok(VersionResult::Decoy(self)),
         }
     }
 }
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use bitcoin::secp256k1::ellswift::{ElligatorSwift, ElligatorSwiftParty};
-    use core::str::FromStr;
-    use hex::prelude::*;
-    use std::{string::ToString, vec};
+    use std::vec;
+
+    use crate::NUM_LENGTH_BYTES;
 
     use super::*;
 
+    // Test that the handshake completes successfully with garbage and decoy packets
+    // from both parties. This is a comprehensive integration test of the full protocol.
     #[test]
-    fn test_initial_message() {
-        let mut message = [0u8; 64];
-        let handshake =
-            Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
-        let message = message.to_lower_hex_string();
-        let es = handshake.point.elligator_swift.to_string();
-        assert!(message.contains(&es))
-    }
+    fn test_handshake() {
+        let initiator_garbage = vec![1u8, 2u8, 3u8];
+        let responder_garbage = vec![4u8, 5u8];
 
-    #[test]
-    fn test_message_response() {
-        let mut message = [0u8; 64];
-        Handshake::new(Network::Bitcoin, Role::Initiator, None, &mut message).unwrap();
+        let init_handshake =
+            Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
 
-        let mut response_message = [0u8; 100];
-        let mut response = Handshake::new(
-            Network::Bitcoin,
-            Role::Responder,
-            None,
-            &mut response_message,
-        )
-        .unwrap();
-
-        response
-            .complete_materials(message, &mut response_message[64..], None)
+        // Send initiator key + garbage.
+        let mut init_buffer =
+            vec![0u8; Handshake::<Initialized>::send_key_len(Some(&initiator_garbage))];
+        let init_handshake = init_handshake
+            .send_key(Some(&initiator_garbage), &mut init_buffer)
             .unwrap();
-    }
 
-    #[test]
-    fn test_shared_secret() {
-        // Test that SessionKeyMaterial::from_ecdh produces expected garbage terminators
-        let alice =
-            SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
+        let resp_handshake =
+            Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+
+        // Send responder key + garbage.
+        let mut resp_buffer =
+            vec![0u8; Handshake::<Initialized>::send_key_len(Some(&responder_garbage))];
+        let resp_handshake = resp_handshake
+            .send_key(Some(&responder_garbage), &mut resp_buffer)
+            .unwrap();
+
+        // Initiator receives responder's key.
+        let init_handshake = init_handshake
+            .receive_key(resp_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
+            .unwrap();
+
+        // Responder receives initiator's key.
+        let resp_handshake = resp_handshake
+            .receive_key(init_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
+            .unwrap();
+
+        // Create decoy packets for both sides.
+        let init_decoy1 = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let init_decoy2 = vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01];
+        let init_decoys = vec![init_decoy1.as_slice(), init_decoy2.as_slice()];
+
+        let resp_decoy1 = vec![0xAB, 0xCD, 0xEF];
+        let resp_decoys = vec![resp_decoy1.as_slice()];
+
+        // Initiator sends decoys and version.
+        let mut init_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(Some(&init_decoys))];
+        let init_handshake = init_handshake
+            .send_version(&mut init_version_buffer, Some(&init_decoys))
+            .unwrap();
+
+        // Responder sends decoys and version.
+        let mut resp_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(Some(&resp_decoys))];
+        let resp_handshake = resp_handshake
+            .send_version(&mut resp_version_buffer, Some(&resp_decoys))
+            .unwrap();
+
+        // Initiator processes responder's response
+        let full_resp_message = [&responder_garbage[..], &resp_version_buffer[..]].concat();
+
+        // First, find the garbage terminator
+        let (mut init_handshake, consumed) =
+            match init_handshake.receive_garbage(&full_resp_message).unwrap() {
+                GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                } => (handshake, consumed_bytes),
+                GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+            };
+
+        // Process the encrypted packets (1 decoy + 1 version)
+        let mut remaining = &full_resp_message[consumed..];
+
+        // First packet is a decoy
+        let packet_len = init_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+        remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+
+        init_handshake = match init_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Decoy(handshake) => handshake,
+            VersionResult::Complete { .. } => panic!("First packet should be decoy"),
+        };
+
+        // Second packet is the version
+        let packet_len = init_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match init_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Second packet should be version"),
+        };
+
+        // Responder processes initiator's response
+        let full_init_message = [&initiator_garbage[..], &init_version_buffer[..]].concat();
+
+        // First, find the garbage terminator
+        let (mut resp_handshake, consumed) =
+            match resp_handshake.receive_garbage(&full_init_message).unwrap() {
+                GarbageResult::FoundGarbage {
+                    handshake,
+                    consumed_bytes,
+                } => (handshake, consumed_bytes),
+                GarbageResult::NeedMoreData(_) => panic!("Should have found garbage terminator"),
+            };
+
+        // Process the encrypted packets (2 decoys + 1 version)
+        let mut remaining = &full_init_message[consumed..];
+
+        // First two packets are decoys
+        for i in 0..2 {
+            let packet_len = resp_handshake
+                .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
-        let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
-        let session_keys = SessionKeyMaterial::from_ecdh(
-            elliswift_alice,
-            elliswift_bob,
-            alice,
-            ElligatorSwiftParty::A,
-            Network::Bitcoin,
-        )
-        .unwrap();
-        // Just verify the garbage terminators which are the only public fields we need
-        assert_eq!(
-            "faef555dfcdb936425d84aba524758f3",
-            session_keys
-                .initiator_garbage_terminator
-                .to_lower_hex_string()
-        );
-        assert_eq!(
-            "02cb8ff24307a6e27de3b4e7ea3fa65b",
-            session_keys
-                .responder_garbage_terminator
-                .to_lower_hex_string()
-        );
+            let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+            remaining = &remaining[NUM_LENGTH_BYTES + packet_len..];
+
+            resp_handshake = match resp_handshake.receive_version(&mut packet).unwrap() {
+                VersionResult::Decoy(handshake) => handshake,
+                VersionResult::Complete { .. } => panic!("Packet {} should be decoy", i),
+            };
+        }
+
+        // Third packet is the version
+        let packet_len = resp_handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match resp_handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Third packet should be version"),
+        };
     }
 
+    // Test that send_key properly validates garbage length limits (max 4095 bytes)
+    // and buffer size requirements.
     #[test]
-    fn test_handshake_garbage_length_check() {
-        let mut rng = rand::thread_rng();
-        let curve = Secp256k1::new();
-        let mut handshake_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES + MAX_NUM_GARBAGE_BYTES];
-
-        // Test with valid garbage length.
+    fn test_handshake_send_key() {
+        // Test with valid garbage length
         let valid_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES];
-        let result = Handshake::new_with_rng(
-            Network::Bitcoin,
-            Role::Initiator,
-            Some(&valid_garbage),
-            &mut handshake_buffer,
-            &mut rng,
-            &curve,
-        );
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES + MAX_NUM_GARBAGE_BYTES];
+        let result = handshake.send_key(Some(&valid_garbage), &mut buffer);
         assert!(result.is_ok());
 
-        // Test with garbage length exceeding MAX_NUM_GARBAGE_BYTES.
+        // Test with garbage length exceeding MAX_NUM_GARBAGE_BYTES
         let too_much_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES + 1];
-        let result = Handshake::new_with_rng(
-            Network::Bitcoin,
-            Role::Initiator,
-            Some(&too_much_garbage),
-            &mut handshake_buffer,
-            &mut rng,
-            &curve,
-        );
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let result = handshake.send_key(Some(&too_much_garbage), &mut buffer);
         assert!(matches!(result, Err(Error::TooMuchGarbage)));
 
-        // Test too small of buffer.
+        // Test too small of buffer
         let buffer_size = NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len() - 1;
         let mut too_small_buffer = vec![0u8; buffer_size];
-        let result = Handshake::new_with_rng(
-            Network::Bitcoin,
-            Role::Initiator,
-            Some(&valid_garbage),
-            &mut too_small_buffer,
-            &mut rng,
-            &curve,
-        );
-
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let result = handshake.send_key(Some(&valid_garbage), &mut too_small_buffer);
         assert!(
             matches!(result, Err(Error::BufferTooSmall { required_bytes }) if required_bytes == NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len()),
             "Expected BufferTooSmall with correct size"
         );
 
-        // Test with no garbage.
-        let result = Handshake::new_with_rng(
-            Network::Bitcoin,
-            Role::Initiator,
-            None,
-            &mut handshake_buffer,
-            &mut rng,
-            &curve,
-        );
+        // Test with no garbage
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let result = handshake.send_key(None, &mut buffer);
         assert!(result.is_ok());
     }
 
+    // Test the NeedMoreData scenario where receive_garbage is called with partial data.
+    // The local peer doesn't know how much garbage the remote will send, so just needs
+    // to pull and do some buffer mangament.
     #[test]
-    fn test_handshake_no_garbage_terminator() {
-        let mut handshake_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        let mut rng = rand::thread_rng();
-        let curve = Secp256k1::signing_only();
+    fn test_handshake_receive_garbage_buffer() {
+        let init_handshake =
+            Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let resp_handshake =
+            Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
 
-        let mut handshake = Handshake::new_with_rng(
-            Network::Bitcoin,
-            Role::Initiator,
-            None,
-            &mut handshake_buffer,
-            &mut rng,
-            &curve,
-        )
-        .expect("Handshake creation should succeed");
+        let mut init_buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let init_handshake = init_handshake.send_key(None, &mut init_buffer).unwrap();
 
-        // Skipping material creation and just placing a mock terminator.
-        handshake.remote_garbage_terminator = Some([0xFF; NUM_GARBAGE_TERMINTOR_BYTES]);
+        let mut resp_buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let resp_handshake = resp_handshake.send_key(None, &mut resp_buffer).unwrap();
 
-        // Test with a buffer that is too long.
+        let init_handshake = init_handshake
+            .receive_key(resp_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
+            .unwrap();
+        let resp_handshake = resp_handshake
+            .receive_key(init_buffer[..NUM_ELLIGATOR_SWIFT_BYTES].try_into().unwrap())
+            .unwrap();
+
+        let mut init_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(None)];
+        let _init_handshake = init_handshake
+            .send_version(&mut init_version_buffer, None)
+            .unwrap();
+
+        let mut resp_version_buffer =
+            vec![0u8; Handshake::<ReceivedKey<'_>>::send_version_len(None)];
+        let resp_handshake = resp_handshake
+            .send_version(&mut resp_version_buffer, None)
+            .unwrap();
+
+        // Test streaming scenario with receive_garbage
+        let partial_data_1 = &init_version_buffer[..1];
+        let returned_handshake = match resp_handshake.receive_garbage(partial_data_1).unwrap() {
+            GarbageResult::NeedMoreData(handshake) => handshake,
+            GarbageResult::FoundGarbage { .. } => {
+                panic!("Should have needed more data with 1 byte")
+            }
+        };
+
+        // Feed a bit more data - still probably not enough.
+        let partial_data_2 = &init_version_buffer[..5];
+        let returned_handshake = match returned_handshake.receive_garbage(partial_data_2).unwrap() {
+            GarbageResult::NeedMoreData(handshake) => handshake,
+            GarbageResult::FoundGarbage { .. } => {
+                panic!("Should have needed more data with 5 bytes")
+            }
+        };
+
+        // Now provide enough data to find the garbage terminator.
+        // Since there's no garbage, the terminator should be at the beginning.
+        let (mut handshake, consumed) = match returned_handshake
+            .receive_garbage(&init_version_buffer)
+            .unwrap()
+        {
+            GarbageResult::FoundGarbage {
+                handshake,
+                consumed_bytes,
+            } => (handshake, consumed_bytes),
+            GarbageResult::NeedMoreData(_) => {
+                panic!("Should have found garbage terminator with full data")
+            }
+        };
+
+        // Process the version packet
+        let remaining = &init_version_buffer[consumed..];
+        let packet_len = handshake
+            .decrypt_packet_len(remaining[..NUM_LENGTH_BYTES].try_into().unwrap())
+            .unwrap();
+        let mut packet = remaining[NUM_LENGTH_BYTES..NUM_LENGTH_BYTES + packet_len].to_vec();
+
+        match handshake.receive_version(&mut packet).unwrap() {
+            VersionResult::Complete { .. } => {} // Success!
+            VersionResult::Decoy(_) => panic!("Should be version packet"),
+        };
+    }
+
+    // Test split_garbage error conditions.
+    //
+    // 1. NoGarbageTerminator - when buffer exceeds max size without finding terminator
+    // 2. CiphertextTooSmall - when buffer is too short to possibly contain terminator
+    #[test]
+    fn test_handshake_split_garbage() {
+        // Create a handshake and bring it to the SentVersion state to test split_garbage
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let handshake = handshake.send_key(None, &mut buffer).unwrap();
+
+        // Create a fake peer key to receive
+        let fake_peer_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let handshake = handshake.receive_key(fake_peer_key).unwrap();
+
+        // Send version to get to SentVersion state
+        let mut version_buffer = vec![0u8; 1024];
+        let handshake = handshake.send_version(&mut version_buffer, None).unwrap();
+
+        // Test with a buffer that is too long (should fail to find terminator)
         let test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
         let result = handshake.split_garbage(&test_buffer);
         assert!(matches!(result, Err(Error::NoGarbageTerminator)));
 
-        // Test with a buffer that's just short of the required length.
+        // Test with a buffer that's just short of the required length
         let short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
         let result = handshake.split_garbage(&short_buffer);
         assert!(matches!(result, Err(Error::CiphertextTooSmall)));
+    }
+
+    // Test that receive_key detects V1 protocol when peer's key starts with network magic.
+    #[test]
+    fn test_v1_protocol_detection() {
+        // Test that receive_key properly detects V1 protocol magic bytes
+        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        let handshake = handshake.send_key(None, &mut buffer).unwrap();
+
+        // Create a key that starts with Bitcoin mainnet magic bytes
+        let mut v1_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        v1_key[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+
+        let result = handshake.receive_key(v1_key);
+        assert!(matches!(result, Err(Error::V1Protocol)));
+
+        // Test with different networks
+        let handshake = Handshake::<Initialized>::new(Network::Testnet, Role::Responder).unwrap();
+        let handshake = handshake.send_key(None, &mut buffer).unwrap();
+
+        let mut v1_testnet_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
+        v1_testnet_key[..4].copy_from_slice(&Network::Testnet.magic().to_bytes());
+
+        let result = handshake.receive_key(v1_testnet_key);
+        assert!(matches!(result, Err(Error::V1Protocol)));
     }
 }
