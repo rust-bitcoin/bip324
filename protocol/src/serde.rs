@@ -2,7 +2,7 @@
 
 //! Serialize and deserialize V2 messages over the wire.
 //!
-//! A subset of commands are represented with a single byte in V2 instead of the 12-byte ASCII encoding like V1. Message ID mappings are defined in [BIP324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki#user-content-v2_Bitcoin_P2P_message_structure).
+//! A subset of commands are represented with a single byte in V2 instead of the 12-byte ASCII encoding like V1. Message ID mappings are defined in [BIP-324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki#user-content-v2_Bitcoin_P2P_message_structure).
 
 use core::fmt;
 

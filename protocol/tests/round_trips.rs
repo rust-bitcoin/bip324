@@ -267,7 +267,7 @@ fn regtest_handshake() {
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP324 Client".to_string(),
+        user_agent: "BIP-324 Client".to_string(),
         start_height: 0,
         relay: false,
     };
@@ -313,7 +313,7 @@ fn regtest_handshake_std() {
     let stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
 
     // Initialize high-level protocol with handshake using the new into_bip324 method
-    println!("Starting BIP324 handshake using into_bip324");
+    println!("Starting BIP-324 handshake using into_bip324");
     let mut protocol = stream
         .into_bip324(
             bip324::Network::Regtest,
@@ -339,7 +339,7 @@ fn regtest_handshake_std() {
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP324 Client".to_string(),
+        user_agent: "BIP-324 Client".to_string(),
         start_height: 0,
         relay: false,
     };

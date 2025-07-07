@@ -444,7 +444,7 @@ impl AsyncProtocolWriter {
     }
 }
 
-/// Perform a BIP324 handshake and return ready-to-use session components.
+/// Perform a BIP-324 handshake and return ready-to-use session components.
 ///
 /// This function handles the complete handshake process and returns the
 /// cryptographic ciphers and a session reader prepared for encrypted communication.

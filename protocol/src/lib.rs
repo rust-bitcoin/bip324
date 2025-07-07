@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! BIP324 encrypted transport for exchanging bitcoin P2P *messages*. Much like TLS, a connection begins by exchanging ephemeral
+//! BIP-324 encrypted transport for exchanging bitcoin P2P *messages*. Much like TLS, a connection begins by exchanging ephemeral
 //! elliptic curve public keys and performing a Diffie-Hellman handshake. Thereafter, each participant derives shared session secrets, and may
 //! freely exchange encrypted packets.
 //!
@@ -558,7 +558,7 @@ impl OutboundCipher {
     }
 }
 
-/// Manages cipher state for a BIP324 encrypted connection.
+/// Manages cipher state for a BIP-324 encrypted connection.
 #[derive(Clone)]
 pub struct CipherSession {
     /// A unique identifier for the communication session.
@@ -877,7 +877,7 @@ mod tests {
             .unwrap();
     }
 
-    // The rest are sourced from [the BIP324 test vectors](https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv).
+    // The rest are sourced from [the BIP-324 test vectors](https://github.com/bitcoin/bips/blob/master/bip-0324/packet_encoding_test_vectors.csv).
 
     #[test]
     fn test_vector_1() {

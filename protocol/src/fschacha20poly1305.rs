@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! Wrap ciphers with automatic re-keying in order to provide [forward secrecy](https://eprint.iacr.org/2001/035.pdf) within a session.
-//! Logic is covered by the BIP324 test vectors.
+//! Logic is covered by the BIP-324 test vectors.
 //!
 //! ## Performance Considerations
 //!
@@ -51,7 +51,7 @@ impl std::error::Error for Error {
 /// A wrapper over ChaCha20Poly1305 AEAD stream cipher which handles automatically changing
 /// nonces and re-keying, providing forward secrecy within the session.
 ///
-/// FSChaCha20Poly1305 is used for message packets in BIP324.
+/// FSChaCha20Poly1305 is used for message packets in BIP-324.
 #[derive(Clone)]
 pub struct FSChaCha20Poly1305 {
     key: Key,
@@ -138,7 +138,7 @@ impl FSChaCha20Poly1305 {
 /// A wrapper over ChaCha20 (unauthenticated) stream cipher which handles automatically changing
 /// nonces and re-keying, providing forward secrecy within the session.
 ///
-/// FSChaCha20 is used for lengths in BIP324. Should be noted that the lengths are still
+/// FSChaCha20 is used for lengths in BIP-324. Should be noted that the lengths are still
 /// implicitly authenticated by the message packets.
 #[derive(Clone)]
 pub struct FSChaCha20 {
