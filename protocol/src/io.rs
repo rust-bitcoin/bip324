@@ -20,13 +20,27 @@ use crate::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// A decrypted BIP-324 payload.
+///
+/// # Invariants
+///
+/// The internal data vector must always contain at least one byte (the header byte).
+/// This invariant is maintained by the decrypt functions which validate that
+/// ciphertext contains at least `NUM_TAG_BYTES + NUM_HEADER_BYTES` before
+/// attempting decryption.
 pub struct Payload {
     data: Vec<u8>,
 }
 
 impl Payload {
     /// Create a new payload from complete decrypted data (including header byte).
+    ///
+    /// The data must contain at least one byte (the header). This is guaranteed
+    /// by the decrypt functions, but can be asserted in debug builds.
     pub fn new(data: Vec<u8>) -> Self {
+        debug_assert!(
+            !data.is_empty(),
+            "Payload data must contain at least the header byte"
+        );
         Self { data }
     }
 

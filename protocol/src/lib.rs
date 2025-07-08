@@ -360,7 +360,7 @@ impl InboundCipher {
     ) -> Result<(PacketType, &'a [u8]), Error> {
         let auth = aad.unwrap_or_default();
         // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES {
+        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
             return Err(Error::CiphertextTooSmall);
         }
         let (msg, tag) = ciphertext.split_at_mut(ciphertext.len() - NUM_TAG_BYTES);
@@ -400,7 +400,7 @@ impl InboundCipher {
     ) -> Result<PacketType, Error> {
         let auth = aad.unwrap_or_default();
         // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES {
+        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
             return Err(Error::CiphertextTooSmall);
         }
         let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
@@ -761,6 +761,40 @@ mod tests {
 
         assert_eq!(PacketType::Decoy, packet_type2);
         assert_eq!(message2, plaintext2[1..].to_vec()); // Skip header byte
+    }
+
+    #[test]
+    fn test_decrypt_min_length() {
+        // Test that decrypt properly validates minimum ciphertext length.
+        let alice =
+            SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
+                .unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
+        let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
+        let session_keys = SessionKeyMaterial::from_ecdh(
+            elliswift_alice,
+            elliswift_bob,
+            alice,
+            ElligatorSwiftParty::A,
+            Network::Bitcoin,
+        )
+        .unwrap();
+        let mut alice_cipher = CipherSession::new(session_keys, Role::Initiator);
+
+        // Test with ciphertext that is exactly NUM_TAG_BYTES (should fail).
+        let too_small = vec![0u8; NUM_TAG_BYTES];
+        let mut plaintext_buffer = vec![0u8; 100];
+        let result = alice_cipher
+            .inbound()
+            .decrypt(&too_small, &mut plaintext_buffer, None);
+        assert_eq!(result, Err(Error::CiphertextTooSmall));
+
+        // Test decrypt_in_place with same minimum length checks.
+        let mut too_small = vec![0u8; NUM_TAG_BYTES];
+        let result = alice_cipher
+            .inbound()
+            .decrypt_in_place(&mut too_small, None);
+        assert_eq!(result, Err(Error::CiphertextTooSmall));
     }
 
     #[test]
