@@ -1,21 +1,145 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! BIP-324 encrypted transport for exchanging bitcoin P2P *messages*. Much like TLS, a connection begins by exchanging ephemeral
-//! elliptic curve public keys and performing a Diffie-Hellman handshake. Thereafter, each participant derives shared session secrets, and may
-//! freely exchange encrypted packets.
+//! BIP-324 encrypted transport protocol for Bitcoin P2P communication.
 //!
-//! ## Packets
+//! This crate implements the [BIP-324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
+//! version 2 encrypted transport protocol, which provides encryption and authentication
+//! for bitcoin p2p connections. Like TLS, it begins with a handshake establishing shared
+//! secrets, then encrypts all subsequent communication.
 //!
-//! A *packet* has the following layout:
-//!   * *Length*   - 3-byte encrypted length of the *contents* (note this does not include the header byte).
-//!   * *Header*   - 1-byte for transport layer protocol flags, currently only used to flag decoy packets.
-//!   * *Contents* - Variable length payload.
-//!   * *Tag*      - 16-byte authentication tag.
+//! # Quick Start
 //!
-//! ## Application Messages
+//! For a complete encrypted connection, use the high-level APIs in the [`io`] or [`futures`] modules:
 //!
-//! Under the new V2 specification, P2P messages are encrypted differently than V1.
-//! Read more about the [specification](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
+//! ## Synchronous API (requires `std` feature)
+//!
+//! ```no_run
+//! use bip324::io::Protocol;
+//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use std::net::TcpStream;
+//! use std::io::BufReader;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let stream = TcpStream::connect("127.0.0.1:8333")?;
+//!
+//! // Wrap reader in BufReader for efficiency (protocol makes many small reads)
+//! let reader = BufReader::new(stream.try_clone()?);
+//! let writer = stream;
+//!
+//! let mut protocol = Protocol::new(
+//!     bip324::Network::Bitcoin,
+//!     bip324::Role::Initiator,
+//!     None, None, // no garbage or decoys
+//!     reader,
+//!     writer,
+//! )?;
+//!
+//! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
+//! let serialized = serialize(ping_msg);
+//! protocol.write(&serialized)?;
+//!
+//! let response = protocol.read()?;
+//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Asynchronous API (requires `tokio` feature)
+//!
+//! ```no_run
+//! # #[cfg(feature = "tokio")]
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bip324::futures::Protocol;
+//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use tokio::net::TcpStream;
+//! use tokio::io::BufReader;
+//!
+//! let stream = TcpStream::connect("127.0.0.1:8333").await?;
+//! let (reader, writer) = stream.into_split();
+//!
+//! // Wrap reader in BufReader for efficiency (protocol makes many small reads)
+//! let buffered_reader = BufReader::new(reader);
+//!
+//! let mut protocol = Protocol::new(
+//!     bip324::Network::Bitcoin,
+//!     bip324::Role::Initiator,
+//!     None, None, // no garbage or decoys
+//!     buffered_reader,
+//!     writer,
+//! ).await?;
+//!
+//! let ping_msg = NetworkMessage::Ping(12345); // nonce
+//! let serialized = serialize(ping_msg);
+//! protocol.write(&serialized).await?;
+//!
+//! let response = protocol.read().await?;
+//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tokio"))]
+//! # fn main() {}
+//! ```
+//!
+//! # Message Serialization
+//!
+//! BIP-324 introduces specific changes to how bitcoin P2P messages are serialized for V2 transport.
+//! The [`serde`] module provides these serialization functions.
+//!
+//! ```no_run
+//! # #[cfg(feature = "std")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//!
+//! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
+//! let serialized = serialize(ping_msg);
+//!
+//! let received_bytes = vec![0x12, 0xef, 0xbe, 0xad, 0xde, 0, 0, 0, 0];
+//! let message: NetworkMessage = deserialize(&received_bytes)?;
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "std"))]
+//! # fn main() {}
+//! ```
+//!
+//! # Performance Considerations
+//!
+//! The BIP-324 protocol makes multiple small reads, particularly during the handshake
+//! (reading 64-byte keys, 16-byte terminators) and for each message (3-byte length prefix).
+//! For optimal performance, wrap your reader in a `BufReader`:
+//!
+//! ```no_run
+//! # #[cfg(feature = "std")]
+//! # fn sync_example() -> Result<(), Box<dyn std::error::Error>> {
+//! use std::io::BufReader;
+//! use std::net::TcpStream;
+//!
+//! let stream = TcpStream::connect("127.0.0.1:8333")?;
+//! let buffered_reader = BufReader::new(stream.try_clone()?);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Advanced Usage
+//!
+//! For more control, such as no-std environments, you can use the lower level components.
+//!
+//! - [`Handshake`] - Type-safe handshake state machine.
+//! - [`CipherSession`] - Managed encryption/decryption after handshake.
+//!
+//! # Protocol Details
+//!
+//! After the initial handshake, all data is encrypted in packets.
+//!
+//! | Field | Size | Description |
+//! |-------|------|-------------|
+//! | Length | 3 bytes | Encrypted length of contents |
+//! | Header | 1 byte | Protocol flags including decoy indicator |
+//! | Contents | Variable | The serialized message |
+//! | Tag | 16 bytes | Authentication tag |
+//!
+//! The protocol supports both genuine packets containing application data and decoy
+//! packets with random data for traffic analysis resistance.
 #![no_std]
 
 #[cfg(feature = "std")]

@@ -2,9 +2,13 @@
 
 //! Future-based asynchronous interfaces for establishing and using BIP-324
 //! encrypted connections over AsyncRead/AsyncWrite transports.
-//!
-//! This module provides async implementations using the `tokio` runtime.
 //! It is only available when the `tokio` feature is enabled.
+//!
+//! # Performance Note
+//!
+//! The BIP-324 protocol performs many small reads (3-byte length prefixes,
+//! 16-byte terminators, etc.). For optimal performance, wrap your reader
+//! in a [`tokio::io::BufReader`].
 //!
 //! # Example
 //!
@@ -12,20 +16,30 @@
 //! use bip324::futures::Protocol;
 //! use bip324::{Network, Role};
 //! use tokio::net::TcpStream;
+//! use tokio::io::BufReader;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Connect to a Bitcoin node
 //! let stream = TcpStream::connect("127.0.0.1:8333").await?;
-//! let (reader, writer) = stream.into_split();
 //!
-//! let protocol = Protocol::new(
+//! // Split the stream for reading and writing
+//! let (reader, writer) = stream.into_split();
+//! let reader = BufReader::new(reader);
+//!
+//! // Establish BIP-324 encrypted connection
+//! let mut protocol = Protocol::new(
 //!     Network::Bitcoin,
 //!     Role::Initiator,
-//!     None,
-//!     None,
+//!     None,  // no garbage bytes
+//!     None,  // no decoy packets
 //!     reader,
 //!     writer,
 //! ).await?;
+//!
+//! // Send and receive encrypted messages
+//! let response = protocol.read().await?;
+//! println!("Received {} bytes", response.contents().len());
 //! # Ok(())
 //! # }
 //! ```
@@ -172,6 +186,11 @@ where
     /// New protocol session which completes the initial handshake and returns a handler.
     ///
     /// This function is *not* cancellation safe.
+    ///
+    /// # Performance Note
+    ///
+    /// For optimal performance, wrap your `reader` in a [`tokio::io::BufReader`].
+    /// The protocol makes many small reads during handshake and operation.
     ///
     /// # Arguments
     ///
