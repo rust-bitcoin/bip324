@@ -22,6 +22,8 @@
 extern crate std;
 
 mod fschacha20poly1305;
+#[cfg(feature = "tokio")]
+pub mod futures;
 mod handshake;
 #[cfg(feature = "std")]
 pub mod io;
