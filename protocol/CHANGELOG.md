@@ -1,3 +1,19 @@
+# v0.8.0
+
+Major breaking changes!
+
+* **Handshake API** Introduced compile-time type safety using the typestate pattern. The handshake now uses typed states (`Initialized`, `SentKey`, `ReceivedKey`, `SentVersion`) that prevent out-of-order method calls at compile time.
+* **Crate Feature Flags** Removed the `alloc` feature flag, simplifying to `no_std` (core) and `std` (I/O) features. Removed the `futures` feature flag in favor of a single `tokio` feature for async support, reflecting real-world usage patterns.
+* **I/O Interfaces** Added new synchronous I/O interface (`io::Protocol`) alongside the existing async interface (moved to `futures::Protocol`). Both interfaces take ownership of underlying I/O readers and writers.
+* **Infallible Serialization** The `serialize()` function now returns `Vec<u8>` directly instead of `Result<Vec<u8>, Error>`, eliminating unnecessary error handling for in-memory operations.
+
+## Migration Guide
+
+* Remove error handling from `serialize()` calls.
+* Adapt `AsyncProtocol` code to the new `futures::Protocol` interface which owns the underlying reader and writer.
+* If using the lower level `handshake` interface, update code to use the new typed state machine.
+* If using the lower level `PacketHandler` interface, update to the new `CipherSession` interface.
+
 # v0.7.0
 
 * Loosen tokio version restrictions allowing the consumer to dictate the tokio version best for them. The version could effect the MSRV of the library.
