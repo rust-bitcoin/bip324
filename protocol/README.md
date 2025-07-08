@@ -1,6 +1,6 @@
 # Protocol
 
-A BIP324 library to establish and communicate over an encrypted channel.
+A BIP-324 library to establish and communicate over an encrypted channel.
 
 The library is designed with a bare `no_std` and "Sans I/O" interface to keep it as agnostic as possible to application runtimes, but higher level interfaces are exposed for ease of use.
 

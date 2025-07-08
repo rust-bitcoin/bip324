@@ -267,7 +267,7 @@ fn regtest_handshake() {
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP324 Client".to_string(),
+        user_agent: "BIP-324 Client".to_string(),
         start_height: 0,
         relay: false,
     };
@@ -292,6 +292,69 @@ fn regtest_handshake() {
         .unwrap();
     let message = deserialize(&decrypted_message[1..]).unwrap(); // Skip header byte
     assert_eq!(message.cmd(), "version");
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn regtest_handshake_std() {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use bip324::{
+        io::IntoBip324,
+        serde::{deserialize, serialize, NetworkMessage},
+    };
+    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+
+    let bitcoind = regtest_process(TransportVersion::V2);
+
+    let stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
+
+    // Initialize high-level protocol with handshake using the new into_bip324 method
+    println!("Starting BIP-324 handshake using into_bip324");
+    let mut protocol = stream
+        .into_bip324(
+            bip324::Network::Regtest,
+            bip324::Role::Initiator,
+            None, // no garbage
+            None, // no decoys
+        )
+        .unwrap();
+
+    println!("Handshake completed successfully!");
+
+    // Create version message.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_secs();
+    let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
+    let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
+    let msg = VersionMessage {
+        version: 70015,
+        services: ServiceFlags::NONE,
+        timestamp: now as i64,
+        receiver: from_and_recv.clone(),
+        sender: from_and_recv,
+        nonce: 1,
+        user_agent: "BIP-324 Client".to_string(),
+        start_height: 0,
+        relay: false,
+    };
+
+    let message = serialize(NetworkMessage::Version(msg));
+    println!("Sending version message using Protocol::write()");
+    protocol.write(&message).unwrap();
+
+    println!("Reading version response using Protocol::read()");
+    let payload = protocol.read().unwrap();
+
+    let response_message = deserialize(payload.contents()).unwrap();
+    assert_eq!(response_message.cmd(), "version");
+
+    println!("Successfully exchanged version messages using into_bip324 API!");
 }
 
 #[test]
