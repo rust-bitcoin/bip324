@@ -1,17 +1,16 @@
-# Protocol
+# BIP-324 Protocol
 
 A BIP-324 library to establish and communicate over an encrypted channel.
 
-The library is designed with a bare `no_std` and "Sans I/O" interface to keep it as agnostic as possible to application runtimes, but higher level interfaces are exposed for ease of use.
+The library is designed with a bare `no_std` and *Sans I/O* interface to keep it as agnostic as possible to application runtimes, but higher level interfaces are exposed for ease of use.
 
-The `tokio` feature includes the high-level `AsyncProcotol` type which helps create and manage an encrypted channel. 
-
-The lower-level `CipherSession` and `Handshake` types can be directly used by applications which require more control. The handshake performs the one-and-a-half round trip dance between the peers in order to generate secret materials and verify a channel. A successful handshake results in a cipher session which performs the encrypt and decrypt operations for the lifetime of the channel.
+* **High-level I/O** - `io::Protocol` (sync) and `futures::Protocol` (async) handle the complete encrypted connection lifecycle including handshake, writes, and reads.
+* **Low-level components** - For applications requiring more control, `Handshake` is a type-safe state machine for the handshake protocol and `CipherSession` manages encryption/decryption after the handshake.
 
 ## Feature Flags
 
-* `std` -- Standard library dependencies for I/O, memory allocation, and random number generators.
-* `tokio` -- High level I/O wrappers for asynchronous tokio runtime.
+* `std` - Standard library dependencies for I/O, memory allocation, and random number generators.
+* `tokio` - High level I/O wrappers for the asynchronous tokio runtime.
 
 ## Minimum Supported Rust Version (MSRV)
 

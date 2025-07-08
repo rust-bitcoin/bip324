@@ -1,10 +1,50 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! High-level interfaces for establishing and using BIP-324 encrypted
-//! connections over Read/Write transports.
+//! High-level synchronous interfaces for establishing
+//! BIP-324 encrypted connections over Read/Write IO transports.
+//! For asynchronous support, see the `futures` module.
+//!
+//! # Performance Note
+//!
+//! The BIP-324 protocol performs many small reads (3-byte length prefixes,
+//! 16-byte terminators, etc.). For optimal performance, wrap your reader
+//! in a [`std::io::BufReader`].
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::net::TcpStream;
+//! use std::io::BufReader;
+//! use bip324::io::Protocol;
+//! use bip324::{Network, Role};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Connect to a Bitcoin node
+//! let stream = TcpStream::connect("127.0.0.1:8333")?;
+//!
+//! // Split the stream for reading and writing
+//! let reader = BufReader::new(stream.try_clone()?);
+//! let writer = stream;
+//!
+//! // Establish BIP-324 encrypted connection
+//! let mut protocol = Protocol::new(
+//!     Network::Bitcoin,
+//!     Role::Initiator,
+//!     None,  // no garbage bytes
+//!     None,  // no decoy packets
+//!     reader,
+//!     writer,
+//! )?;
+//!
+//! // Send and receive encrypted messages
+//! let response = protocol.read()?;
+//! println!("Received {} bytes", response.contents().len());
+//! # Ok(())
+//! # }
+//! ```
 
 use core::fmt;
-use std::io::{Chain, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::vec;
 use std::vec::Vec;
 
@@ -15,9 +55,6 @@ use crate::{
     Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
     NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES,
 };
-
-#[cfg(feature = "tokio")]
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// A decrypted BIP-324 payload.
 ///
@@ -52,29 +89,6 @@ impl Payload {
     /// Extract the packet type from the header byte.
     pub fn packet_type(&self) -> PacketType {
         PacketType::from_byte(&self.data[0])
-    }
-}
-
-/// A reader for BIP-324 session data that handles any buffered handshake overflow.
-///
-/// This reader ensures seamless transition from handshake to session data by
-/// first consuming any data that was read during handshake but belongs to the
-/// session stream.
-pub struct SessionReader<R> {
-    inner: Chain<Cursor<Vec<u8>>, R>,
-}
-
-impl<R: Read> SessionReader<R> {
-    fn new(buffer: Vec<u8>, reader: R) -> Self {
-        Self {
-            inner: std::io::Read::chain(Cursor::new(buffer), reader),
-        }
-    }
-}
-
-impl<R: Read> Read for SessionReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read(buf)
     }
 }
 
@@ -127,7 +141,7 @@ impl ProtocolError {
     ///
     /// This is used when the remote peer closes the connection during handshake,
     /// which often indicates they don't support the V2 protocol.
-    fn eof() -> Self {
+    pub fn eof() -> Self {
         ProtocolError::Io(
             std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -166,298 +180,6 @@ impl fmt::Display for ProtocolError {
     }
 }
 
-/// A protocol session with handshake and send/receive packet management.
-#[cfg(feature = "tokio")]
-pub struct AsyncProtocol {
-    reader: AsyncProtocolReader,
-    writer: AsyncProtocolWriter,
-}
-
-#[cfg(feature = "tokio")]
-impl AsyncProtocol {
-    /// New protocol session which completes the initial handshake and returns a handler.
-    ///
-    /// This function is *not* cancellation safe.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - Network which both parties are operating on.
-    /// * `role` - Role in handshake, initiator or responder.
-    /// * `garbage` - Optional garbage bytes to send in handshake.
-    /// * `decoys` - Optional decoy packet contents bytes to send in handshake.
-    /// * `reader` - Asynchronous buffer to read packets sent by peer.
-    /// * `writer` - Asynchronous buffer to write packets to peer.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(AsyncProtocol)`: An initialized protocol handler.
-    ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
-    ///
-    /// # Errors
-    ///
-    /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
-    pub async fn new<'a, R, W>(
-        network: Network,
-        role: Role,
-        garbage: Option<&'a [u8]>,
-        decoys: Option<&'a [&'a [u8]]>,
-        reader: &mut R,
-        writer: &mut W,
-    ) -> Result<Self, ProtocolError>
-    where
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
-    {
-        let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
-
-        // Send local public key and optional garbage.
-        let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage);
-        let mut key_buffer = vec![0u8; key_buffer_len];
-        let handshake = handshake.send_key(garbage, &mut key_buffer)?;
-        writer.write_all(&key_buffer).await?;
-        writer.flush().await?;
-
-        // Read remote's public key.
-        let mut remote_ellswift_buffer = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        reader.read_exact(&mut remote_ellswift_buffer).await?;
-        let handshake = handshake.receive_key(remote_ellswift_buffer)?;
-
-        // Send garbage terminator, decoys, and version.
-        let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys);
-        let mut version_buffer = vec![0u8; version_buffer_len];
-        let handshake = handshake.send_version(&mut version_buffer, decoys)?;
-        writer.write_all(&version_buffer).await?;
-        writer.flush().await?;
-
-        // Receive and process garbage terminator
-        let mut garbage_buffer = vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES];
-        reader.read_exact(&mut garbage_buffer).await?;
-
-        let mut handshake = handshake;
-        let (mut handshake, garbage_bytes) = loop {
-            match handshake.receive_garbage(&garbage_buffer) {
-                Ok(GarbageResult::FoundGarbage {
-                    handshake,
-                    consumed_bytes,
-                }) => {
-                    break (handshake, consumed_bytes);
-                }
-                Ok(GarbageResult::NeedMoreData(h)) => {
-                    handshake = h;
-                    // Use small chunks to avoid reading past garbage, decoys, and version.
-                    let mut temp = vec![0u8; NUM_GARBAGE_TERMINTOR_BYTES];
-                    match reader.read(&mut temp).await {
-                        Ok(0) => return Err(ProtocolError::eof()),
-                        Ok(n) => {
-                            garbage_buffer.extend_from_slice(&temp[..n]);
-                        }
-                        Err(e) => return Err(ProtocolError::from(e)),
-                    }
-                }
-                Err(e) => return Err(ProtocolError::Internal(e)),
-            }
-        };
-
-        // Process remaining bytes and read version packets.
-        let mut version_buffer = garbage_buffer[garbage_bytes..].to_vec();
-        loop {
-            // Decrypt packet length.
-            if version_buffer.len() < NUM_LENGTH_BYTES {
-                let old_len = version_buffer.len();
-                version_buffer.resize(NUM_LENGTH_BYTES, 0);
-                reader.read_exact(&mut version_buffer[old_len..]).await?;
-            }
-            let packet_len = handshake
-                .decrypt_packet_len(version_buffer[..NUM_LENGTH_BYTES].try_into().unwrap())?;
-            version_buffer.drain(..NUM_LENGTH_BYTES);
-
-            // Process packet.
-            if version_buffer.len() < packet_len {
-                let old_len = version_buffer.len();
-                version_buffer.resize(packet_len, 0);
-                reader.read_exact(&mut version_buffer[old_len..]).await?;
-            }
-            match handshake.receive_version(&mut version_buffer) {
-                Ok(VersionResult::Complete { cipher }) => {
-                    let (inbound_cipher, outbound_cipher) = cipher.into_split();
-                    return Ok(Self {
-                        reader: AsyncProtocolReader {
-                            inbound_cipher,
-                            state: DecryptState::init_reading_length(),
-                        },
-                        writer: AsyncProtocolWriter { outbound_cipher },
-                    });
-                }
-                Ok(VersionResult::Decoy(h)) => {
-                    handshake = h;
-                    version_buffer.drain(..packet_len);
-                }
-                Err(e) => return Err(ProtocolError::Internal(e)),
-            }
-        }
-    }
-
-    /// Read reference for packet reading operations.
-    pub fn reader(&mut self) -> &mut AsyncProtocolReader {
-        &mut self.reader
-    }
-
-    /// Write reference for packet writing operations.
-    pub fn writer(&mut self) -> &mut AsyncProtocolWriter {
-        &mut self.writer
-    }
-
-    /// Split the protocol into a separate reader and writer.
-    pub fn into_split(self) -> (AsyncProtocolReader, AsyncProtocolWriter) {
-        (self.reader, self.writer)
-    }
-}
-
-/// State machine of an asynchronous packet read.
-///
-/// This maintains state between await points to ensure cancellation safety.
-#[cfg(feature = "tokio")]
-#[derive(Debug)]
-enum DecryptState {
-    ReadingLength {
-        length_bytes: [u8; NUM_LENGTH_BYTES],
-        bytes_read: usize,
-    },
-    ReadingPayload {
-        packet_bytes: Vec<u8>,
-        bytes_read: usize,
-    },
-}
-
-#[cfg(feature = "tokio")]
-impl DecryptState {
-    /// Transition state to reading the length bytes.
-    fn init_reading_length() -> Self {
-        DecryptState::ReadingLength {
-            length_bytes: [0u8; NUM_LENGTH_BYTES],
-            bytes_read: 0,
-        }
-    }
-
-    /// Transition state to reading payload bytes.
-    fn init_reading_payload(packet_bytes_len: usize) -> Self {
-        DecryptState::ReadingPayload {
-            packet_bytes: vec![0u8; packet_bytes_len],
-            bytes_read: 0,
-        }
-    }
-}
-
-/// Manages an async buffer to automatically decrypt contents of received packets.
-#[cfg(feature = "tokio")]
-pub struct AsyncProtocolReader {
-    inbound_cipher: InboundCipher,
-    state: DecryptState,
-}
-
-#[cfg(feature = "tokio")]
-impl AsyncProtocolReader {
-    /// Decrypt contents of received packet from buffer.
-    ///
-    /// This function is cancellation safe.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer` - Asynchronous I/O buffer to pull bytes from.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(Payload)`: A decrypted payload with packet type.
-    ///   * `Err(ProtocolError)`: An error that occurred during the read or decryption.
-    pub async fn read_and_decrypt<R>(&mut self, buffer: &mut R) -> Result<Payload, ProtocolError>
-    where
-        R: AsyncRead + Unpin + Send,
-    {
-        // Storing state between async reads to make function cancellation safe.
-        loop {
-            match &mut self.state {
-                DecryptState::ReadingLength {
-                    length_bytes,
-                    bytes_read,
-                } => {
-                    while *bytes_read < NUM_LENGTH_BYTES {
-                        *bytes_read += buffer.read(&mut length_bytes[*bytes_read..]).await?;
-                    }
-
-                    let packet_bytes_len = self.inbound_cipher.decrypt_packet_len(*length_bytes);
-                    self.state = DecryptState::init_reading_payload(packet_bytes_len);
-                }
-                DecryptState::ReadingPayload {
-                    packet_bytes,
-                    bytes_read,
-                } => {
-                    while *bytes_read < packet_bytes.len() {
-                        *bytes_read += buffer.read(&mut packet_bytes[*bytes_read..]).await?;
-                    }
-
-                    let plaintext_len = InboundCipher::decryption_buffer_len(packet_bytes.len());
-                    let mut plaintext_buffer = vec![0u8; plaintext_len];
-                    self.inbound_cipher
-                        .decrypt(packet_bytes, &mut plaintext_buffer, None)?;
-                    self.state = DecryptState::init_reading_length();
-                    return Ok(Payload::new(plaintext_buffer));
-                }
-            }
-        }
-    }
-
-    /// Consume the protocol reader in exchange for the underlying inbound cipher.
-    pub fn into_cipher(self) -> InboundCipher {
-        self.inbound_cipher
-    }
-}
-
-/// Manages an async buffer to automatically encrypt and send contents in packets.
-#[cfg(feature = "tokio")]
-pub struct AsyncProtocolWriter {
-    outbound_cipher: OutboundCipher,
-}
-
-#[cfg(feature = "tokio")]
-impl AsyncProtocolWriter {
-    /// Encrypt contents and write packet buffer.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer` - Asynchronous I/O buffer to write bytes to.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok()`: On successful contents encryption and packet send.
-    ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub async fn encrypt_and_write<W>(
-        &mut self,
-        plaintext: &[u8],
-        buffer: &mut W,
-    ) -> Result<(), ProtocolError>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        let packet_len = OutboundCipher::encryption_buffer_len(plaintext.len());
-        let mut packet_buffer = vec![0u8; packet_len];
-
-        self.outbound_cipher
-            .encrypt(plaintext, &mut packet_buffer, PacketType::Genuine, None)?;
-
-        buffer.write_all(&packet_buffer).await?;
-        buffer.flush().await?;
-        Ok(())
-    }
-
-    /// Consume the protocol writer in exchange for the underlying outbound cipher.
-    pub fn into_cipher(self) -> OutboundCipher {
-        self.outbound_cipher
-    }
-}
-
 /// Perform a BIP-324 handshake and return ready-to-use session components.
 ///
 /// This function handles the complete handshake process and returns the
@@ -480,7 +202,7 @@ impl AsyncProtocolWriter {
 /// # Returns
 ///
 /// A `Result` containing:
-///   * `Ok((InboundCipher, OutboundCipher, SessionReader<R>))`: Ready-to-use session components.
+///   * `Ok((InboundCipher, OutboundCipher, impl Read))`: Ready-to-use session components.
 ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
 ///
 /// # Errors
@@ -493,7 +215,7 @@ pub fn handshake<R, W>(
     decoys: Option<&[&[u8]]>,
     reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, SessionReader<R>), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -511,7 +233,7 @@ fn handshake_with_initialized<R, W>(
     decoys: Option<&[&[u8]]>,
     mut reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, SessionReader<R>), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -566,7 +288,10 @@ where
     };
 
     // Process remaining bytes for decoy packets and version.
-    let mut session_reader = SessionReader::new(garbage_buffer[garbage_bytes..].to_vec(), reader);
+    let mut session_reader = std::io::Read::chain(
+        Cursor::new(garbage_buffer[garbage_bytes..].to_vec()),
+        reader,
+    );
     loop {
         // Decrypt packet length.
         let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
@@ -591,7 +316,7 @@ where
 
 /// A synchronous protocol session with handshake and send/receive packet management.
 pub struct Protocol<R, W> {
-    reader: ProtocolReader<SessionReader<R>>,
+    reader: ProtocolReader<R>,
     writer: ProtocolWriter<W>,
 }
 
@@ -601,6 +326,11 @@ where
     W: Write,
 {
     /// New protocol session which completes the initial handshake and returns a handler.
+    ///
+    /// # Performance Note
+    ///
+    /// For optimal performance, wrap your `reader` in a [`std::io::BufReader`].
+    /// The protocol makes many small reads during handshake and operation.
     ///
     /// # Arguments
     ///
@@ -627,11 +357,11 @@ where
         decoys: Option<&'a [&'a [u8]]>,
         reader: R,
         mut writer: W,
-    ) -> Result<Self, ProtocolError> {
+    ) -> Result<Protocol<impl Read, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
             handshake(network, role, garbage, decoys, reader, &mut writer)?;
 
-        Ok(Self {
+        Ok(Protocol {
             reader: ProtocolReader {
                 inbound_cipher,
                 reader: session_reader,
@@ -644,7 +374,7 @@ where
     }
 
     /// Split the protocol into a separate reader and writer.
-    pub fn into_split(self) -> (ProtocolReader<SessionReader<R>>, ProtocolWriter<W>) {
+    pub fn into_split(self) -> (ProtocolReader<R>, ProtocolWriter<W>) {
         (self.reader, self.writer)
     }
 
@@ -749,69 +479,6 @@ where
     /// Consume the protocol writer in exchange for the underlying writer and cipher.
     pub fn into_inner(self) -> (OutboundCipher, W) {
         (self.outbound_cipher, self.writer)
-    }
-}
-
-/// Extension trait to convert duplex streams into BIP-324 Protocol instances.
-///
-/// # Example
-///
-/// ```rust
-/// use std::net::TcpStream;
-/// use bip324::io::IntoBip324;
-/// use bip324::{Network, Role};
-///
-/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let stream = TcpStream::connect("127.0.0.1:8333")?;
-/// let protocol = stream.into_bip324(
-///     Network::Bitcoin,
-///     Role::Initiator,
-///     None, // no garbage
-///     None, // no decoys
-/// )?;
-/// # Ok(())
-/// # }
-/// ```
-pub trait IntoBip324<S> {
-    /// Convert this stream into a BIP-324 Protocol after performing the handshake.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - Network which both parties are operating on.
-    /// * `role` - Role in handshake, initiator or responder.
-    /// * `garbage` - Optional garbage bytes to send in handshake.
-    /// * `decoys` - Optional decoy packet contents bytes to send in handshake.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(Protocol)`: An initialized protocol handler.
-    ///   * `Err(ProtocolError)`: An error that occurred during the handshake or stream cloning.
-    ///
-    /// # Errors
-    ///
-    /// * `Io` - Includes errors from stream cloning and handshake I/O operations.
-    /// * `Internal` - Protocol-specific errors during handshake.
-    fn into_bip324(
-        self,
-        network: Network,
-        role: Role,
-        garbage: Option<&[u8]>,
-        decoys: Option<&[&[u8]]>,
-    ) -> Result<Protocol<S, S>, ProtocolError>;
-}
-
-impl IntoBip324<std::net::TcpStream> for std::net::TcpStream {
-    fn into_bip324(
-        self,
-        network: Network,
-        role: Role,
-        garbage: Option<&[u8]>,
-        decoys: Option<&[&[u8]]>,
-    ) -> Result<Protocol<std::net::TcpStream, std::net::TcpStream>, ProtocolError> {
-        let reader = self.try_clone()?;
-        let writer = self;
-        Protocol::new(network, role, garbage, decoys, reader, writer)
     }
 }
 
@@ -934,7 +601,7 @@ mod tests {
                 );
             }
             Ok(n) => panic!("Expected to read 1 byte but read {}", n),
-            Err(e) => panic!("Unexpected error reading from SessionReader: {}", e),
+            Err(e) => panic!("Unexpected error reading from session reader: {}", e),
         }
     }
 }

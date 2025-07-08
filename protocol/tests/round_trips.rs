@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
+#[cfg(feature = "std")]
 const PORT: u16 = 18444;
 
 #[test]
@@ -303,7 +304,7 @@ fn regtest_handshake_std() {
     };
 
     use bip324::{
-        io::IntoBip324,
+        io::Protocol,
         serde::{deserialize, serialize, NetworkMessage},
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
@@ -311,17 +312,20 @@ fn regtest_handshake_std() {
     let bitcoind = regtest_process(TransportVersion::V2);
 
     let stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
+    let reader = stream.try_clone().unwrap();
+    let writer = stream;
 
-    // Initialize high-level protocol with handshake using the new into_bip324 method
-    println!("Starting BIP-324 handshake using into_bip324");
-    let mut protocol = stream
-        .into_bip324(
-            bip324::Network::Regtest,
-            bip324::Role::Initiator,
-            None, // no garbage
-            None, // no decoys
-        )
-        .unwrap();
+    // Initialize high-level protocol with handshake
+    println!("Starting BIP-324 handshake");
+    let mut protocol = Protocol::new(
+        bip324::Network::Regtest,
+        bip324::Role::Initiator,
+        None, // no garbage
+        None, // no decoys
+        reader,
+        writer,
+    )
+    .unwrap();
 
     println!("Handshake completed successfully!");
 
@@ -354,7 +358,77 @@ fn regtest_handshake_std() {
     let response_message = deserialize(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
-    println!("Successfully exchanged version messages using into_bip324 API!");
+    println!("Successfully exchanged version messages using Protocol API!");
+}
+
+#[tokio::test]
+#[cfg(feature = "tokio")]
+async fn regtest_handshake_async() {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use bip324::{
+        futures::Protocol,
+        serde::{deserialize, serialize, NetworkMessage},
+    };
+    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use tokio::net::TcpStream;
+
+    let bitcoind = regtest_process(TransportVersion::V2);
+
+    let stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap())
+        .await
+        .unwrap();
+
+    let (reader, writer) = stream.into_split();
+
+    // Initialize high-level async protocol with handshake
+    println!("Starting async BIP-324 handshake");
+    let mut protocol = Protocol::new(
+        bip324::Network::Regtest,
+        bip324::Role::Initiator,
+        None, // no garbage
+        None, // no decoys
+        reader,
+        writer,
+    )
+    .await
+    .unwrap();
+
+    println!("Async handshake completed successfully!");
+
+    // Create version message.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_secs();
+    let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
+    let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
+    let msg = VersionMessage {
+        version: 70015,
+        services: ServiceFlags::NONE,
+        timestamp: now as i64,
+        receiver: from_and_recv.clone(),
+        sender: from_and_recv,
+        nonce: 1,
+        user_agent: "BIP-324 Async Client".to_string(),
+        start_height: 0,
+        relay: false,
+    };
+
+    let message = serialize(NetworkMessage::Version(msg));
+    println!("Sending version message using async Protocol::write()");
+    protocol.write(&message).await.unwrap();
+
+    println!("Reading version response using async Protocol::read()");
+    let payload = protocol.read().await.unwrap();
+
+    let response_message = deserialize(payload.contents()).unwrap();
+    assert_eq!(response_message.cmd(), "version");
+
+    println!("Successfully exchanged version messages using async Protocol API!");
 }
 
 #[test]
@@ -384,12 +458,14 @@ fn regtest_handshake_v1_only() {
 }
 
 /// Bitcoind transport versions.
+#[cfg(feature = "std")]
 enum TransportVersion {
     V1,
     V2,
 }
 
 /// Fire up a managed regtest bitcoind process.
+#[cfg(feature = "std")]
 fn regtest_process(transport: TransportVersion) -> bitcoind::Node {
     // Pull executable from auto-downloaded location, unless
     // environment variable override is present. Some operating

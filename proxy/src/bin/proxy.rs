@@ -6,7 +6,8 @@
 use std::str::FromStr;
 
 use bip324::{
-    io::{AsyncProtocol, ProtocolFailureSuggestion},
+    futures::Protocol,
+    io::ProtocolFailureSuggestion,
     serde::{deserialize, serialize},
     PacketType, Role,
 };
@@ -75,15 +76,15 @@ async fn v2_proxy(
         .expect("connect to remote");
 
     info!("Initiating handshake.");
-    let (mut remote_reader, mut remote_writer) = remote.into_split();
+    let (remote_reader, remote_writer) = remote.into_split();
 
-    let protocol = match AsyncProtocol::new(
+    let protocol = match Protocol::new(
         network,
         Role::Initiator,
         None,
         None,
-        &mut remote_reader,
-        &mut remote_writer,
+        remote_reader,
+        remote_writer,
     )
     .await
     {
@@ -116,11 +117,11 @@ async fn v2_proxy(
 
                 let contents = serialize(msg);
                 v2_remote_writer
-                    .encrypt_and_write(&contents, &mut remote_writer)
+                    .write(&contents)
                     .await
                     .expect("write to remote");
             },
-            result = v2_remote_reader.read_and_decrypt(&mut remote_reader) => {
+            result = v2_remote_reader.read() => {
                 let payload = result.expect("read packet");
                 // Ignore decoy packets.
                 if payload.packet_type() == PacketType::Genuine {

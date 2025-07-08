@@ -42,8 +42,8 @@ _default:
 # Test feature flag matrix compatability.
 @_test-features:
   # Build and test with all features, no features, and some combinations if required.
-  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --all-features
-  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --no-default-features
+  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --tests --all-features
+  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --tests --no-default-features
 
 # Check code with MSRV compiler.
 @_test-msrv:
