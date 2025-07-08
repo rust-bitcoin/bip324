@@ -4,7 +4,7 @@
 //! connections over Read/Write transports.
 
 use core::fmt;
-use std::io::{Chain, Cursor, Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::vec;
 use std::vec::Vec;
 
@@ -49,29 +49,6 @@ impl Payload {
     /// Extract the packet type from the header byte.
     pub fn packet_type(&self) -> PacketType {
         PacketType::from_byte(&self.data[0])
-    }
-}
-
-/// A reader for BIP-324 session data that handles any buffered handshake overflow.
-///
-/// This reader ensures seamless transition from handshake to session data by
-/// first consuming any data that was read during handshake but belongs to the
-/// session stream.
-pub struct SessionReader<R> {
-    inner: Chain<Cursor<Vec<u8>>, R>,
-}
-
-impl<R: Read> SessionReader<R> {
-    fn new(buffer: Vec<u8>, reader: R) -> Self {
-        Self {
-            inner: std::io::Read::chain(Cursor::new(buffer), reader),
-        }
-    }
-}
-
-impl<R: Read> Read for SessionReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read(buf)
     }
 }
 
@@ -185,7 +162,7 @@ impl fmt::Display for ProtocolError {
 /// # Returns
 ///
 /// A `Result` containing:
-///   * `Ok((InboundCipher, OutboundCipher, SessionReader<R>))`: Ready-to-use session components.
+///   * `Ok((InboundCipher, OutboundCipher, impl Read))`: Ready-to-use session components.
 ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
 ///
 /// # Errors
@@ -198,7 +175,7 @@ pub fn handshake<R, W>(
     decoys: Option<&[&[u8]]>,
     reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, SessionReader<R>), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -216,7 +193,7 @@ fn handshake_with_initialized<R, W>(
     decoys: Option<&[&[u8]]>,
     mut reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, SessionReader<R>), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -271,7 +248,10 @@ where
     };
 
     // Process remaining bytes for decoy packets and version.
-    let mut session_reader = SessionReader::new(garbage_buffer[garbage_bytes..].to_vec(), reader);
+    let mut session_reader = std::io::Read::chain(
+        Cursor::new(garbage_buffer[garbage_bytes..].to_vec()),
+        reader,
+    );
     loop {
         // Decrypt packet length.
         let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
@@ -296,7 +276,7 @@ where
 
 /// A synchronous protocol session with handshake and send/receive packet management.
 pub struct Protocol<R, W> {
-    reader: ProtocolReader<SessionReader<R>>,
+    reader: ProtocolReader<R>,
     writer: ProtocolWriter<W>,
 }
 
@@ -332,11 +312,11 @@ where
         decoys: Option<&'a [&'a [u8]]>,
         reader: R,
         mut writer: W,
-    ) -> Result<Self, ProtocolError> {
+    ) -> Result<Protocol<impl Read, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
             handshake(network, role, garbage, decoys, reader, &mut writer)?;
 
-        Ok(Self {
+        Ok(Protocol {
             reader: ProtocolReader {
                 inbound_cipher,
                 reader: session_reader,
@@ -349,7 +329,7 @@ where
     }
 
     /// Split the protocol into a separate reader and writer.
-    pub fn into_split(self) -> (ProtocolReader<SessionReader<R>>, ProtocolWriter<W>) {
+    pub fn into_split(self) -> (ProtocolReader<R>, ProtocolWriter<W>) {
         (self.reader, self.writer)
     }
 
@@ -454,69 +434,6 @@ where
     /// Consume the protocol writer in exchange for the underlying writer and cipher.
     pub fn into_inner(self) -> (OutboundCipher, W) {
         (self.outbound_cipher, self.writer)
-    }
-}
-
-/// Extension trait to convert duplex streams into BIP-324 Protocol instances.
-///
-/// # Example
-///
-/// ```rust
-/// use std::net::TcpStream;
-/// use bip324::io::IntoBip324;
-/// use bip324::{Network, Role};
-///
-/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let stream = TcpStream::connect("127.0.0.1:8333")?;
-/// let protocol = stream.into_bip324(
-///     Network::Bitcoin,
-///     Role::Initiator,
-///     None, // no garbage
-///     None, // no decoys
-/// )?;
-/// # Ok(())
-/// # }
-/// ```
-pub trait IntoBip324<S> {
-    /// Convert this stream into a BIP-324 Protocol after performing the handshake.
-    ///
-    /// # Arguments
-    ///
-    /// * `network` - Network which both parties are operating on.
-    /// * `role` - Role in handshake, initiator or responder.
-    /// * `garbage` - Optional garbage bytes to send in handshake.
-    /// * `decoys` - Optional decoy packet contents bytes to send in handshake.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing:
-    ///   * `Ok(Protocol)`: An initialized protocol handler.
-    ///   * `Err(ProtocolError)`: An error that occurred during the handshake or stream cloning.
-    ///
-    /// # Errors
-    ///
-    /// * `Io` - Includes errors from stream cloning and handshake I/O operations.
-    /// * `Internal` - Protocol-specific errors during handshake.
-    fn into_bip324(
-        self,
-        network: Network,
-        role: Role,
-        garbage: Option<&[u8]>,
-        decoys: Option<&[&[u8]]>,
-    ) -> Result<Protocol<S, S>, ProtocolError>;
-}
-
-impl IntoBip324<std::net::TcpStream> for std::net::TcpStream {
-    fn into_bip324(
-        self,
-        network: Network,
-        role: Role,
-        garbage: Option<&[u8]>,
-        decoys: Option<&[&[u8]]>,
-    ) -> Result<Protocol<std::net::TcpStream, std::net::TcpStream>, ProtocolError> {
-        let reader = self.try_clone()?;
-        let writer = self;
-        Protocol::new(network, role, garbage, decoys, reader, writer)
     }
 }
 
@@ -639,7 +556,7 @@ mod tests {
                 );
             }
             Ok(n) => panic!("Expected to read 1 byte but read {}", n),
-            Err(e) => panic!("Unexpected error reading from SessionReader: {}", e),
+            Err(e) => panic!("Unexpected error reading from session reader: {}", e),
         }
     }
 }

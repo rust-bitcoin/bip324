@@ -304,7 +304,7 @@ fn regtest_handshake_std() {
     };
 
     use bip324::{
-        io::IntoBip324,
+        io::Protocol,
         serde::{deserialize, serialize, NetworkMessage},
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
@@ -312,17 +312,20 @@ fn regtest_handshake_std() {
     let bitcoind = regtest_process(TransportVersion::V2);
 
     let stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
+    let reader = stream.try_clone().unwrap();
+    let writer = stream;
 
-    // Initialize high-level protocol with handshake using the new into_bip324 method
-    println!("Starting BIP-324 handshake using into_bip324");
-    let mut protocol = stream
-        .into_bip324(
-            bip324::Network::Regtest,
-            bip324::Role::Initiator,
-            None, // no garbage
-            None, // no decoys
-        )
-        .unwrap();
+    // Initialize high-level protocol with handshake
+    println!("Starting BIP-324 handshake");
+    let mut protocol = Protocol::new(
+        bip324::Network::Regtest,
+        bip324::Role::Initiator,
+        None, // no garbage
+        None, // no decoys
+        reader,
+        writer,
+    )
+    .unwrap();
 
     println!("Handshake completed successfully!");
 
@@ -355,7 +358,7 @@ fn regtest_handshake_std() {
     let response_message = deserialize(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
-    println!("Successfully exchanged version messages using into_bip324 API!");
+    println!("Successfully exchanged version messages using Protocol API!");
 }
 
 #[tokio::test]
