@@ -442,15 +442,12 @@ impl InboundCipher {
     /// # Returns
     ///
     /// The length of the rest of the packet.
-    pub fn decrypt_packet_len(&mut self, len_bytes: [u8; 3]) -> usize {
-        let mut enc_content_len = [0u8; 3];
-        enc_content_len.copy_from_slice(&len_bytes);
-        self.length_cipher.crypt(&mut enc_content_len);
-        let mut content_slice = [0u8; 4];
-        content_slice[0..3].copy_from_slice(&enc_content_len);
-        let content_len = u32::from_le_bytes(content_slice);
+    pub fn decrypt_packet_len(&mut self, mut len_bytes: [u8; NUM_LENGTH_BYTES]) -> usize {
+        self.length_cipher.crypt(&mut len_bytes);
 
-        content_len as usize + NUM_HEADER_BYTES + NUM_TAG_BYTES
+        u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], 0]) as usize
+            + NUM_HEADER_BYTES
+            + NUM_TAG_BYTES
     }
 
     /// Calculate the required decryption buffer length from packet length.
