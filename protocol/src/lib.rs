@@ -187,6 +187,11 @@ const NUM_GARBAGE_TERMINTOR_BYTES: usize = 16;
 const NUM_TAG_BYTES: usize = 16;
 // Number of bytes per packet for static layout, everything not including contents.
 const NUM_PACKET_OVERHEAD_BYTES: usize = NUM_LENGTH_BYTES + NUM_HEADER_BYTES + NUM_TAG_BYTES;
+// Maximum packet size for automatic allocation.
+// Bitcoin Core's MAX_PROTOCOL_MESSAGE_LENGTH is 4,000,000 bytes (~4 MiB).
+// 14 extra bytes are for the BIP-324 header byte and 13 serialization header bytes (message type).
+#[cfg(feature = "std")]
+const MAX_PACKET_SIZE_FOR_ALLOCATION: usize = 4000014;
 // Version content is always empty for the current version of the protocol.
 const VERSION_CONTENT: [u8; 0] = [];
 
@@ -199,6 +204,8 @@ pub enum Error {
     /// total required bytes for the failed packet so the
     /// caller can re-allocate and re-attempt.
     BufferTooSmall { required_bytes: usize },
+    /// Packet size exceeds maximum allowed size for automatic allocation.
+    PacketTooBig,
     /// Tried to send more garbage bytes before terminator than allowed by spec.
     TooMuchGarbage,
     /// The remote sent the maximum amount of garbage bytes without
@@ -225,6 +232,10 @@ impl fmt::Display for Error {
                 f,
                 "Buffer memory allocation too small, need at least {required_bytes} bytes."
             ),
+            Error::PacketTooBig => write!(
+                f,
+                "Packet size exceeds maximum 4MiB size for automatic allocation."
+            ),
             Error::NoGarbageTerminator => {
                 write!(f, "More than 4095 bytes of garbage recieved in the handshake before a terminator was sent.")
             }
@@ -245,6 +256,7 @@ impl std::error::Error for Error {
         match self {
             Error::CiphertextTooSmall => None,
             Error::BufferTooSmall { .. } => None,
+            Error::PacketTooBig => None,
             Error::NoGarbageTerminator => None,
             Error::V1Protocol => None,
             Error::SecretGeneration(e) => Some(e),
@@ -455,6 +467,22 @@ impl InboundCipher {
         packet_len - NUM_TAG_BYTES
     }
 
+    /// Validate ciphertext minimum size.
+    ///
+    /// # Arguments
+    ///
+    /// * `ciphertext_len` - The length of the ciphertext buffer.
+    ///
+    /// # Errors
+    ///
+    /// * `CiphertextTooSmall` - Ciphertext does not contain minimum required bytes.
+    fn validate_ciphertext_size(ciphertext_len: usize) -> Result<(), Error> {
+        if ciphertext_len < NUM_TAG_BYTES + NUM_HEADER_BYTES {
+            return Err(Error::CiphertextTooSmall);
+        }
+        Ok(())
+    }
+
     /// Decrypt an inbound packet in-place.
     ///
     /// # Arguments
@@ -481,15 +509,14 @@ impl InboundCipher {
         ciphertext: &'a mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<(PacketType, &'a [u8]), Error> {
-        let auth = aad.unwrap_or_default();
-        // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
-            return Err(Error::CiphertextTooSmall);
-        }
+        Self::validate_ciphertext_size(ciphertext.len())?;
         let (msg, tag) = ciphertext.split_at_mut(ciphertext.len() - NUM_TAG_BYTES);
 
-        self.packet_cipher
-            .decrypt(auth, msg, tag.try_into().expect("16 byte tag"))?;
+        self.packet_cipher.decrypt(
+            aad.unwrap_or_default(),
+            msg,
+            tag.try_into().expect("16 byte tag"),
+        )?;
 
         Ok((PacketType::from_byte(&msg[0]), msg))
     }
@@ -521,11 +548,7 @@ impl InboundCipher {
         plaintext_buffer: &mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<PacketType, Error> {
-        let auth = aad.unwrap_or_default();
-        // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
-            return Err(Error::CiphertextTooSmall);
-        }
+        Self::validate_ciphertext_size(ciphertext.len())?;
         let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
         // Check that the contents buffer is large enough.
         if plaintext_buffer.len() < msg.len() {
@@ -535,7 +558,7 @@ impl InboundCipher {
         }
         plaintext_buffer[0..msg.len()].copy_from_slice(msg);
         self.packet_cipher.decrypt(
-            auth,
+            aad.unwrap_or_default(),
             &mut plaintext_buffer[0..msg.len()],
             tag.try_into().expect("16 byte tag"),
         )?;
@@ -563,6 +586,7 @@ impl InboundCipher {
     /// # Errors
     ///
     /// * `CiphertextTooSmall` - Ciphertext argument does not contain a whole packet.
+    /// * `PacketTooBig` - Packet size exceeds maximum allowed size for automatic allocation.
     /// * Decryption errors for any failures such as a tag mismatch.
     #[cfg(feature = "std")]
     pub fn decrypt_to_vec(
@@ -571,6 +595,11 @@ impl InboundCipher {
         aad: Option<&[u8]>,
     ) -> Result<(PacketType, std::vec::Vec<u8>), Error> {
         let plaintext_len = Self::decryption_buffer_len(ciphertext.len());
+
+        if plaintext_len > MAX_PACKET_SIZE_FOR_ALLOCATION {
+            return Err(Error::PacketTooBig);
+        }
+
         let mut plaintext_buffer = std::vec![0u8; plaintext_len];
 
         let packet_type = self.decrypt(ciphertext, &mut plaintext_buffer, aad)?;
@@ -918,6 +947,30 @@ mod tests {
             .inbound()
             .decrypt_in_place(&mut too_small, None);
         assert_eq!(result, Err(Error::CiphertextTooSmall));
+    }
+
+    #[test]
+    fn test_decrypt_to_vec_packet_too_big() {
+        let alice =
+            SecretKey::from_str("61062ea5071d800bbfd59e2e8b53d47d194b095ae5a4df04936b49772ef0d4d7")
+                .unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ec0adff257bbfe500c188c80b4fdd640f6b45a482bbc15fc7cef5931deff0aa186f6eb9bba7b85dc4dcc28b28722de1e3d9108b985e2967045668f66098e475b").unwrap();
+        let elliswift_bob = ElligatorSwift::from_str("a4a94dfce69b4a2a0a099313d10f9f7e7d649d60501c9e1d274c300e0d89aafaffffffffffffffffffffffffffffffffffffffffffffffffffffffff8faf88d5").unwrap();
+        let session_keys = SessionKeyMaterial::from_ecdh(
+            elliswift_alice,
+            elliswift_bob,
+            alice,
+            ElligatorSwiftParty::A,
+            Network::Bitcoin,
+        )
+        .unwrap();
+        let mut alice_cipher = CipherSession::new(session_keys, Role::Initiator);
+
+        let large_ciphertext = vec![0u8; MAX_PACKET_SIZE_FOR_ALLOCATION + NUM_TAG_BYTES + 1];
+        let result = alice_cipher
+            .inbound()
+            .decrypt_to_vec(&large_ciphertext, None);
+        assert_eq!(result, Err(Error::PacketTooBig));
     }
 
     #[test]
