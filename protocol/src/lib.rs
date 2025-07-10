@@ -455,6 +455,26 @@ impl InboundCipher {
         packet_len - NUM_TAG_BYTES
     }
 
+    /// Validate ciphertext minimum size.
+    ///
+    /// # Arguments
+    ///
+    /// * `ciphertext_len` - The length of the ciphertext buffer.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or error.
+    ///
+    /// # Errors
+    ///
+    /// * `CiphertextTooSmall` - Ciphertext does not contain minimum required bytes.
+    fn validate_ciphertext_size(ciphertext_len: usize) -> Result<(), Error> {
+        if ciphertext_len < NUM_TAG_BYTES + NUM_HEADER_BYTES {
+            return Err(Error::CiphertextTooSmall);
+        }
+        Ok(())
+    }
+
     /// Decrypt an inbound packet in-place.
     ///
     /// # Arguments
@@ -481,15 +501,14 @@ impl InboundCipher {
         ciphertext: &'a mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<(PacketType, &'a [u8]), Error> {
-        let auth = aad.unwrap_or_default();
-        // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
-            return Err(Error::CiphertextTooSmall);
-        }
+        Self::validate_ciphertext_size(ciphertext.len())?;
         let (msg, tag) = ciphertext.split_at_mut(ciphertext.len() - NUM_TAG_BYTES);
 
-        self.packet_cipher
-            .decrypt(auth, msg, tag.try_into().expect("16 byte tag"))?;
+        self.packet_cipher.decrypt(
+            aad.unwrap_or_default(),
+            msg,
+            tag.try_into().expect("16 byte tag"),
+        )?;
 
         Ok((PacketType::from_byte(&msg[0]), msg))
     }
@@ -521,11 +540,7 @@ impl InboundCipher {
         plaintext_buffer: &mut [u8],
         aad: Option<&[u8]>,
     ) -> Result<PacketType, Error> {
-        let auth = aad.unwrap_or_default();
-        // Check minimum size of ciphertext.
-        if ciphertext.len() < NUM_TAG_BYTES + NUM_HEADER_BYTES {
-            return Err(Error::CiphertextTooSmall);
-        }
+        Self::validate_ciphertext_size(ciphertext.len())?;
         let (msg, tag) = ciphertext.split_at(ciphertext.len() - NUM_TAG_BYTES);
         // Check that the contents buffer is large enough.
         if plaintext_buffer.len() < msg.len() {
@@ -535,7 +550,7 @@ impl InboundCipher {
         }
         plaintext_buffer[0..msg.len()].copy_from_slice(msg);
         self.packet_cipher.decrypt(
-            auth,
+            aad.unwrap_or_default(),
             &mut plaintext_buffer[0..msg.len()],
             tag.try_into().expect("16 byte tag"),
         )?;
