@@ -3,8 +3,9 @@
 # The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
-NIGHTLY_TOOLCHAIN := "nightly-2025-06-19"
+NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
 STABLE_TOOLCHAIN := "1.87.0"
+FUZZ_VERSION := "0.12.0"
 
 _default:
   @just --list
@@ -29,7 +30,7 @@ _default:
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: unit, features, msrv, constraints, or no-std.
+# Run a test suite: unit, features, msrv, constraints, no-std, or fuzz.
 @test suite="unit":
   just _test-{{suite}}
 
@@ -71,14 +72,25 @@ _default:
   cargo install cross@0.2.5
   $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
 
+# Type check the fuzz targets.
+@_test-fuzz:
+  cargo install cargo-fuzz@{{FUZZ_VERSION}}
+  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz check
+
 # Run benchmarks.
 bench:
   cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench cipher_session
 
-# Run fuzz test: receive_key, receive_garbage, receive_version.
-@fuzz target="receive_garbage" time="60":
-  cargo install cargo-fuzz@0.12.0
-  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_total_time={{time}}
+# Run fuzz target: receive_key or receive_garbage.
+@fuzz target seconds:
+  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} llvm-tools-preview
+  cargo install cargo-fuzz@{{FUZZ_VERSION}}
+  # Generate new test cases and add to corpus. Bumping length for garbage.
+  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
+  # Measure coverage of corpus against code.
+  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz coverage {{target}}
+  # Generate HTML coverage report.
+  protocol/fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
 
 # Add a release tag and publish to the upstream remote. Need write privileges on the repository.
 @tag crate version remote="upstream":

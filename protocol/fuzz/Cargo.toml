@@ -10,17 +10,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 bip324 = { path = ".." }
+rand = "0.8"
+secp256k1 = "0.29"
 
 [[bin]]
 name = "receive_garbage"
 path = "fuzz_targets/receive_garbage.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "receive_version"
-path = "fuzz_targets/receive_version.rs"
 test = false
 doc = false
 bench = false

@@ -472,7 +472,12 @@ impl Handshake<SentVersion> {
     fn split_garbage<'b>(&self, buffer: &'b [u8]) -> Result<(&'b [u8], &'b [u8]), Error> {
         let terminator = &self.state.remote_garbage_terminator;
 
-        if let Some(index) = buffer
+        // Only search up to the maximum amount of garbage bytes
+        // allowed in the spec to avoid a DOS vector.
+        if let Some(index) = buffer[..core::cmp::min(
+            buffer.len(),
+            MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES,
+        )]
             .windows(terminator.len())
             .position(|window| window == terminator)
         {
@@ -846,32 +851,40 @@ mod tests {
 
     // Test split_garbage error conditions.
     //
-    // 1. NoGarbageTerminator - when buffer exceeds max size without finding terminator
-    // 2. CiphertextTooSmall - when buffer is too short to possibly contain terminator
+    // 1. NoGarbageTerminator - Buffer exceeds max size without finding terminator.
+    // 2. CiphertextTooSmall - Buffer is too short to possibly contain terminator.i
     #[test]
     fn test_handshake_split_garbage() {
-        // Create a handshake and bring it to the SentVersion state to test split_garbage
+        // Create a handshake and bring it to the SentVersion state to test split_garbage.
         let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
         let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
-        // Create a fake peer key to receive
+        // Create a fake peer key to receive.
         let fake_peer_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let handshake = handshake.receive_key(fake_peer_key).unwrap();
 
-        // Send version to get to SentVersion state
+        // Send version to get to SentVersion state.
         let mut version_buffer = vec![0u8; 1024];
         let handshake = handshake.send_version(&mut version_buffer, None).unwrap();
 
-        // Test with a buffer that is too long (should fail to find terminator)
+        // Test with a buffer that is too long (should fail to find terminator).
         let test_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES];
         let result = handshake.split_garbage(&test_buffer);
         assert!(matches!(result, Err(Error::NoGarbageTerminator)));
 
-        // Test with a buffer that's just short of the required length
+        // Test with a buffer that's just short of the required length.
         let short_buffer = vec![0; MAX_NUM_GARBAGE_BYTES + NUM_GARBAGE_TERMINTOR_BYTES - 1];
         let result = handshake.split_garbage(&short_buffer);
         assert!(matches!(result, Err(Error::CiphertextTooSmall)));
+
+        // Even if terminator is present, it's beyond the search limit.
+        let mut oversized_buffer = vec![0xEE; 5000];
+        oversized_buffer.extend_from_slice(&handshake.state.remote_garbage_terminator);
+        oversized_buffer.extend_from_slice(&[0xFF; 32]);
+        let result = handshake.split_garbage(&oversized_buffer);
+        // Should return NoGarbageTerminator because terminator is beyond search limit.
+        assert!(matches!(result, Err(Error::NoGarbageTerminator)));
     }
 
     // Test that receive_key detects V1 protocol when peer's key starts with network magic.

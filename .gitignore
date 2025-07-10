@@ -1,4 +1,2 @@
 Cargo.lock
-/target
-# IDEs
-.vscode/
+**/target
