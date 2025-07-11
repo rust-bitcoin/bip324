@@ -1,4 +1,4 @@
 [workspace]
-members = ["protocol", "proxy", "protocol/fuzz"]
-default-members = ["protocol", "proxy"]
+members = ["protocol", "proxy", "protocol/fuzz", "traffic"]
+default-members = ["protocol", "proxy", "traffic"]
 resolver = "2"

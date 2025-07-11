@@ -14,5 +14,6 @@ BIP-324 - "V2" - encrypted communication protects against the above issues incre
 
 ## Packages
 
-* `protocol` - Exports the `bip324` client library.
-* `proxy` - A small side-car application to enable V2 communication for V1-only applications.
+* [`protocol`](./protocol) - Exports the `bip324` client library.
+* [`proxy`](./proxy) - A small side-car application to enable V2 communication for V1-only applications.
+* [`traffic`](./traffic) - Traffic shape hiding layer over the base client.

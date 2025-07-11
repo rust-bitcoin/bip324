@@ -1,0 +1,13 @@
+[package]
+name = "bip324-traffic"
+version = "0.1.0"
+authors = ["Nick Johnson <nick@yonson.dev>"]
+edition = "2021"
+license = "CC0-1.0"
+description = "Traffic shape hiding layer for BIP-324 library"
+repository = "https://github.com/rust-bitcoin/bip324"
+rust-version = "1.63.0"
+
+[dependencies]
+
+[dev-dependencies]
