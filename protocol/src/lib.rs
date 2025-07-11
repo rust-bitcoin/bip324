@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! BIP-324 encrypted transport protocol for Bitcoin P2P communication.
+//! BIP-324 encrypted transport protocol for bitcoin p2p communication.
 //!
 //! This crate implements the [BIP-324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
 //! version 2 encrypted transport protocol, which provides encryption and authentication
