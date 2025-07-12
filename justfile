@@ -5,46 +5,46 @@
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
 STABLE_TOOLCHAIN := "1.87.0"
-FUZZ_VERSION := "0.12.0"
 
-_default:
-  @just --list
+@_default:
+  just --list
 
-# Quick check of the code including lints and formatting.
-@check:
-  # Default to the nightly toolchain for modern format and lint rules.
-
+# Quick check including lints and formatting. Run "fix" mode for auto-fixes.
+@check mode="verify":
+  # Use nightly toolchain for modern format and lint rules.
   # Ensure the toolchain is installed and has the necessary components.
   rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+  just _check-{{mode}}
+
+# Verify check, fails if anything is off. Good for CI.
+@_check-verify:
   # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
   cargo +{{NIGHTLY_TOOLCHAIN}} fmt --check --all
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets -- -D warnings
+  # Static analysis of types and lifetimes.
+  # Nightly toolchain required by benches target.
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
 
 # Attempt any auto-fixes for format and lints.
-@fix:
-  # Ensure the toolchain is installed and has the necessary components.
-  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} rustfmt clippy
+@_check-fix:
   # No --check flag to actually apply formatting.
   cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: unit, features, msrv, constraints, no-std, or fuzz.
-@test suite="unit":
+# Run a test suite: features, msrv, constraints, or no-std.
+@test suite="features":
   just _test-{{suite}}
 
-# Unit test suite.
-@_test-unit:
-  # Run everything except benches which need the nightly toolchain.
-  cargo +{{STABLE_TOOLCHAIN}} test --lib --bins --tests --examples
-  cargo +{{STABLE_TOOLCHAIN}} test --doc
-
-# Test feature flag matrix compatability.
+# Test library with feature flag matrix compatability.
 @_test-features:
-  # Build and test with all features, no features, and some combinations if required.
-  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --tests --all-features
-  cargo +{{STABLE_TOOLCHAIN}} test --package bip324 --lib --tests --no-default-features
+  # Test the extremes: all features enabled as well as none. If features are additive, this should expose conflicts.
+  # If non-additive features (mutually exclusive) are defined, more specific commands are required.
+  # Run all targets except benches which needs the nightly toolchain.
+  cargo +{{STABLE_TOOLCHAIN}} test --no-default-features --lib --bins --tests --examples
+  cargo +{{STABLE_TOOLCHAIN}} test --all-features --lib --bins --tests --examples
+  cargo +{{STABLE_TOOLCHAIN}} test --all-features --doc
 
 # Check code with MSRV compiler.
 @_test-msrv:
@@ -56,7 +56,6 @@ _default:
 @_test-constraints:
   # Ensure that the workspace code works with dependency versions at both extremes. This checks
   # that we are not unintentionally using new feautures of a dependency or removed ones.
-
   # Skipping "--all-targets" for these checks since tests and examples are not relevant for a library consumer.
   # Enabling "--all-features" so all dependencies are checked.
   # Clear any previously resolved versions and re-resolve to the minimums.
@@ -72,19 +71,14 @@ _default:
   cargo install cross@0.2.5
   $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
 
-# Type check the fuzz targets.
-@_test-fuzz:
-  cargo install cargo-fuzz@{{FUZZ_VERSION}}
-  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz check
-
 # Run benchmarks.
-bench:
+@bench:
   cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench cipher_session
 
 # Run fuzz target: receive_key or receive_garbage.
 @fuzz target seconds:
   rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} llvm-tools-preview
-  cargo install cargo-fuzz@{{FUZZ_VERSION}}
+  cargo install cargo-fuzz@0.12.0
   # Generate new test cases and add to corpus. Bumping length for garbage.
   cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
   # Measure coverage of corpus against code.
@@ -94,8 +88,16 @@ bench:
 
 # Add a release tag and publish to the upstream remote. Need write privileges on the repository.
 @tag crate version remote="upstream":
-  # A release tag is specific to a crate so following the convention crate-version.
+  # Guardrails: on a clean main with updated changelog and manifest.
+  if ! git diff --quiet || ! git diff --cached --quiet; then \
+    echo "tag: Uncommitted changes"; exit 1; fi
+  if [ "`git rev-parse --abbrev-ref HEAD`" != "main" ]; then \
+    echo "tag: Not on main branch"; exit 1; fi
+  if ! grep -q "## v{{version}}" {{crate}}/CHANGELOG.md; then \
+    echo "tag: CHANGELOG.md entry missing for v{{version}}"; exit 1; fi
+  if ! grep -q '^version = "{{version}}"' {{crate}}/Cargo.toml; then \
+    echo "tag: Cargo.toml version mismatch"; exit 1; fi
+  # An annotated release tag is specific to a crate following the convention crate-version.
   echo "Adding release tag {{crate}}-{{version}} and pushing to {{remote}}..."
-  # Annotated tag.
   git tag -a {{crate}}-{{version}} -m "Release {{version}} for {{crate}}"
   git push {{remote}} {{crate}}-{{version}}

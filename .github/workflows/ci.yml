@@ -27,14 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v3
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: just test unit
-  features:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: extractions/setup-just@v3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: just test features
+      - run: just test
   msrv:
     runs-on: ubuntu-latest
     steps:
@@ -63,10 +56,3 @@ jobs:
       - uses: extractions/setup-just@v3
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: just bench
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: extractions/setup-just@v3
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: just test fuzz
