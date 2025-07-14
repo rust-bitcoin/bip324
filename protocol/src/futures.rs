@@ -51,11 +51,12 @@ use std::vec::Vec;
 use bitcoin::Network;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::io::{Payload, ProtocolError};
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
-    Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
-    NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES,
+    io::{Payload, ProtocolError},
+    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role,
+    MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
+    NUM_LENGTH_BYTES,
 };
 
 /// Perform an async BIP-324 handshake and return ready-to-use session components.
@@ -150,11 +151,14 @@ where
 
     // Process remaining bytes for decoy packets and version.
     let mut session_reader = Cursor::new(garbage_buffer[garbage_bytes..].to_vec()).chain(reader);
+    let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
     loop {
         // Decrypt packet length.
-        let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
         session_reader.read_exact(&mut length_bytes).await?;
         let packet_len = handshake.decrypt_packet_len(length_bytes)?;
+        if packet_len > MAX_PACKET_SIZE_FOR_ALLOCATION {
+            return Err(ProtocolError::Internal(Error::PacketTooBig));
+        }
 
         // Process packet.
         let mut packet_bytes = vec![0u8; packet_len];
@@ -417,36 +421,79 @@ mod tests {
         use tokio::io::duplex;
 
         // Create two duplex channels to simulate network connection.
-        let (client_stream, server_stream) = duplex(1024);
-        let (client_read, mut client_write) = tokio::io::split(client_stream);
-        let (server_read, mut server_write) = tokio::io::split(server_stream);
+        let (local_stream, remote_stream) = duplex(1024);
+        let (local_read, mut local_write) = tokio::io::split(local_stream);
+        let (remote_read, mut remote_write) = tokio::io::split(remote_stream);
 
-        let client_handshake = tokio::spawn(async move {
+        let local_handshake = tokio::spawn(async move {
             handshake(
                 Network::Bitcoin,
                 Role::Initiator,
-                Some(b"client garbage"),
-                Some(&[b"client decoy"]),
-                client_read,
-                &mut client_write,
+                Some(b"local garbage"),
+                Some(&[b"local decoy"]),
+                local_read,
+                &mut local_write,
             )
             .await
         });
 
-        let server_handshake = tokio::spawn(async move {
+        let remote_handshake = tokio::spawn(async move {
             handshake(
                 Network::Bitcoin,
                 Role::Responder,
-                Some(b"server garbage"),
-                Some(&[b"server decoy 1", b"server decoy 2"]),
-                server_read,
-                &mut server_write,
+                Some(b"remote garbage"),
+                Some(&[b"remote decoy 1", b"remote decoy 2"]),
+                remote_read,
+                &mut remote_write,
             )
             .await
         });
 
-        let (client_result, server_result) = tokio::join!(client_handshake, server_handshake);
-        let (_client_inbound, _client_outbound, _client_session) = client_result.unwrap().unwrap();
-        let (_server_inbound, _server_outbound, _server_session) = server_result.unwrap().unwrap();
+        let (local_result, remote_result) = tokio::join!(local_handshake, remote_handshake);
+        local_result.unwrap().unwrap();
+        remote_result.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_async_handshake_packet_too_big_protection() {
+        // Verifies that the async handshake properly rejects packets
+        // that would require excessive memory allocation.
+        use tokio::io::duplex;
+
+        let (local_stream, remote_stream) = duplex(MAX_PACKET_SIZE_FOR_ALLOCATION * 2);
+        let (local_read, mut local_write) = tokio::io::split(local_stream);
+        let (remote_read, mut remote_write) = tokio::io::split(remote_stream);
+
+        let local_handshake = tokio::spawn(async move {
+            handshake(
+                Network::Bitcoin,
+                Role::Initiator,
+                None,
+                None,
+                local_read,
+                &mut local_write,
+            )
+            .await
+        });
+
+        let remote_handshake = tokio::spawn(async move {
+            let large_decoy = vec![0u8; MAX_PACKET_SIZE_FOR_ALLOCATION + 1];
+            let remote_decoys: &[&[u8]] = &[&large_decoy];
+            handshake(
+                Network::Bitcoin,
+                Role::Responder,
+                None,
+                Some(remote_decoys),
+                remote_read,
+                &mut remote_write,
+            )
+            .await
+        });
+
+        let (local_result, _remote_result) = tokio::join!(local_handshake, remote_handshake);
+        assert!(matches!(
+            local_result.unwrap(),
+            Err(ProtocolError::Internal(Error::PacketTooBig))
+        ));
     }
 }

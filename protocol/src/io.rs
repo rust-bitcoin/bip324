@@ -52,8 +52,9 @@ use bitcoin::Network;
 
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
-    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, NUM_ELLIGATOR_SWIFT_BYTES,
-    NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES,
+    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role,
+    MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
+    NUM_LENGTH_BYTES,
 };
 
 /// A decrypted BIP-324 payload.
@@ -292,11 +293,14 @@ where
         Cursor::new(garbage_buffer[garbage_bytes..].to_vec()),
         reader,
     );
+    let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
     loop {
         // Decrypt packet length.
-        let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
         session_reader.read_exact(&mut length_bytes)?;
         let packet_len = handshake.decrypt_packet_len(length_bytes)?;
+        if packet_len > MAX_PACKET_SIZE_FOR_ALLOCATION {
+            return Err(ProtocolError::Internal(Error::PacketTooBig));
+        }
 
         // Process packet.
         let mut packet_bytes = vec![0u8; packet_len];
@@ -493,7 +497,7 @@ mod tests {
     fn generate_handshake_messages(
         local_seed: u64,
         remote_seed: u64,
-        role: Role,
+        local_role: Role,
         garbage: Option<&[u8]>,
         decoys: Option<&[&[u8]]>,
     ) -> Vec<u8> {
@@ -503,14 +507,14 @@ mod tests {
         let mut local_rng = StdRng::seed_from_u64(local_seed);
         let local_handshake = Handshake::<handshake::Initialized>::new_with_rng(
             Network::Bitcoin,
-            role,
+            local_role,
             &mut local_rng,
             &secp,
         )
         .unwrap();
 
         let mut remote_rng = StdRng::seed_from_u64(remote_seed);
-        let remote_role = match role {
+        let remote_role = match local_role {
             Role::Initiator => Role::Responder,
             Role::Responder => Role::Initiator,
         };
@@ -603,5 +607,35 @@ mod tests {
             Ok(n) => panic!("Expected to read 1 byte but read {}", n),
             Err(e) => panic!("Unexpected error reading from session reader: {}", e),
         }
+    }
+
+    #[test]
+    fn test_handshake_packet_too_big_protection() {
+        // Verifies that the handshake properly rejects packets
+        // that would require excessive memory allocation.
+
+        let mut init_rng = StdRng::seed_from_u64(42);
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let init_handshake = Handshake::<handshake::Initialized>::new_with_rng(
+            Network::Bitcoin,
+            Role::Initiator,
+            &mut init_rng,
+            &secp,
+        )
+        .unwrap();
+
+        let large_decoy = vec![0; MAX_PACKET_SIZE_FOR_ALLOCATION + 1];
+        let resp_decoys: &[&[u8]] = &[large_decoy.as_slice()];
+        let messages =
+            generate_handshake_messages(1042, 42, Role::Responder, None, Some(resp_decoys));
+
+        let reader = Cursor::new(messages);
+        let mut writer = Vec::new();
+
+        let result = handshake_with_initialized(init_handshake, None, None, reader, &mut writer);
+        assert!(matches!(
+            result,
+            Err(ProtocolError::Internal(Error::PacketTooBig))
+        ));
     }
 }
