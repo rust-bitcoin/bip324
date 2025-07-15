@@ -44,7 +44,8 @@
 //! # }
 //! ```
 
-use std::io::Cursor;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::vec;
 use std::vec::Vec;
 
@@ -58,6 +59,63 @@ use crate::{
     MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
     NUM_LENGTH_BYTES,
 };
+
+/// An async reader that chains unconsumed handshake data with the underlying stream.
+///
+/// This type is returned from the async handshake process and ensures that any
+/// unread bytes from the handshake (such as partial packets in the garbage buffer)
+/// are read before data from the underlying stream.
+///
+/// # Implementation Note
+///
+/// Once Type Alias Impl Trait (TAIT) stabilizes, this should be simplified to a type alias.
+pub struct ProtocolSessionReader<R> {
+    /// Leftover bytes from the handshake that need to be read first.
+    leftover: Vec<u8>,
+    /// Current position in the leftover buffer.
+    leftover_pos: usize,
+    /// The underlying async reader.
+    reader: R,
+}
+
+impl<R> ProtocolSessionReader<R> {
+    /// Create a new async session reader from leftover handshake bytes and the underlying reader.
+    fn new(leftover: Vec<u8>, reader: R) -> Self {
+        Self {
+            leftover,
+            leftover_pos: 0,
+            reader,
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for ProtocolSessionReader<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Manually implement AsyncRead chaining instead of using
+        // tokio's chain() because chain() returns an unnameable `impl AsyncRead` type.
+
+        // Get a normal mutable reference from the Pin.
+        // This is safe because R: Unpin.
+        let this = self.get_mut();
+
+        // First, drain any leftover bytes from the handshake
+        if this.leftover_pos < this.leftover.len() {
+            let remaining = &this.leftover[this.leftover_pos..];
+            let to_copy = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..to_copy]);
+            this.leftover_pos += to_copy;
+            return Poll::Ready(Ok(()));
+        }
+
+        // Once leftover is drained, delegate to the underlying reader.
+        // We need to re-pin the reader for the async read call.
+        Pin::new(&mut this.reader).poll_read(cx, buf)
+    }
+}
 
 /// Perform an async BIP-324 handshake and return ready-to-use session components.
 ///
@@ -80,7 +138,7 @@ use crate::{
 /// # Returns
 ///
 /// A `Result` containing:
-///   * `Ok((InboundCipher, OutboundCipher, SessionReader<R>))`: Ready-to-use session components.
+///   * `Ok((InboundCipher, OutboundCipher, ProtocolSessionReader<R>))`: Ready-to-use session components.
 ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
 ///
 /// # Errors
@@ -93,7 +151,7 @@ pub async fn handshake<R, W>(
     decoys: Option<&[&[u8]]>,
     mut reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, impl AsyncRead + Unpin + Send), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
 where
     R: AsyncRead + Send + Unpin,
     W: AsyncWrite + Unpin,
@@ -150,7 +208,8 @@ where
     };
 
     // Process remaining bytes for decoy packets and version.
-    let mut session_reader = Cursor::new(garbage_buffer[garbage_bytes..].to_vec()).chain(reader);
+    let leftover_bytes = garbage_buffer[garbage_bytes..].to_vec();
+    let mut session_reader = ProtocolSessionReader::new(leftover_bytes, reader);
     let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
     loop {
         // Decrypt packet length.
@@ -221,7 +280,7 @@ where
         decoys: Option<&'a [&'a [u8]]>,
         reader: R,
         mut writer: W,
-    ) -> Result<Protocol<impl AsyncRead + Unpin + Send, W>, ProtocolError> {
+    ) -> Result<Protocol<R, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
             handshake(network, role, garbage, decoys, reader, &mut writer).await?;
 
@@ -239,12 +298,7 @@ where
     }
 
     /// Split the protocol into a separate reader and writer.
-    pub fn into_split(
-        self,
-    ) -> (
-        ProtocolReader<impl AsyncRead + Unpin + Send>,
-        ProtocolWriter<W>,
-    ) {
+    pub fn into_split(self) -> (ProtocolReader<R>, ProtocolWriter<W>) {
         (self.reader, self.writer)
     }
 
@@ -315,7 +369,7 @@ impl DecryptState {
 /// Manages an async buffer to automatically decrypt contents of received packets.
 pub struct ProtocolReader<R> {
     inbound_cipher: InboundCipher,
-    reader: R,
+    reader: ProtocolSessionReader<R>,
     state: DecryptState,
 }
 
@@ -367,7 +421,7 @@ where
     }
 
     /// Consume the protocol reader in exchange for the underlying inbound cipher and reader.
-    pub fn into_inner(self) -> (InboundCipher, R) {
+    pub fn into_inner(self) -> (InboundCipher, ProtocolSessionReader<R>) {
         (self.inbound_cipher, self.reader)
     }
 }
