@@ -7,7 +7,6 @@
 //! 3. **Decoy Packets**: Optional decoy packets can be sent to further obscure traffic patterns.
 //! 4. **Version Authentication**: Version packets are exchanged to negotiate the protocol version for the channel.
 //! 5. **Session Establishment**: The secure communication channel is ready for message exchange.
-//! ```
 
 use bitcoin::{
     key::Secp256k1,
