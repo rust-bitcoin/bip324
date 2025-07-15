@@ -4,7 +4,7 @@
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
-STABLE_TOOLCHAIN := "1.87.0"
+STABLE_TOOLCHAIN := "1.88.0"
 
 @_default:
   just --list
