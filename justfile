@@ -100,6 +100,6 @@ STABLE_TOOLCHAIN := "1.88.0"
   if ! grep -q '^version = "{{version}}"' {{crate}}/Cargo.toml; then \
     echo "tag: Cargo.toml version mismatch"; exit 1; fi
   # An annotated release tag is specific to a crate following the convention crate-version.
-  echo "Adding release tag {{crate}}-{{version}} and pushing to {{remote}}..."
-  git tag -a {{crate}}-{{version}} -m "Release {{version}} for {{crate}}"
-  git push {{remote}} {{crate}}-{{version}}
+  echo "Adding release tag {{crate}}-v{{version}} and pushing to {{remote}}..."
+  git tag -a {{crate}}-v{{version}} -m "Release v{{version}} for {{crate}}"
+  git push {{remote}} {{crate}}-v{{version}}
