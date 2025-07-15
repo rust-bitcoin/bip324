@@ -4,7 +4,7 @@
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
-STABLE_TOOLCHAIN := "1.87.0"
+STABLE_TOOLCHAIN := "1.88.0"
 
 @_default:
   just --list
@@ -25,6 +25,8 @@ STABLE_TOOLCHAIN := "1.87.0"
   # Static analysis of types and lifetimes.
   # Nightly toolchain required by benches target.
   cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
+  # Build documentation to catch any broken doc links or invalid rustdoc.
+  RUSTDOCFLAGS="-D warnings" cargo +{{STABLE_TOOLCHAIN}} doc --workspace --all-features --no-deps
 
 # Attempt any auto-fixes for format and lints.
 @_check-fix:

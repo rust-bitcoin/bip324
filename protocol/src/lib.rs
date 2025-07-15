@@ -569,7 +569,7 @@ impl InboundCipher {
     /// Decrypt an inbound packet with automatic allocation.
     ///
     /// This is a convenience method that handles buffer allocation automatically.
-    /// For zero-allocation scenarios, use [`decrypt`] instead.
+    /// For zero-allocation scenarios, use [`Self::decrypt`] instead.
     ///
     /// # Arguments
     ///
@@ -681,7 +681,7 @@ impl OutboundCipher {
     /// Encrypt plaintext into a packet with automatic allocation.
     ///
     /// This is a convenience method that handles buffer allocation automatically.
-    /// For zero-allocation scenarios, use [`encrypt`] instead.
+    /// For zero-allocation scenarios, use [`Self::encrypt`] instead.
     ///
     /// # Arguments
     ///
