@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.0
+
+The "I regret RPIT" release.
+
+* Updating the `io::Protocol` and `futures::Protocol` interfaces to use newtypes for the session reader transformation instead of RPIT so that the Protocol types can be named by callers.
+
 ## v0.8.0
 
 Major breaking changes!
