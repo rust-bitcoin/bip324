@@ -44,7 +44,7 @@
 //! ```
 
 use core::fmt;
-use std::io::{Cursor, Read, Write};
+use std::io::{Chain, Cursor, Read, Write};
 use std::vec;
 use std::vec::Vec;
 
@@ -56,6 +56,33 @@ use crate::{
     MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
     NUM_LENGTH_BYTES,
 };
+
+/// A reader that chains unconsumed handshake data with the underlying stream.
+///
+/// This type is returned from the handshake process and ensures that any
+/// unread bytes from the handshake (such as partial packets in the garbage buffer)
+/// are read before data from the underlying stream.
+pub struct ProtocolSessionReader<R> {
+    inner: Chain<Cursor<Vec<u8>>, R>,
+}
+
+impl<R> ProtocolSessionReader<R> {
+    /// Create a new session reader from leftover handshake bytes and the underlying reader.
+    fn new(leftover: Vec<u8>, reader: R) -> Self
+    where
+        R: Read,
+    {
+        Self {
+            inner: Cursor::new(leftover).chain(reader),
+        }
+    }
+}
+
+impl<R: Read> Read for ProtocolSessionReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
 
 /// A decrypted BIP-324 payload.
 ///
@@ -203,7 +230,7 @@ impl fmt::Display for ProtocolError {
 /// # Returns
 ///
 /// A `Result` containing:
-///   * `Ok((InboundCipher, OutboundCipher, impl Read))`: Ready-to-use session components.
+///   * `Ok((InboundCipher, OutboundCipher, ProtocolSessionReader<R>))`: Ready-to-use session components.
 ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
 ///
 /// # Errors
@@ -216,7 +243,7 @@ pub fn handshake<R, W>(
     decoys: Option<&[&[u8]]>,
     reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -234,7 +261,7 @@ fn handshake_with_initialized<R, W>(
     decoys: Option<&[&[u8]]>,
     mut reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, impl Read), ProtocolError>
+) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
 where
     R: Read,
     W: Write,
@@ -289,10 +316,8 @@ where
     };
 
     // Process remaining bytes for decoy packets and version.
-    let mut session_reader = std::io::Read::chain(
-        Cursor::new(garbage_buffer[garbage_bytes..].to_vec()),
-        reader,
-    );
+    let leftover_bytes = garbage_buffer[garbage_bytes..].to_vec();
+    let mut session_reader = ProtocolSessionReader::new(leftover_bytes, reader);
     let mut length_bytes = [0u8; NUM_LENGTH_BYTES];
     loop {
         // Decrypt packet length.
@@ -361,7 +386,7 @@ where
         decoys: Option<&'a [&'a [u8]]>,
         reader: R,
         mut writer: W,
-    ) -> Result<Protocol<impl Read, W>, ProtocolError> {
+    ) -> Result<Protocol<R, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
             handshake(network, role, garbage, decoys, reader, &mut writer)?;
 
@@ -416,7 +441,7 @@ where
 /// Manages a buffer to automatically decrypt contents of received packets.
 pub struct ProtocolReader<R> {
     inbound_cipher: InboundCipher,
-    reader: R,
+    reader: ProtocolSessionReader<R>,
 }
 
 impl<R> ProtocolReader<R>
@@ -445,7 +470,7 @@ where
     }
 
     /// Consume the protocol reader in exchange for the underlying reader and cipher.
-    pub fn into_inner(self) -> (InboundCipher, R) {
+    pub fn into_inner(self) -> (InboundCipher, ProtocolSessionReader<R>) {
         (self.inbound_cipher, self.reader)
     }
 }
