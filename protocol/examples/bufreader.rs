@@ -19,6 +19,7 @@
 //! ```
 
 use bip324::futures::Protocol;
+use bip324::io::Payload;
 use bip324::{Network, Role};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -137,19 +138,19 @@ async fn start_server(
             .await
             .unwrap();
 
-            // Pre-allocate messages to send.
-            let messages: Vec<Vec<u8>> = scenario
+            // Pre-allocate payloads to send.
+            let payloads: Vec<Payload> = scenario
                 .message_sizes
                 .iter()
-                .map(|&size| vec![0x42u8; size])
+                .map(|&size| Payload::genuine(vec![0x42u8; size]))
                 .collect();
 
             // Dump them all at once. This is not very realistic,
             // but the test is trying trying to measure the read
             // syscalls. Don't want to introduce write performance.
             for _ in 0..scenario.iterations {
-                for message in &messages {
-                    protocol.write(message).await.unwrap();
+                for payload in &payloads {
+                    protocol.write(payload).await.unwrap();
                 }
             }
         }

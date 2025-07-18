@@ -14,7 +14,7 @@
 //! ## Synchronous API (requires `std` feature)
 //!
 //! ```no_run
-//! use bip324::io::Protocol;
+//! use bip324::io::{Protocol, Payload};
 //! use bip324::serde::{serialize, deserialize, NetworkMessage};
 //! use std::net::TcpStream;
 //! use std::io::BufReader;
@@ -36,7 +36,7 @@
 //!
 //! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
 //! let serialized = serialize(ping_msg);
-//! protocol.write(&serialized)?;
+//! protocol.write(&Payload::genuine(serialized))?;
 //!
 //! let response = protocol.read()?;
 //! let response_msg: NetworkMessage = deserialize(&response.contents())?;
@@ -51,6 +51,7 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use bip324::futures::Protocol;
+//! use bip324::io::Payload;
 //! use bip324::serde::{serialize, deserialize, NetworkMessage};
 //! use tokio::net::TcpStream;
 //! use tokio::io::BufReader;
@@ -71,7 +72,7 @@
 //!
 //! let ping_msg = NetworkMessage::Ping(12345); // nonce
 //! let serialized = serialize(ping_msg);
-//! protocol.write(&serialized).await?;
+//! protocol.write(&Payload::genuine(serialized)).await?;
 //!
 //! let response = protocol.read().await?;
 //! let response_msg: NetworkMessage = deserialize(&response.contents())?;

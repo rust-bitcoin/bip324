@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use bip324::{
     futures::Protocol,
-    io::ProtocolFailureSuggestion,
+    io::{Payload, ProtocolFailureSuggestion},
     serde::{deserialize, serialize},
     PacketType, Role,
 };
@@ -115,9 +115,8 @@ async fn v2_proxy(
                     msg.command()
                 );
 
-                let contents = serialize(msg);
                 v2_remote_writer
-                    .write(&contents)
+                    .write(&Payload::genuine(serialize(msg)))
                     .await
                     .expect("write to remote");
             },

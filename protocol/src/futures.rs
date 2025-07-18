@@ -14,6 +14,7 @@
 //!
 //! ```no_run
 //! use bip324::futures::Protocol;
+//! use bip324::io::Payload;
 //! use bip324::{Network, Role};
 //! use tokio::net::TcpStream;
 //! use tokio::io::BufReader;
@@ -38,6 +39,7 @@
 //! ).await?;
 //!
 //! // Send and receive encrypted messages
+//! protocol.write(&Payload::genuine(b"Hello, world!".to_vec())).await?;
 //! let response = protocol.read().await?;
 //! println!("Received {} bytes", response.contents().len());
 //! # Ok(())
@@ -55,9 +57,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
     io::{Payload, ProtocolError},
-    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role,
-    MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
-    NUM_LENGTH_BYTES,
+    Error, Handshake, InboundCipher, OutboundCipher, Role, MAX_PACKET_SIZE_FOR_ALLOCATION,
+    NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, NUM_LENGTH_BYTES,
 };
 
 /// An async reader that chains unconsumed handshake data with the underlying stream.
@@ -317,19 +318,17 @@ where
 
     /// Encrypt and write a packet to the underlying writer.
     ///
-    /// This is a convenience method that calls write on the internal writer.
-    ///
     /// # Arguments
     ///
-    /// * `plaintext` - The data to encrypt and send.
+    /// * `payload` - The payload to encrypt and send.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok()`: On successful contents encryption and packet send.
+    ///   * `Ok()`: On successful payload encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub async fn write(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
-        self.writer.write(plaintext).await
+    pub async fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
+        self.writer.write(payload).await
     }
 }
 
@@ -414,7 +413,7 @@ where
                     self.inbound_cipher
                         .decrypt(packet_bytes, &mut plaintext_buffer, None)?;
                     self.state = DecryptState::init_reading_length();
-                    return Ok(Payload::new(plaintext_buffer));
+                    return Ok(Payload::decrypted(plaintext_buffer));
                 }
             }
         }
@@ -436,23 +435,27 @@ impl<W> ProtocolWriter<W>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    /// Encrypt contents and write packet buffer.
+    /// Encrypt payload and write packet buffer.
     ///
     /// # Arguments
     ///
-    /// * `plaintext` - The data to encrypt and send.
+    /// * `payload` - The payload to encrypt and send.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok()`: On successful contents encryption and packet send.
+    ///   * `Ok()`: On successful payload encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub async fn write(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
-        let packet_len = OutboundCipher::encryption_buffer_len(plaintext.len());
+    pub async fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
+        let packet_len = OutboundCipher::encryption_buffer_len(payload.contents().len());
         let mut packet_buffer = vec![0u8; packet_len];
 
-        self.outbound_cipher
-            .encrypt(plaintext, &mut packet_buffer, PacketType::Genuine, None)?;
+        self.outbound_cipher.encrypt(
+            payload.contents(),
+            &mut packet_buffer,
+            payload.packet_type(),
+            None,
+        )?;
 
         self.writer.write_all(&packet_buffer).await?;
         self.writer.flush().await?;
