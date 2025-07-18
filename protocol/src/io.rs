@@ -15,7 +15,7 @@
 //! ```no_run
 //! use std::net::TcpStream;
 //! use std::io::BufReader;
-//! use bip324::io::Protocol;
+//! use bip324::io::{Protocol, Payload};
 //! use bip324::{Network, Role};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +37,7 @@
 //! )?;
 //!
 //! // Send and receive encrypted messages
+//! protocol.write(&Payload::genuine(b"Hello, world!"))?;
 //! let response = protocol.read()?;
 //! println!("Received {} bytes", response.contents().len());
 //! # Ok(())
@@ -84,39 +85,81 @@ impl<R: Read> Read for ProtocolSessionReader<R> {
     }
 }
 
-/// A decrypted BIP-324 payload.
-///
-/// # Invariants
-///
-/// The internal data vector must always contain at least one byte (the header byte).
-/// This invariant is maintained by the decrypt functions which validate that
-/// ciphertext contains at least `NUM_TAG_BYTES + NUM_HEADER_BYTES` before
-/// attempting decryption.
+/// A decrypted payload including its header byte.
 pub struct Payload {
-    data: Vec<u8>,
+    data: PayloadData,
+}
+
+/// Avoid any O(n) re-allocations and  byte copying
+/// on the read and write paths by storing the data in its current form.
+enum PayloadData {
+    /// Data from decryption [header_byte, ...contents].
+    Decrypted(Vec<u8>),
+    /// Data for writing, header + contents stored separately.
+    Parts { header: u8, contents: Vec<u8> },
 }
 
 impl Payload {
-    /// Create a new payload from complete decrypted data (including header byte).
+    /// Create a genuine message payload for writing.
     ///
-    /// The data must contain at least one byte (the header). This is guaranteed
-    /// by the decrypt functions, but can be asserted in debug builds.
-    pub fn new(data: Vec<u8>) -> Self {
+    /// # Arguments
+    ///
+    /// * `contents` - The message contents to be sent (without header byte).
+    pub fn genuine(contents: impl Into<Vec<u8>>) -> Self {
+        Self {
+            data: PayloadData::Parts {
+                header: PacketType::Genuine.to_byte(),
+                contents: contents.into(),
+            },
+        }
+    }
+
+    /// Create a decoy payload for writing.
+    ///
+    /// # Arguments
+    ///
+    /// * `contents` - The decoy data to be sent (without header byte).
+    pub fn decoy(contents: impl Into<Vec<u8>>) -> Self {
+        Self {
+            data: PayloadData::Parts {
+                header: PacketType::Decoy.to_byte(),
+                contents: contents.into(),
+            },
+        }
+    }
+
+    /// Create from decrypted data (header + contents).
+    ///
+    /// # Invariants
+    ///
+    /// The internal data vector must always contain at least one byte (the header byte).
+    /// This invariant is maintained by the decrypt functions which validate that
+    /// ciphertext contains at least `NUM_TAG_BYTES + NUM_HEADER_BYTES` before
+    /// attempting decryption.
+    pub(crate) fn decrypted(data: Vec<u8>) -> Self {
         debug_assert!(
             !data.is_empty(),
             "Payload data must contain at least the header byte"
         );
-        Self { data }
+        Self {
+            data: PayloadData::Decrypted(data),
+        }
     }
 
-    /// Access just the message contents (excluding header byte).
+    /// Get the contents (everything after header byte).
     pub fn contents(&self) -> &[u8] {
-        &self.data[1..]
+        match &self.data {
+            PayloadData::Decrypted(data) => &data[1..],
+            PayloadData::Parts { contents, .. } => contents,
+        }
     }
 
-    /// Extract the packet type from the header byte.
+    /// Get the packet type from header byte.
     pub fn packet_type(&self) -> PacketType {
-        PacketType::from_byte(&self.data[0])
+        match &self.data {
+            PayloadData::Decrypted(data) => PacketType::from_byte(&data[0]),
+            PayloadData::Parts { header, .. } => PacketType::from_byte(header),
+        }
     }
 }
 
@@ -409,8 +452,6 @@ where
 
     /// Read and decrypt a packet from the underlying reader.
     ///
-    /// This is a convenience method that calls read on the internal reader.
-    ///
     /// # Returns
     ///
     /// A `Result` containing:
@@ -422,19 +463,17 @@ where
 
     /// Encrypt and write a packet to the underlying writer.
     ///
-    /// This is a convenience method that calls write on the internal writer.
-    ///
     /// # Arguments
     ///
-    /// * `plaintext` - The data to encrypt and send.
+    /// * `payload` - The payload to encrypt and send.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok()`: On successful contents encryption and packet send.
+    ///   * `Ok()`: On successful payload encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub fn write(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
-        self.writer.write(plaintext)
+    pub fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
+        self.writer.write(payload)
     }
 }
 
@@ -466,7 +505,7 @@ where
         self.reader.read_exact(&mut packet_bytes)?;
         let (_, plaintext_buffer) = self.inbound_cipher.decrypt_to_vec(&packet_bytes, None)?;
 
-        Ok(Payload::new(plaintext_buffer))
+        Ok(Payload::decrypted(plaintext_buffer))
     }
 
     /// Consume the protocol reader in exchange for the underlying reader and cipher.
@@ -485,21 +524,21 @@ impl<W> ProtocolWriter<W>
 where
     W: Write,
 {
-    /// Encrypt contents and write packet to the internal writer.
+    /// Encrypt payload and write packet to the internal writer.
     ///
     /// # Arguments
     ///
-    /// * `plaintext` - The data to encrypt and send.
+    /// * `payload` - The payload to encrypt and send.
     ///
     /// # Returns
     ///
     /// A `Result` containing:
-    ///   * `Ok()`: On successful contents encryption and packet send.
+    ///   * `Ok()`: On successful payload encryption and packet send.
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
-    pub fn write(&mut self, plaintext: &[u8]) -> Result<(), ProtocolError> {
+    pub fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
         let packet_buffer =
             self.outbound_cipher
-                .encrypt_to_vec(plaintext, PacketType::Genuine, None);
+                .encrypt_to_vec(payload.contents(), payload.packet_type(), None);
         self.writer.write_all(&packet_buffer)?;
         self.writer.flush()?;
         Ok(())

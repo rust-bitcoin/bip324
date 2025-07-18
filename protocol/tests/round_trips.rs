@@ -304,7 +304,7 @@ fn regtest_handshake_std() {
     };
 
     use bip324::{
-        io::Protocol,
+        io::{Payload, Protocol},
         serde::{deserialize, serialize, NetworkMessage},
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
@@ -350,7 +350,7 @@ fn regtest_handshake_std() {
 
     let message = serialize(NetworkMessage::Version(msg));
     println!("Sending version message using Protocol::write()");
-    protocol.write(&message).unwrap();
+    protocol.write(&Payload::genuine(message)).unwrap();
 
     println!("Reading version response using Protocol::read()");
     let payload = protocol.read().unwrap();
@@ -371,6 +371,7 @@ async fn regtest_handshake_async() {
 
     use bip324::{
         futures::Protocol,
+        io::Payload,
         serde::{deserialize, serialize, NetworkMessage},
     };
     use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
@@ -420,7 +421,7 @@ async fn regtest_handshake_async() {
 
     let message = serialize(NetworkMessage::Version(msg));
     println!("Sending version message using async Protocol::write()");
-    protocol.write(&message).await.unwrap();
+    protocol.write(&Payload::genuine(message)).await.unwrap();
 
     println!("Reading version response using async Protocol::read()");
     let payload = protocol.read().await.unwrap();
