@@ -36,9 +36,12 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: features, msrv, constraints, or no-std.
+# Run a test suite: features, msrv, constraints, no-std, or all.
 @test suite="features":
   just _test-{{suite}}
+
+# Run all test suites.
+@_test-all: _test-features _test-msrv _test-constraints _test-no-std
 
 # Test library with feature flag matrix compatability.
 @_test-features:
@@ -89,7 +92,7 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Generate HTML coverage report.
   protocol/fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
 
-# Add a release tag and publish to the upstream remote. Need write privileges on the repository.
+# Add a release tag and publish to the upstream remote. Requires write privileges.
 @tag crate version remote="upstream":
   # Guardrails: on a clean main with updated changelog and manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
