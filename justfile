@@ -2,6 +2,9 @@
 #
 # The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
 # required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
+#
+# The root directory of this workspace is "virtual", it has no source code itself, just a holder of crates. This means
+# the cargo commands generally run on all the child crates by default without the `--workspace` flag.
 
 NIGHTLY_TOOLCHAIN := "nightly-2025-07-10"
 STABLE_TOOLCHAIN := "1.88.0"
@@ -18,26 +21,27 @@ STABLE_TOOLCHAIN := "1.88.0"
 
 # Verify check, fails if anything is off. Good for CI.
 @_check-verify:
-  # Cargo's wrapper for rustfmt predates workspaces, so uses the "--all" flag instead of "--workspaces".
-  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --check --all
+  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --check
   # Lint all workspace members. Enable all feature flags. Check all targets (tests, examples) along with library code. Turn warnings into errors.
-  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets -- -D warnings
-  # Static analysis of types and lifetimes.
-  # Nightly toolchain required by benches target.
-  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --all-targets
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --all-features --all-targets -- -D warnings
+  # Static analysis of types and lifetimes. Nightly toolchain required by benches target.
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features --all-targets
   # Build documentation to catch any broken doc links or invalid rustdoc.
-  RUSTDOCFLAGS="-D warnings" cargo +{{STABLE_TOOLCHAIN}} doc --workspace --all-features --no-deps
+  RUSTDOCFLAGS="-D warnings" cargo +{{STABLE_TOOLCHAIN}} doc --all-features --no-deps
 
 # Attempt any auto-fixes for format and lints.
 @_check-fix:
   # No --check flag to actually apply formatting.
-  cargo +{{NIGHTLY_TOOLCHAIN}} fmt --all
+  cargo +{{NIGHTLY_TOOLCHAIN}} fmt
   # Adding --fix flag to apply suggestions with --allow-dirty.
-  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --workspace --all-features --all-targets --fix --allow-dirty -- -D warnings
+  cargo +{{NIGHTLY_TOOLCHAIN}} clippy --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: features, msrv, constraints, or no-std.
+# Run a test suite: features, msrv, constraints, no-std, or all.
 @test suite="features":
   just _test-{{suite}}
+
+# Run all test suites.
+@_test-all: _test-features _test-msrv _test-constraints _test-no-std
 
 # Test library with feature flag matrix compatability.
 @_test-features:
@@ -62,10 +66,10 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Enabling "--all-features" so all dependencies are checked.
   # Clear any previously resolved versions and re-resolve to the minimums.
   rm -f Cargo.lock
-  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features -Z direct-minimal-versions
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features -Z direct-minimal-versions
   # Clear again and check the maximums by ignoring any rust-version caps. 
   rm -f Cargo.lock
-  cargo +{{NIGHTLY_TOOLCHAIN}} check --workspace --all-features --ignore-rust-version
+  cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features --ignore-rust-version
   rm -f Cargo.lock
 
 # Test no standard library support.
@@ -88,7 +92,7 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Generate HTML coverage report.
   protocol/fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
 
-# Add a release tag and publish to the upstream remote. Need write privileges on the repository.
+# Add a release tag and publish to the upstream remote. Requires write privileges.
 @tag crate version remote="upstream":
   # Guardrails: on a clean main with updated changelog and manifest.
   if ! git diff --quiet || ! git diff --cached --quiet; then \
