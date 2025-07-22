@@ -52,7 +52,57 @@ where
     R: Read,
     W: Write + Send + 'static,
 {
-    /// Create a new traffic-shaped protocol.
+    /// Create a new traffic-shaped BIP-324 protocol with automatic handshake.
+    ///
+    /// This function performs a complete BIP-324 handshake and sets up traffic shaping
+    /// based on the provided configuration. Its interface matches that of the underlying
+    /// [`bip324::io::Protocol`], but auto-applies traffic shaping decoy packets.
+    ///
+    /// # Arguments
+    ///
+    /// * `network` - The bitcoin network operating on.
+    /// * `role` - Whether this peer is the `Initiator`or `Responder`.
+    /// * `config` - Traffic shaping configuration specifying padding and decoy strategies.
+    /// * `reader` - The readable half of the connection.
+    /// * `writer` - The writable half of the connection.
+    ///
+    /// # Thread Safety
+    ///
+    /// The writer must be `Send + 'static` because it's moved into a background thread
+    /// that handles automatic decoy packet generation. The reader only needs to implement
+    /// `Read`.
+    ///
+    /// The background decoy thread will automatically shut down when the
+    /// `ShapedProtocol` is dropped.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::net::TcpStream;
+    /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
+    /// use bip324_traffic::io::ShapedProtocol;
+    /// use bip324::{Network, Role};
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let stream = TcpStream::connect("127.0.0.1:8333")?;
+    /// let reader = stream.try_clone()?;
+    /// let writer = stream;
+    ///
+    /// let config = TrafficConfig::new()
+    ///     .with_padding_strategy(PaddingStrategy::Random)
+    ///     .with_decoy_strategy(DecoyStrategy::Random);
+    ///
+    /// let mut protocol = ShapedProtocol::new(
+    ///     Network::Bitcoin,
+    ///     Role::Initiator,
+    ///     config,
+    ///     reader,
+    ///     writer,
+    /// )?;
+    ///
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(
         network: Network,
         role: Role,

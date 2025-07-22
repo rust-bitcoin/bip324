@@ -47,7 +47,58 @@ impl<R> ShapedProtocol<R>
 where
     R: AsyncRead + Unpin + Send,
 {
-    /// Create a new traffic-shaped protocol.
+    /// Create a new traffic-shaped BIP-324 protocol with automatic handshake.
+    ///
+    /// This function performs a complete BIP-324 handshake and sets up traffic shaping
+    /// based on the provided configuration. Its interface matches that of the underlying
+    /// [`bip324::futures::Protocol`], but auto-applies traffic shaping decoy packets.
+    ///
+    /// # Arguments
+    ///
+    /// * `network` - The bitcoin network operating on.
+    /// * `role` - Whether this peer is the `Initiator`or `Responder`.
+    /// * `config` - Traffic shaping configuration specifying padding and decoy strategies.
+    /// * `reader` - The readable half of the connection.
+    /// * `writer` - The writable half of the connection.
+    ///
+    /// # Async Runtime
+    ///
+    /// This function requires a tokio runtime and spawns a background task using
+    /// `tokio::spawn`. The writer must be `Send + 'static` because it's moved into
+    /// this background task.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use tokio::net::TcpStream;
+    /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
+    /// use bip324_traffic::futures::ShapedProtocol;
+    /// use bip324::{Network, Role};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> std::io::Result<()> {
+    /// let stream = TcpStream::connect("127.0.0.1:8333").await?;
+    /// let (reader, writer) = stream.into_split();
+    ///
+    /// let config = TrafficConfig::new()
+    ///     .with_padding_strategy(PaddingStrategy::Random)
+    ///     .with_decoy_strategy(DecoyStrategy::Random);
+    ///
+    /// let mut protocol = ShapedProtocol::new(
+    ///     Network::Bitcoin,
+    ///     Role::Initiator,
+    ///     config,
+    ///     reader,
+    ///     writer,
+    /// ).await?;
+    ///
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This function is *not* cancellation-safe.
     pub async fn new<W>(
         network: Network,
         role: Role,
