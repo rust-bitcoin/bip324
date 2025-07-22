@@ -83,7 +83,7 @@ where
     /// use bip324_traffic::io::ShapedProtocol;
     /// use bip324::{Network, Role};
     ///
-    /// # fn main() -> std::io::Result<()> {
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let stream = TcpStream::connect("127.0.0.1:8333")?;
     /// let reader = stream.try_clone()?;
     /// let writer = stream;
@@ -98,7 +98,7 @@ where
     ///     config,
     ///     reader,
     ///     writer,
-    /// )?;
+    /// ).map_err(|e| format!("Protocol error: {:?}", e))?;
     ///
     /// # Ok(())
     /// # }
@@ -221,5 +221,21 @@ where
         if let Some(decoy) = state.shaper.decoy() {
             let _ = state.writer.write(&decoy);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_protocol_drop() {
+        let reader = Cursor::new(Vec::new());
+        let writer = Cursor::new(Vec::new());
+
+        let config = TrafficConfig::new().with_decoy_strategy(crate::DecoyStrategy::Random);
+        let result = ShapedProtocol::new(Network::Bitcoin, Role::Initiator, config, reader, writer);
+        drop(result);
     }
 }

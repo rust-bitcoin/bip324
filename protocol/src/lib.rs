@@ -78,8 +78,6 @@
 //! let response_msg: NetworkMessage = deserialize(&response.contents())?;
 //! # Ok(())
 //! # }
-//! # #[cfg(not(feature = "tokio"))]
-//! # fn main() {}
 //! ```
 //!
 //! # Message Serialization
@@ -99,8 +97,6 @@
 //! let message: NetworkMessage = deserialize(&received_bytes)?;
 //! # Ok(())
 //! # }
-//! # #[cfg(not(feature = "std"))]
-//! # fn main() {}
 //! ```
 //!
 //! # Performance Considerations

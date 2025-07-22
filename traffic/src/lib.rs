@@ -21,33 +21,28 @@
 //! use bip324_traffic::io::ShapedProtocol;
 //! use bip324::{Network, Role};
 //!
-//! # fn main() -> std::io::Result<()> {
-//! // Configure traffic shaping
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = TrafficConfig::new()
 //!     .with_padding_strategy(PaddingStrategy::Random)
 //!     .with_decoy_strategy(DecoyStrategy::Random);
 //!
-//! // Create a TCP connection
 //! let stream = TcpStream::connect("127.0.0.1:8333")?;
 //! let reader = stream.try_clone()?;
 //! let writer = stream;
 //!
-//! // Create traffic-shaped protocol with handshake
 //! let mut protocol = ShapedProtocol::new(
 //!     Network::Bitcoin,
 //!     Role::Initiator,
 //!     config,
 //!     reader,
 //!     writer,
-//! )?;
+//! ).map_err(|e| format!("Protocol error: {:?}", e))?;
 //!
-//! // Send a message (automatic padding/decoys applied)
 //! use bip324::io::Payload;
 //! let message = Payload::genuine(b"Hello, bitcoin!".to_vec());
-//! protocol.write(&message)?;
+//! protocol.write(&message).map_err(|e| format!("Write error: {:?}", e))?;
 //!
-//! // Read a message (decoys automatically filtered)
-//! let received = protocol.read()?;
+//! let received = protocol.read().map_err(|e| format!("Read error: {:?}", e))?;
 //! println!("Received: {:?}", received.contents());
 //! # Ok(())
 //! # }
@@ -56,40 +51,37 @@
 //! ### Asynchronous I/O Usage (with Tokio)
 //!
 //! ```no_run
-//! use tokio::net::TcpStream;
+//! # #[cfg(feature = "tokio")]
+//! # fn test() {
+//! use tokio::io::{AsyncReadExt, AsyncWriteExt};
 //! use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
 //! use bip324_traffic::futures::ShapedProtocol;
 //! use bip324::{Network, Role};
 //!
-//! # #[tokio::main]
-//! # async fn main() -> std::io::Result<()> {
-//! // Configure traffic shaping
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # let (local, remote) = tokio::io::duplex(1024);
+//! # let (reader, writer) = tokio::io::split(local);
 //! let config = TrafficConfig::new()
 //!     .with_padding_strategy(PaddingStrategy::Random)
 //!     .with_decoy_strategy(DecoyStrategy::Random);
 //!
-//! // Create an async TCP connection
-//! let stream = TcpStream::connect("127.0.0.1:8333").await?;
-//! let (reader, writer) = stream.into_split();
-//!
-//! // Create async traffic-shaped protocol with handshake
 //! let mut protocol = ShapedProtocol::new(
 //!     Network::Bitcoin,
 //!     Role::Initiator,
 //!     config,
 //!     reader,
 //!     writer,
-//! ).await?;
+//! ).await.map_err(|e| format!("Protocol error: {:?}", e))?;
 //!
-//! // Send a message (automatic padding/decoys applied)
 //! use bip324::io::Payload;
 //! let message = Payload::genuine(b"Hello, async bitcoin!".to_vec());
-//! protocol.write(&message).await?;
+//! protocol.write(&message).await.map_err(|e| format!("Write error: {:?}", e))?;
 //!
-//! // Read a message (decoys automatically filtered)
-//! let received = protocol.read().await?;
+//! let received = protocol.read().await.map_err(|e| format!("Read error: {:?}", e))?;
 //! println!("Received: {:?}", received.contents());
 //! # Ok(())
+//! # }
 //! # }
 //! ```
 

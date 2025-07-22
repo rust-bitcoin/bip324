@@ -70,15 +70,17 @@ where
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// # #[cfg(feature = "tokio")]
+    /// # fn test() {
+    /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
     /// use bip324_traffic::futures::ShapedProtocol;
     /// use bip324::{Network, Role};
     ///
-    /// # #[tokio::main]
-    /// # async fn main() -> std::io::Result<()> {
-    /// let stream = TcpStream::connect("127.0.0.1:8333").await?;
-    /// let (reader, writer) = stream.into_split();
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let (local, remote) = tokio::io::duplex(1024);
+    /// # let (reader, writer) = tokio::io::split(local);
     ///
     /// let config = TrafficConfig::new()
     ///     .with_padding_strategy(PaddingStrategy::Random)
@@ -90,9 +92,10 @@ where
     ///     config,
     ///     reader,
     ///     writer,
-    /// ).await?;
+    /// ).await.map_err(|e| format!("Protocol error: {:?}", e))?;
     ///
     /// # Ok(())
+    /// # }
     /// # }
     /// ```
     ///
@@ -238,5 +241,46 @@ async fn writer_task<W>(
             // Exit if all write_tx senders dropped, don't send decoys forever.
             else => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bip324::futures::Protocol;
+
+    #[tokio::test]
+    async fn test_async_protocol_drop() {
+        let (local, remote) = tokio::io::duplex(400_000);
+        let (local_read, local_write) = tokio::io::split(local);
+        let (remote_read, remote_write) = tokio::io::split(remote);
+
+        let _responder_task = tokio::spawn(async move {
+            let responder = Protocol::new(
+                Network::Bitcoin,
+                Role::Responder,
+                None,
+                None,
+                remote_read,
+                remote_write,
+            )
+            .await
+            .expect("responder handshake should succeed");
+
+            responder
+        });
+
+        let config = TrafficConfig::new().with_decoy_strategy(crate::DecoyStrategy::Random);
+        let shaped_protocol = ShapedProtocol::new(
+            Network::Bitcoin,
+            Role::Initiator,
+            config,
+            local_read,
+            local_write,
+        )
+        .await
+        .expect("initiator handshake should succeed");
+
+        drop(shaped_protocol);
     }
 }
