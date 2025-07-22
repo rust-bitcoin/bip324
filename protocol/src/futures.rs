@@ -148,8 +148,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProtocolSessionReader<R> {
 pub async fn handshake<R, W>(
     network: Network,
     role: Role,
-    garbage: Option<&[u8]>,
-    decoys: Option<&[&[u8]]>,
+    garbage: Option<Vec<u8>>,
+    decoys: Option<Vec<Vec<u8>>>,
     mut reader: R,
     writer: &mut W,
 ) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
@@ -157,12 +157,24 @@ where
     R: AsyncRead + Send + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // Convert to references for the lower-level handshake methods.
+    let garbage_ref = garbage.as_deref();
+    // Convert Vec<Vec<u8>> to &[&[u8]] if present.
+    let decoy_refs: Vec<&[u8]>;
+    let decoys_ref = match &decoys {
+        Some(vecs) => {
+            decoy_refs = vecs.iter().map(Vec::as_slice).collect();
+            Some(decoy_refs.as_slice())
+        }
+        None => None,
+    };
+
     let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
 
     // Send local public key and optional garbage.
-    let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage);
+    let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage_ref);
     let mut key_buffer = vec![0u8; key_buffer_len];
-    let handshake = handshake.send_key(garbage, &mut key_buffer)?;
+    let handshake = handshake.send_key(garbage_ref, &mut key_buffer)?;
     writer.write_all(&key_buffer).await?;
     writer.flush().await?;
 
@@ -172,9 +184,9 @@ where
     let handshake = handshake.receive_key(remote_ellswift_buffer)?;
 
     // Send garbage terminator, decoys, and version.
-    let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys);
+    let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys_ref);
     let mut version_buffer = vec![0u8; version_buffer_len];
-    let handshake = handshake.send_version(&mut version_buffer, decoys)?;
+    let handshake = handshake.send_version(&mut version_buffer, decoys_ref)?;
     writer.write_all(&version_buffer).await?;
     writer.flush().await?;
 
@@ -274,11 +286,11 @@ where
     /// # Errors
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
-    pub async fn new<'a>(
+    pub async fn new(
         network: Network,
         role: Role,
-        garbage: Option<&'a [u8]>,
-        decoys: Option<&'a [&'a [u8]]>,
+        garbage: Option<Vec<u8>>,
+        decoys: Option<Vec<Vec<u8>>>,
         reader: R,
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
@@ -486,8 +498,8 @@ mod tests {
             handshake(
                 Network::Bitcoin,
                 Role::Initiator,
-                Some(b"local garbage"),
-                Some(&[b"local decoy"]),
+                Some(b"local garbage".to_vec()),
+                Some(vec![b"local decoy".to_vec()]),
                 local_read,
                 &mut local_write,
             )
@@ -498,8 +510,8 @@ mod tests {
             handshake(
                 Network::Bitcoin,
                 Role::Responder,
-                Some(b"remote garbage"),
-                Some(&[b"remote decoy 1", b"remote decoy 2"]),
+                Some(b"remote garbage".to_vec()),
+                Some(vec![b"remote decoy 1".to_vec(), b"remote decoy 2".to_vec()]),
                 remote_read,
                 &mut remote_write,
             )
@@ -535,12 +547,11 @@ mod tests {
 
         let remote_handshake = tokio::spawn(async move {
             let large_decoy = vec![0u8; MAX_PACKET_SIZE_FOR_ALLOCATION + 1];
-            let remote_decoys: &[&[u8]] = &[&large_decoy];
             handshake(
                 Network::Bitcoin,
                 Role::Responder,
                 None,
-                Some(remote_decoys),
+                Some(vec![large_decoy]),
                 remote_read,
                 &mut remote_write,
             )

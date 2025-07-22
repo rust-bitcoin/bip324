@@ -126,11 +126,10 @@ async fn start_server(
             let (stream, _) = listener.accept().await.unwrap();
             let (reader, writer) = stream.into_split();
 
-            let garbage = vec![0x88u8; 512];
             let mut protocol = Protocol::new(
                 Network::Bitcoin,
                 Role::Responder,
-                Some(&garbage),
+                None,
                 None,
                 reader,
                 writer,

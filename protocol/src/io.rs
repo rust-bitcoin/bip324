@@ -86,12 +86,14 @@ impl<R: Read> Read for ProtocolSessionReader<R> {
 }
 
 /// A decrypted payload including its header byte.
+#[derive(Clone)]
 pub struct Payload {
     data: PayloadData,
 }
 
 /// Avoid any O(n) re-allocations and  byte copying
 /// on the read and write paths by storing the data in its current form.
+#[derive(Clone)]
 enum PayloadData {
     /// Data from decryption [header_byte, ...contents].
     Decrypted(Vec<u8>),
@@ -253,15 +255,12 @@ impl fmt::Display for ProtocolError {
 
 /// Perform a BIP-324 handshake and return ready-to-use session components.
 ///
-/// This function handles the complete handshake process and returns the
-/// cryptographic ciphers and a session reader prepared for encrypted communication.
-///
 /// # Arguments
 ///
 /// * `network` - Network which both parties are operating on.
 /// * `role` - Role in handshake, initiator or responder.
 /// * `garbage` - Optional garbage bytes to send in handshake.
-/// * `decoys` - Optional decoy packet contents bytes to send in handshake.
+/// * `decoys` - Optional decoy packet contents to send in handshake.
 /// * `reader` - Buffer to read packets sent by peer (takes ownership).
 /// * `writer` - Buffer to write packets to peer (takes mutable reference).
 ///
@@ -282,8 +281,8 @@ impl fmt::Display for ProtocolError {
 pub fn handshake<R, W>(
     network: Network,
     role: Role,
-    garbage: Option<&[u8]>,
-    decoys: Option<&[&[u8]]>,
+    garbage: Option<Vec<u8>>,
+    decoys: Option<Vec<Vec<u8>>>,
     reader: R,
     writer: &mut W,
 ) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
@@ -295,13 +294,34 @@ where
     handshake_with_initialized(handshake, garbage, decoys, reader, writer)
 }
 
-/// Internal handshake implementation that accepts an already-initialized handshake.
+/// Perform a BIP-324 handshake and return ready-to-use session components.
 ///
-/// This allows for testing with deterministic handshake states.
+/// # Arguments
+///
+/// * `handshake` - Initialized handshake including its role and rng.
+/// * `garbage` - Optional garbage bytes to send in handshake.
+/// * `decoys` - Optional decoy packet contents to send in handshake.
+/// * `reader` - Buffer to read packets sent by peer (takes ownership).
+/// * `writer` - Buffer to write packets to peer (takes mutable reference).
+///
+/// # Reader Transformation
+///
+/// The I/O reader is transformed in order to handle possible over-read
+/// scenarios while attempting to detect the remote's garbage terminator.
+///
+/// # Returns
+///
+/// A `Result` containing:
+///   * `Ok((InboundCipher, OutboundCipher, ProtocolSessionReader<R>))`: Ready-to-use session components.
+///   * `Err(ProtocolError)`: An error that occurred during the handshake.
+///
+/// # Errors
+///
+/// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
 fn handshake_with_initialized<R, W>(
     handshake: Handshake<handshake::Initialized>,
-    garbage: Option<&[u8]>,
-    decoys: Option<&[&[u8]]>,
+    garbage: Option<Vec<u8>>,
+    decoys: Option<Vec<Vec<u8>>>,
     mut reader: R,
     writer: &mut W,
 ) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
@@ -309,10 +329,22 @@ where
     R: Read,
     W: Write,
 {
+    // Convert to references for the lower-level handshake methods.
+    let garbage_ref = garbage.as_deref();
+    // Convert Vec<Vec<u8>> to &[&[u8]] if present.
+    let decoy_refs: Vec<&[u8]>;
+    let decoys_ref = match &decoys {
+        Some(vecs) => {
+            decoy_refs = vecs.iter().map(Vec::as_slice).collect();
+            Some(decoy_refs.as_slice())
+        }
+        None => None,
+    };
+
     // Send local public key and optional garbage.
-    let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage);
+    let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage_ref);
     let mut key_buffer = vec![0u8; key_buffer_len];
-    let handshake = handshake.send_key(garbage, &mut key_buffer)?;
+    let handshake = handshake.send_key(garbage_ref, &mut key_buffer)?;
     writer.write_all(&key_buffer)?;
     writer.flush()?;
 
@@ -322,9 +354,9 @@ where
     let handshake = handshake.receive_key(remote_ellswift_buffer)?;
 
     // Send garbage terminator, decoys, and version.
-    let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys);
+    let version_buffer_len = Handshake::<handshake::ReceivedKey>::send_version_len(decoys_ref);
     let mut version_buffer = vec![0u8; version_buffer_len];
-    let handshake = handshake.send_version(&mut version_buffer, decoys)?;
+    let handshake = handshake.send_version(&mut version_buffer, decoys_ref)?;
     writer.write_all(&version_buffer)?;
     writer.flush()?;
 
@@ -409,7 +441,7 @@ where
     /// * `network` - Network which both parties are operating on.
     /// * `role` - Role in handshake, initiator or responder.
     /// * `garbage` - Optional garbage bytes to send in handshake.
-    /// * `decoys` - Optional decoy packet contents bytes to send in handshake.
+    /// * `decoys` - Optional decoy packet contents to send in handshake.
     /// * `reader` - Buffer to read packets sent by peer (takes ownership).
     /// * `writer` - Buffer to write packets to peer (takes ownership).
     ///
@@ -422,11 +454,11 @@ where
     /// # Errors
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
-    pub fn new<'a>(
+    pub fn new(
         network: Network,
         role: Role,
-        garbage: Option<&'a [u8]>,
-        decoys: Option<&'a [&'a [u8]]>,
+        garbage: Option<Vec<u8>>,
+        decoys: Option<Vec<Vec<u8>>>,
         reader: R,
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
