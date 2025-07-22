@@ -12,7 +12,7 @@ Bitcoin's original P2P protocol, "V1", was designed without any encryption. Even
 
 BIP-324 - "V2" - encrypted communication protects against the above issues increasing the privacy and censorship-resistance of the bitcoin ecosystem. Any applications communicating with bitcoin nodes, including light clients, should make use of the V2 protocol.
 
-## Packages
+## Crates
 
 * [`protocol`](./protocol) - Exports the `bip324` client library.
 * [`proxy`](./proxy) - A small side-car application to enable V2 communication for V1-only applications.

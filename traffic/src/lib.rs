@@ -410,3 +410,90 @@ impl<R: Rng> TrafficShaper<R> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::mock::StepRng;
+
+    #[test]
+    fn test_traffic_config_builder() {
+        let config = TrafficConfig::new();
+        assert!(matches!(config.padding_strategy, PaddingStrategy::Disabled));
+        assert!(matches!(config.decoy_strategy, DecoyStrategy::Disabled));
+
+        let config = TrafficConfig::new()
+            .with_padding_strategy(PaddingStrategy::Random)
+            .with_decoy_strategy(DecoyStrategy::Random);
+        assert!(matches!(config.padding_strategy, PaddingStrategy::Random));
+        assert!(matches!(config.decoy_strategy, DecoyStrategy::Random));
+    }
+
+    #[test]
+    fn test_traffic_stats_recording() {
+        let stats = TrafficStats::new();
+
+        assert_eq!(stats.bytes_read.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.messages_read.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.messages_written.load(Ordering::Relaxed), 0);
+
+        stats.record_read(100);
+        assert_eq!(stats.bytes_read.load(Ordering::Relaxed), 100);
+        assert_eq!(stats.messages_read.load(Ordering::Relaxed), 1);
+
+        stats.record_write(50);
+        assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 50);
+        assert_eq!(stats.messages_written.load(Ordering::Relaxed), 1);
+
+        assert!(stats.ms_since_last_activity() < 100);
+    }
+
+    #[test]
+    fn test_traffic_shaper_handshake_disabled() {
+        let config = TrafficConfig::new();
+        let stats = Arc::new(TrafficStats::new());
+        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(0, 1));
+
+        let (garbage, decoys) = shaper.handshake();
+        assert!(garbage.is_none());
+        assert!(decoys.is_none());
+    }
+
+    #[test]
+    fn test_traffic_shaper_handshake_with_padding() {
+        let config = TrafficConfig::new().with_padding_strategy(PaddingStrategy::Random);
+        let stats = Arc::new(TrafficStats::new());
+        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(1, 1));
+
+        let (garbage, decoys) = shaper.handshake();
+        assert!(garbage.is_some());
+        assert!(decoys.is_none());
+
+        let garbage = garbage.unwrap();
+        assert!(garbage.len() <= MAX_NUM_GARBAGE_BYTES);
+    }
+
+    #[test]
+    fn test_traffic_shaper_handshake_with_decoys() {
+        let config = TrafficConfig::new().with_decoy_strategy(DecoyStrategy::Random);
+        let stats = Arc::new(TrafficStats::new());
+        let mut shaper = TrafficShaper::with_rng(config, stats.clone(), StepRng::new(1, 1));
+
+        let (garbage, decoys) = shaper.handshake();
+        assert!(garbage.is_none());
+        assert!(decoys.is_some());
+    }
+
+    #[test]
+    fn test_traffic_shaper_padding_disabled() {
+        let config = TrafficConfig::new(); // Padding disabled by default
+        let stats = Arc::new(TrafficStats::new());
+        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(0, 1));
+
+        let genuine = Payload::genuine(vec![1, 2, 3]);
+        let padding = shaper.pad(&genuine);
+
+        assert!(padding.is_none());
+    }
+}
