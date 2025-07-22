@@ -331,15 +331,12 @@ where
 {
     // Convert to references for the lower-level handshake methods.
     let garbage_ref = garbage.as_deref();
-    // Convert Vec<Vec<u8>> to &[&[u8]] if present.
-    let decoy_refs: Vec<&[u8]>;
-    let decoys_ref = match &decoys {
-        Some(vecs) => {
-            decoy_refs = vecs.iter().map(Vec::as_slice).collect();
-            Some(decoy_refs.as_slice())
-        }
-        None => None,
-    };
+    // Convert Vec<Vec<u8>> to &[&[u8]] if present. Need the intermediate Vec<&[u8]> value
+    // to ensure the vector of references lives through the function.
+    let decoy_refs: Option<Vec<&[u8]>> = decoys
+        .as_ref()
+        .map(|vecs| vecs.iter().map(Vec::as_slice).collect());
+    let decoys_ref = decoy_refs.as_deref();
 
     // Send local public key and optional garbage.
     let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage_ref);

@@ -47,7 +47,61 @@ impl<R> ShapedProtocol<R>
 where
     R: AsyncRead + Unpin + Send,
 {
-    /// Create a new traffic-shaped protocol.
+    /// Create a new traffic-shaped BIP-324 protocol with automatic handshake.
+    ///
+    /// This function performs a complete BIP-324 handshake and sets up traffic shaping
+    /// based on the provided configuration. Its interface matches that of the underlying
+    /// [`bip324::futures::Protocol`], but auto-applies traffic shaping decoy packets.
+    ///
+    /// # Arguments
+    ///
+    /// * `network` - The bitcoin network operating on.
+    /// * `role` - Whether this peer is the `Initiator`or `Responder`.
+    /// * `config` - Traffic shaping configuration specifying padding and decoy strategies.
+    /// * `reader` - The readable half of the connection.
+    /// * `writer` - The writable half of the connection.
+    ///
+    /// # Async Runtime
+    ///
+    /// This function requires a tokio runtime and spawns a background task using
+    /// `tokio::spawn`. The writer must be `Send + 'static` because it's moved into
+    /// this background task.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "tokio")]
+    /// # fn test() {
+    /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
+    /// use bip324_traffic::futures::ShapedProtocol;
+    /// use bip324::{Network, Role};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let (local, remote) = tokio::io::duplex(1024);
+    /// # let (reader, writer) = tokio::io::split(local);
+    ///
+    /// let config = TrafficConfig::new()
+    ///     .with_padding_strategy(PaddingStrategy::Random)
+    ///     .with_decoy_strategy(DecoyStrategy::Random);
+    ///
+    /// let mut protocol = ShapedProtocol::new(
+    ///     Network::Bitcoin,
+    ///     Role::Initiator,
+    ///     config,
+    ///     reader,
+    ///     writer,
+    /// ).await.map_err(|e| format!("Protocol error: {:?}", e))?;
+    ///
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    ///
+    /// # Cancellation Safety
+    ///
+    /// This function is *not* cancellation-safe.
     pub async fn new<W>(
         network: Network,
         role: Role,
@@ -187,5 +241,46 @@ async fn writer_task<W>(
             // Exit if all write_tx senders dropped, don't send decoys forever.
             else => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bip324::futures::Protocol;
+
+    #[tokio::test]
+    async fn test_async_protocol_drop() {
+        let (local, remote) = tokio::io::duplex(400_000);
+        let (local_read, local_write) = tokio::io::split(local);
+        let (remote_read, remote_write) = tokio::io::split(remote);
+
+        let _responder_task = tokio::spawn(async move {
+            let responder = Protocol::new(
+                Network::Bitcoin,
+                Role::Responder,
+                None,
+                None,
+                remote_read,
+                remote_write,
+            )
+            .await
+            .expect("responder handshake should succeed");
+
+            responder
+        });
+
+        let config = TrafficConfig::new().with_decoy_strategy(crate::DecoyStrategy::Random);
+        let shaped_protocol = ShapedProtocol::new(
+            Network::Bitcoin,
+            Role::Initiator,
+            config,
+            local_read,
+            local_write,
+        )
+        .await
+        .expect("initiator handshake should succeed");
+
+        drop(shaped_protocol);
     }
 }
