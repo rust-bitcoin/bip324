@@ -57,6 +57,7 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Handles creating sandboxed environments to ensure no newer binaries sneak in.
   cargo install cargo-msrv@0.18.4
   cargo msrv --manifest-path protocol/Cargo.toml verify --all-features
+  cargo msrv --manifest-path traffic/Cargo.toml verify --all-features
 
 # Check minimum and maximum dependency contraints.
 @_test-constraints:

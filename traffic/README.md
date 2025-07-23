@@ -35,5 +35,6 @@ The goal is not to make bitcoin traffic completely unidentifiable, that maybe im
 ### Decoy Strategies
 
 * `Disabled` - No automatic decoy packets, genuine writes only (default).
-* `Random` - Sends randomly sized decoy packets at random intervals. Pure noise.
-* *TODO* `Mimic` - Instead of hiding the bitcoin p2p traffic, embrace it but send even more bitcoin looking things.This could help break any sort of tracking analysis.
+* `Random` - Sends decoy packets at random intervals. Pure noise.
+* *TODO* `Adaptive` - Sends decoy packets based on recent connection activity. 
+* *TODO* `Mimic` - Instead of hiding the bitcoin p2p traffic, embrace it but send even more bitcoin looking things. This could help break any sort of tracking analysis.
