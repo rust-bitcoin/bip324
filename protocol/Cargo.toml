@@ -1,6 +1,6 @@
 [package]
 name = "bip324"
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Nick Johnson <nick@yonson.dev>", "Robert Netzke <rustaceanrob@protonmail.com>"]
 edition = "2021"
 license = "CC0-1.0"
