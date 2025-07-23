@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.0
+
+Optimizations to the I/O interfaces.
+
+* Use the `Payload` type on the read and write path.
+* Take ownership of the garbage and decoy bytes instead of referencing slices.
+
 ## v0.9.0
 
 The "I regret RPIT" release.
