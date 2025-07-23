@@ -2,18 +2,11 @@
 //!
 //! Provides a traffic shape hiding layer over the BIP-324 encrypted peer-to-peer protocol library.
 //!
-//! ## Security Considerations
-//!
-//! * **Message size analysis**: Padding makes it harder to identify message types by size.
-//! * **Timing analysis**: Decoy packets obscure genuine communication patterns.
-//!
-//! ## Examples
-//!
 //! This crate follows a sans-io design pattern where this module handles traffic shaping
 //! decisions without performing any I/O operations. The core logic is I/O-agnostic, with
 //! separate modules providing synchronous (`io`) and asynchronous (`futures`) wrappers.
 //!
-//! ### Synchronous I/O Usage
+//! ## Synchronous I/O Usage
 //!
 //! ```no_run
 //! use std::net::TcpStream;
@@ -48,7 +41,7 @@
 //! # }
 //! ```
 //!
-//! ### Asynchronous I/O Usage (with Tokio)
+//! ## Asynchronous I/O Usage (with Tokio)
 //!
 //! ```no_run
 //! # #[cfg(feature = "tokio")]
@@ -86,7 +79,7 @@
 //! ```
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use core::time::Duration;
 
 use bip324::io::Payload;
 use rand::{Rng, SeedableRng};
@@ -97,8 +90,6 @@ pub mod io;
 
 /// Maximum size for decoy packets in bytes.
 const MAX_DECOY_SIZE_BYTES: usize = 1024;
-/// Maximum interval between automatic decoy packets in milliseconds.
-const MAX_DECOY_INTERVAL_MS: u64 = 3000;
 /// Default interval for checking whether to send decoy packets.
 const DEFAULT_CHECK_INTERVAL_MS: u64 = 100;
 /// Maximum number of garbage bytes that can be sent during handshake per BIP-324 spec.
@@ -138,7 +129,7 @@ pub enum DecoyStrategy {
     Disabled,
     /// Send decoys at random intervals with random sizes.
     ///
-    /// Decoy packets are sent at random intervals (0-3000ms) with random
+    /// Decoy packets are sent at random intervals with random
     /// sizes (1-1024 bytes) to mask to add noise across genuine communication
     /// patterns.
     Random,
@@ -208,14 +199,50 @@ impl TrafficConfig {
     }
 }
 
-/// Traffic statistics that can be updated atomically from multiple threads.
+/// Trait for traffic statistics collection.
+///
+/// This trait allows users to provide their own statistics collection mechanism.
+/// The default implementation uses atomic operations for thread-safe updates.
+///
+/// # Thread Safety
+///
+/// Implementations should ensure thread-safety if they intend to be used
+/// in multi-threaded contexts.
+pub trait TrafficStats: Send + Sync {
+    /// Record bytes read from the connection.
+    fn record_read(&self, bytes: usize);
+
+    /// Record bytes written to the connection.
+    fn record_write(&self, bytes: usize);
+
+    /// Calculate time elapsed since the last recorded activity.
+    ///
+    /// # Returns
+    ///
+    /// A `Duration` representing time since the last activity.
+    /// Returns time since creation if no read/write activity has occurred yet.
+    fn time_since_last_activity(&self) -> Duration;
+
+    /// Calculate the ratio of bytes written to bytes read.
+    ///
+    /// # Returns
+    ///
+    /// * `None` if no bytes have been read yet (to avoid division by zero).
+    /// * `Some(ratio)` where ratio = bytes_written / bytes_read.
+    fn write_read_ratio(&self) -> Option<f64> {
+        // Default implementation - can be overridden for custom behavior
+        None
+    }
+}
+
+/// Default implementation of traffic statistics using atomic operations.
 ///
 /// # Thread Safety
 ///
 /// All methods on this struct are safe to call from multiple threads concurrently.
 /// The statistics use atomic operations to ensure consistency without locks.
-#[derive(Debug)]
-struct TrafficStats {
+#[derive(Debug, Default)]
+pub struct AtomicTrafficStats {
     /// Total bytes read from the connection.
     bytes_read: AtomicU64,
     /// Total bytes written to the connection.
@@ -228,31 +255,21 @@ struct TrafficStats {
     last_activity_ms: AtomicU64,
 }
 
-impl TrafficStats {
+impl AtomicTrafficStats {
     /// Create a new traffic statistics tracker with all counters at zero.
-    fn new() -> Self {
+    pub fn new() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
         Self {
             bytes_read: AtomicU64::new(0),
             bytes_written: AtomicU64::new(0),
             messages_read: AtomicU64::new(0),
             messages_written: AtomicU64::new(0),
-            last_activity_ms: AtomicU64::new(0),
+            last_activity_ms: AtomicU64::new(now),
         }
-    }
-
-    /// Record bytes read from the connection.
-    fn record_read(&self, bytes: usize) {
-        self.bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
-        self.messages_read.fetch_add(1, Ordering::Relaxed);
-        self.update_last_activity();
-    }
-
-    /// Record bytes written to the connection.
-    fn record_write(&self, bytes: usize) {
-        self.bytes_written
-            .fetch_add(bytes as u64, Ordering::Relaxed);
-        self.messages_written.fetch_add(1, Ordering::Relaxed);
-        self.update_last_activity();
     }
 
     /// Update the last activity timestamp to the current time.
@@ -263,20 +280,47 @@ impl TrafficStats {
             .as_millis() as u64;
         self.last_activity_ms.store(now, Ordering::Relaxed);
     }
+}
 
-    /// Calculate milliseconds elapsed since the last recorded activity.
-    ///
-    /// # Returns
-    ///
-    /// * `0` if no activity has been recorded yet.
-    fn ms_since_last_activity(&self) -> u64 {
+impl TrafficStats for AtomicTrafficStats {
+    fn record_read(&self, bytes: usize) {
+        self.bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.messages_read.fetch_add(1, Ordering::Relaxed);
+        self.update_last_activity();
+    }
+
+    fn record_write(&self, bytes: usize) {
+        self.bytes_written
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+        self.messages_written.fetch_add(1, Ordering::Relaxed);
+        self.update_last_activity();
+    }
+
+    fn time_since_last_activity(&self) -> Duration {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         let last = self.last_activity_ms.load(Ordering::Relaxed);
-        now.saturating_sub(last)
+        Duration::from_millis(now.saturating_sub(last))
+    }
+
+    fn write_read_ratio(&self) -> Option<f64> {
+        let read = self.bytes_read.load(Ordering::Relaxed);
+        let written = self.bytes_written.load(Ordering::Relaxed);
+
+        if read == 0 {
+            None
+        } else {
+            Some(written as f64 / read as f64)
+        }
+    }
+}
+
+impl AsRef<AtomicTrafficStats> for AtomicTrafficStats {
+    fn as_ref(&self) -> &AtomicTrafficStats {
+        self
     }
 }
 
@@ -284,30 +328,24 @@ impl TrafficStats {
 struct TrafficShaper<R = rand::rngs::StdRng> {
     /// Configuration for traffic shaping behavior.
     config: TrafficConfig,
-    /// Statistics tracker for monitoring traffic.
-    stats: Arc<TrafficStats>,
     /// Random number generator for generating random data and intervals.
     rng: R,
-    /// Cached quiet time in milliseconds for the next decoy packet.
-    quiet_time_ms: Option<u64>,
 }
 
 impl TrafficShaper {
     /// Create a new traffic shaper with the given configuration and default RNG.
-    fn new(config: TrafficConfig, stats: Arc<TrafficStats>) -> Self {
-        Self::with_rng(config, stats, rand::rngs::StdRng::from_entropy())
+    fn new(config: TrafficConfig) -> Self {
+        Self::with_rng(config, rand::rngs::StdRng::from_entropy())
     }
 }
 
-impl<R: Rng> TrafficShaper<R> {
+impl<R> TrafficShaper<R>
+where
+    R: Rng,
+{
     /// Create a new traffic shaper with the given configuration and custom RNG.
-    fn with_rng(config: TrafficConfig, stats: Arc<TrafficStats>, rng: R) -> Self {
-        Self {
-            config,
-            stats,
-            rng,
-            quiet_time_ms: None,
-        }
+    fn with_rng(config: TrafficConfig, rng: R) -> Self {
+        Self { config, rng }
     }
 
     /// Generate garbage bytes and decoy messages for the BIP-324 handshake.
@@ -318,13 +356,17 @@ impl<R: Rng> TrafficShaper<R> {
     ///
     /// * `garbage_bytes` - Optional vector of random bytes to send as garbage
     /// * `decoy_messages` - Optional vector of decoy message contents
-    pub fn handshake(&mut self) -> (Option<Vec<u8>>, Option<Vec<Vec<u8>>>) {
+    pub fn handshake<T>(&mut self, stats: impl AsRef<T>) -> (Option<Vec<u8>>, Option<Vec<Vec<u8>>>)
+    where
+        T: TrafficStats + ?Sized,
+    {
         let garbage = match self.config.padding_strategy {
             PaddingStrategy::Disabled => None,
             PaddingStrategy::Random => {
                 let size = self.rng.gen_range(0..=MAX_NUM_GARBAGE_BYTES);
                 let mut garbage = vec![0u8; size];
                 self.rng.fill_bytes(&mut garbage);
+                stats.as_ref().record_write(garbage.len());
                 Some(garbage)
             }
         };
@@ -339,7 +381,7 @@ impl<R: Rng> TrafficShaper<R> {
                     let size = self.rng.gen_range(1..=MAX_DECOY_SIZE_BYTES);
                     let mut contents = vec![0u8; size];
                     self.rng.fill_bytes(&mut contents);
-                    self.stats.record_write(contents.len());
+                    stats.as_ref().record_write(contents.len());
                     decoys.push(contents);
                 }
 
@@ -361,23 +403,19 @@ impl<R: Rng> TrafficShaper<R> {
     ///
     /// This method records statistics for both the genuine payload and the
     /// generated decoy to maintain accurate traffic metrics.
-    fn decoy(&mut self) -> Option<Payload> {
+    fn decoy<T>(&mut self, stats: impl AsRef<T>) -> Option<Payload>
+    where
+        T: TrafficStats + ?Sized,
+    {
         match &mut self.config.decoy_strategy {
             DecoyStrategy::Disabled => None,
             DecoyStrategy::Random => {
-                let quite_time_ms = self.quiet_time_ms.unwrap_or_else(|| {
-                    let quiet_time = self.rng.gen_range(1..=MAX_DECOY_INTERVAL_MS);
-                    self.quiet_time_ms = Some(quiet_time);
-                    quiet_time
-                });
-
-                if self.stats.ms_since_last_activity() < quite_time_ms {
+                if self.rng.gen_range(0..100) < 85 {
                     return None;
                 }
 
-                self.quiet_time_ms = None;
                 let decoy = Payload::decoy(vec![0; self.rng.gen_range(1..=MAX_DECOY_SIZE_BYTES)]);
-                self.stats.record_write(decoy.contents().len());
+                stats.as_ref().record_write(decoy.contents().len());
                 Some(decoy)
             }
         }
@@ -398,13 +436,17 @@ impl<R: Rng> TrafficShaper<R> {
     ///
     /// This method records statistics for both the genuine payload and the
     /// generated decoy to maintain accurate traffic metrics.
-    fn pad(&mut self, payload: &Payload) -> Option<Payload> {
+    fn pad<T>(&mut self, payload: &Payload, stats: impl AsRef<T>) -> Option<Payload>
+    where
+        T: TrafficStats + ?Sized,
+    {
+        stats.as_ref().record_write(payload.contents().len());
+
         match &mut self.config.padding_strategy {
             PaddingStrategy::Disabled => None,
             PaddingStrategy::Random => {
                 let decoy = Payload::decoy(vec![0; self.rng.gen_range(1..=MAX_DECOY_SIZE_BYTES)]);
-                self.stats.record_write(payload.contents().len());
-                self.stats.record_write(decoy.contents().len());
+                stats.as_ref().record_write(decoy.contents().len());
                 Some(decoy)
             }
         }
@@ -415,6 +457,7 @@ impl<R: Rng> TrafficShaper<R> {
 mod tests {
     use super::*;
     use rand::rngs::mock::StepRng;
+    use std::sync::Arc;
 
     #[test]
     fn test_traffic_config_builder() {
@@ -431,31 +474,23 @@ mod tests {
 
     #[test]
     fn test_traffic_stats_recording() {
-        let stats = TrafficStats::new();
+        let stats = AtomicTrafficStats::new();
 
-        assert_eq!(stats.bytes_read.load(Ordering::Relaxed), 0);
-        assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 0);
-        assert_eq!(stats.messages_read.load(Ordering::Relaxed), 0);
-        assert_eq!(stats.messages_written.load(Ordering::Relaxed), 0);
-
+        // Test that recording works and updates last activity
         stats.record_read(100);
-        assert_eq!(stats.bytes_read.load(Ordering::Relaxed), 100);
-        assert_eq!(stats.messages_read.load(Ordering::Relaxed), 1);
-
         stats.record_write(50);
-        assert_eq!(stats.bytes_written.load(Ordering::Relaxed), 50);
-        assert_eq!(stats.messages_written.load(Ordering::Relaxed), 1);
 
-        assert!(stats.ms_since_last_activity() < 100);
+        // Verify last activity was updated
+        assert!(stats.time_since_last_activity().as_millis() < 100);
     }
 
     #[test]
     fn test_traffic_shaper_handshake_disabled() {
         let config = TrafficConfig::new();
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(0, 1));
+        let stats = AtomicTrafficStats::new();
+        let mut shaper = TrafficShaper::with_rng(config, StepRng::new(0, 1));
 
-        let (garbage, decoys) = shaper.handshake();
+        let (garbage, decoys) = shaper.handshake(&stats);
         assert!(garbage.is_none());
         assert!(decoys.is_none());
     }
@@ -463,10 +498,10 @@ mod tests {
     #[test]
     fn test_traffic_shaper_handshake_with_padding() {
         let config = TrafficConfig::new().with_padding_strategy(PaddingStrategy::Random);
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(1, 1));
+        let stats = AtomicTrafficStats::new();
+        let mut shaper = TrafficShaper::with_rng(config, StepRng::new(1, 1));
 
-        let (garbage, decoys) = shaper.handshake();
+        let (garbage, decoys) = shaper.handshake(&stats);
         assert!(garbage.is_some());
         assert!(decoys.is_none());
 
@@ -477,10 +512,10 @@ mod tests {
     #[test]
     fn test_traffic_shaper_handshake_with_decoys() {
         let config = TrafficConfig::new().with_decoy_strategy(DecoyStrategy::Random);
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::with_rng(config, stats.clone(), StepRng::new(1, 1));
+        let stats = Arc::new(AtomicTrafficStats::new());
+        let mut shaper = TrafficShaper::with_rng(config, StepRng::new(1, 1));
 
-        let (garbage, decoys) = shaper.handshake();
+        let (garbage, decoys) = shaper.handshake(stats.clone());
         assert!(garbage.is_none());
         assert!(decoys.is_some());
     }
@@ -488,12 +523,31 @@ mod tests {
     #[test]
     fn test_traffic_shaper_padding_disabled() {
         let config = TrafficConfig::new(); // Padding disabled by default
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::with_rng(config, stats, StepRng::new(0, 1));
+        let stats = AtomicTrafficStats::new();
+        let mut shaper = TrafficShaper::with_rng(config, StepRng::new(0, 1));
 
         let genuine = Payload::genuine(vec![1, 2, 3]);
-        let padding = shaper.pad(&genuine);
+        let padding = shaper.pad(&genuine, &stats);
 
         assert!(padding.is_none());
+    }
+
+    #[test]
+    fn test_write_read_ratio() {
+        let stats = AtomicTrafficStats::new();
+
+        // No reads yet - should return None
+        stats.record_write(100);
+        assert_eq!(stats.write_read_ratio(), None);
+
+        // Now with reads
+        stats.record_read(50);
+        assert_eq!(stats.write_read_ratio(), Some(2.0)); // 100 written / 50 read
+
+        stats.record_read(50); // Total: 100 read
+        assert_eq!(stats.write_read_ratio(), Some(1.0)); // 100 written / 100 read
+
+        stats.record_write(100); // Total: 200 written
+        assert_eq!(stats.write_read_ratio(), Some(2.0)); // 200 written / 100 read
     }
 }

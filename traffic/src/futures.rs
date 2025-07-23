@@ -10,7 +10,9 @@ use bip324::futures::{Protocol, ProtocolReader, ProtocolWriter};
 use bip324::io::{Payload, ProtocolError, ProtocolFailureSuggestion};
 use bip324::{Network, Role};
 
-use crate::{TrafficConfig, TrafficShaper, TrafficStats, DEFAULT_CHECK_INTERVAL_MS};
+use crate::{
+    AtomicTrafficStats, TrafficConfig, TrafficShaper, TrafficStats, DEFAULT_CHECK_INTERVAL_MS,
+};
 
 /// Command sent to the writer task.
 struct WriteCommand {
@@ -26,7 +28,7 @@ where
     R: AsyncRead + Unpin + Send,
 {
     reader: ProtocolReader<R>,
-    stats: Arc<TrafficStats>,
+    stats: Arc<AtomicTrafficStats>,
 }
 
 /// Traffic-shaped async protocol writer half.
@@ -112,17 +114,18 @@ where
     where
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::new(config, stats.clone());
-        let (garbage, decoys) = shaper.handshake();
+        let stats = Arc::new(AtomicTrafficStats::new());
+        let mut shaper = TrafficShaper::new(config);
+        let (garbage, decoys) = shaper.handshake(&stats);
 
         let protocol = Protocol::new(network, role, garbage, decoys, reader, writer).await?;
         let (protocol_reader, protocol_writer) = protocol.into_split();
         let (write_tx, write_rx) = mpsc::unbounded_channel();
 
+        let stats_clone = stats.clone();
         // Task will run as long as the write_tx isn't dropped.
         tokio::spawn(async move {
-            writer_task(write_rx, protocol_writer, shaper).await;
+            writer_task(write_rx, protocol_writer, shaper, stats_clone).await;
         });
 
         Ok(Self {
@@ -196,12 +199,14 @@ impl ShapedProtocolWriter {
 }
 
 /// Writer task that handles both genuine writes and decoy generation.
-async fn writer_task<W>(
+async fn writer_task<W, R>(
     mut write_rx: mpsc::UnboundedReceiver<WriteCommand>,
     mut writer: ProtocolWriter<W>,
-    mut shaper: TrafficShaper,
+    mut shaper: TrafficShaper<R>,
+    stats: Arc<AtomicTrafficStats>,
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
+    R: rand::Rng,
 {
     let mut decoy_interval =
         tokio::time::interval(Duration::from_millis(DEFAULT_CHECK_INTERVAL_MS));
@@ -213,7 +218,7 @@ async fn writer_task<W>(
                 let mut result = Ok(());
 
                 // First, send decoy packet if padding is enabled.
-                if let Some(decoy) = shaper.pad(&cmd.payload) {
+                if let Some(decoy) = shaper.pad(&cmd.payload, &stats) {
                     if let Err(e) = writer.write(&decoy).await {
                         result = Err(e);
                     }
@@ -232,7 +237,7 @@ async fn writer_task<W>(
 
             // Concurrently send decoys.
             _ = decoy_interval.tick() => {
-                if let Some(decoy) = shaper.decoy() {
+                if let Some(decoy) = shaper.decoy(&stats) {
                     // Ignore write errors for decoys - they're best-effort.
                     let _ = writer.write(&decoy).await;
                 }

@@ -14,7 +14,7 @@ spec = "config_spec.toml"
 bitcoin = { version = "0.32.4" }
 tokio = { version = "1", features = ["full"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
-bip324 = { path = "../protocol", features = ["tokio"] }
+bip324 = { version = "0.10.0", path = "../protocol", features = ["tokio"] }
 configure_me = "0.4.0"
 log = "0.4.8"
 env_logger = "0.10"

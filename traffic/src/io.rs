@@ -1,16 +1,18 @@
 //! Blocking I/O traffic shaping wrapper for BIP-324 protocol.
 
+use core::time::Duration;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use bip324::io::{Payload, Protocol, ProtocolError, ProtocolReader, ProtocolWriter};
 use bip324::{Network, Role};
 use rand::Rng;
 
-use crate::{TrafficConfig, TrafficShaper, TrafficStats, DEFAULT_CHECK_INTERVAL_MS};
+use crate::{
+    AtomicTrafficStats, TrafficConfig, TrafficShaper, TrafficStats, DEFAULT_CHECK_INTERVAL_MS,
+};
 
 /// Shared writer state protected by a mutex.
 struct WriterState<W, R = rand::rngs::StdRng> {
@@ -24,7 +26,7 @@ where
     R: Read,
 {
     reader: ProtocolReader<R>,
-    stats: Arc<TrafficStats>,
+    stats: Arc<AtomicTrafficStats>,
 }
 
 /// Traffic-shaped protocol writer half.
@@ -33,6 +35,7 @@ where
     W: Write,
 {
     writer_state: Arc<Mutex<WriterState<W>>>,
+    stats: Arc<AtomicTrafficStats>,
     shutdown: Arc<AtomicBool>,
     decoy_handle: Option<thread::JoinHandle<()>>,
 }
@@ -110,9 +113,9 @@ where
         reader: R,
         writer: W,
     ) -> Result<Self, ProtocolError> {
-        let stats = Arc::new(TrafficStats::new());
-        let mut shaper = TrafficShaper::new(config, stats.clone());
-        let (garbage, decoys) = shaper.handshake();
+        let stats = Arc::new(AtomicTrafficStats::new());
+        let mut shaper = TrafficShaper::new(config);
+        let (garbage, decoys) = shaper.handshake(&stats);
 
         let protocol = Protocol::new(network, role, garbage, decoys, reader, writer)?;
         let (protocol_reader, protocol_writer) = protocol.into_split();
@@ -126,23 +129,24 @@ where
         let shutdown = Arc::new(AtomicBool::new(false));
         let writer_state_clone = writer_state.clone();
         let shutdown_clone = shutdown.clone();
+        let stats_clone = stats.clone();
         let decoy_handle = thread::spawn(move || {
-            decoy_thread(writer_state_clone, shutdown_clone);
+            decoy_thread(writer_state_clone, stats_clone, shutdown_clone);
         });
 
         Ok(Self {
             reader: ShapedProtocolReader {
                 reader: protocol_reader,
-                stats,
+                stats: stats.clone(),
             },
             writer: ShapedProtocolWriter {
                 writer_state,
                 shutdown,
                 decoy_handle: Some(decoy_handle),
+                stats,
             },
         })
     }
-
     /// Read a packet from the protocol.
     pub fn read(&mut self) -> Result<Payload, ProtocolError> {
         self.reader.read()
@@ -179,7 +183,7 @@ where
     /// Write a payload with traffic shaping.
     pub fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
         let mut state = self.writer_state.lock().unwrap();
-        if let Some(decoy) = state.shaper.pad(payload) {
+        if let Some(decoy) = state.shaper.pad(payload, &self.stats) {
             state.writer.write(&decoy)?;
         }
         state.writer.write(payload)?;
@@ -202,8 +206,11 @@ where
 }
 
 /// Decoy thread that periodically sends decoy packets.
-fn decoy_thread<W, R>(writer_state: Arc<Mutex<WriterState<W, R>>>, shutdown: Arc<AtomicBool>)
-where
+fn decoy_thread<W, R>(
+    writer_state: Arc<Mutex<WriterState<W, R>>>,
+    stats: Arc<AtomicTrafficStats>,
+    shutdown: Arc<AtomicBool>,
+) where
     W: Write,
     R: Rng,
 {
@@ -218,7 +225,7 @@ where
             Err(_) => continue,
         };
 
-        if let Some(decoy) = state.shaper.decoy() {
+        if let Some(decoy) = state.shaper.decoy(&stats) {
             let _ = state.writer.write(&decoy);
         }
     }
