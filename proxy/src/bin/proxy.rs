@@ -8,12 +8,15 @@ use std::str::FromStr;
 use bip324::{
     futures::Protocol,
     io::{Payload, ProtocolFailureSuggestion},
-    serde::{deserialize, serialize},
     PacketType, Role,
 };
 use bip324_proxy::{V1ProtocolReader, V1ProtocolWriter};
-use bitcoin::Network;
+use bitcoin::{
+    consensus::{deserialize, serialize},
+    Network,
+};
 use log::{debug, error, info};
+use p2p::message::V2NetworkMessage;
 use tokio::{
     net::{TcpListener, TcpStream},
     select,
@@ -116,7 +119,7 @@ async fn v2_proxy(
                 );
 
                 v2_remote_writer
-                    .write(&Payload::genuine(serialize(msg)))
+                    .write(&Payload::genuine(serialize(&msg)))
                     .await
                     .expect("write to remote");
             },
@@ -124,13 +127,13 @@ async fn v2_proxy(
                 let payload = result.expect("read packet");
                 // Ignore decoy packets.
                 if payload.packet_type() == PacketType::Genuine {
-                    let msg = deserialize(payload.contents())
+                    let msg: V2NetworkMessage = deserialize(payload.contents())
                         .expect("deserializable contents into network message");
                     debug!(
                         "Read {} message from remote, writing to client.",
                         msg.command()
                     );
-                    v1_client_writer.write(msg).await.expect("write to client");
+                    v1_client_writer.write(msg.into_payload()).await.expect("write to client");
                 }
             },
         }
