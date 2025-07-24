@@ -5,18 +5,18 @@
 //! The V1 and V2 p2p protocols have different header encodings, so a proxy has to do
 //! a little more work than just encrypt/decrypt. The [`NetworkMessage`]
 //! type is the intermediate state for messages. The V1 side can use the RawNetworkMessage wrapper, but the V2 side
-//! cannot since things like the checksum are not relevant (those responsibilites are pushed
+//! cannot since things like the checksum are not relevant (those responsibilities are pushed
 //! onto the transport in V2).
 
 use std::fmt;
 use std::net::SocketAddr;
 
 use bitcoin::consensus::{Decodable, Encodable};
-use bitcoin::p2p::message::{NetworkMessage, RawNetworkMessage};
-use bitcoin::p2p::Address;
 use bitcoin::Network;
 use hex::prelude::*;
 use log::debug;
+use p2p::message::{NetworkMessage, RawNetworkMessage};
+use p2p::{Address, NetworkExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -27,7 +27,7 @@ const VERSION_COMMAND: [u8; 12] = [
     0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// An error occured while establishing the proxy connection or during the main loop.
+/// An error occurred while establishing the proxy connection or during the main loop.
 #[derive(Debug)]
 pub enum Error {
     WrongNetwork,
@@ -40,9 +40,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::WrongNetwork => write!(f, "recieved message on wrong network"),
+            Error::WrongNetwork => write!(f, "received message on wrong network"),
             Error::Io(e) => write!(f, "network {e:?}"),
-            Error::WrongCommand => write!(f, "recieved message with wrong command"),
+            Error::WrongCommand => write!(f, "received message with wrong command"),
             Error::Protocol(e) => write!(f, "protocol error {e:?}"),
             Error::Serde => write!(f, "unable to serialize command"),
         }
@@ -82,7 +82,8 @@ pub async fn peek_addr(client: &TcpStream, network: Network) -> Result<SocketAdd
 
     // Check network magic.
     debug!("Got magic: {}", &peek_bytes[0..4].to_lower_hex_string());
-    if network.magic().to_bytes().ne(&peek_bytes[0..4]) {
+    let magic = network.default_network_magic();
+    if magic.to_bytes().ne(&peek_bytes[0..4]) {
         return Err(Error::WrongNetwork);
     }
 
@@ -200,7 +201,8 @@ impl<T: AsyncWrite + Unpin> V1ProtocolWriter<T> {
 
     /// Write message to the output stream using v1.
     pub async fn write(&mut self, msg: NetworkMessage) -> Result<(), Error> {
-        let raw = RawNetworkMessage::new(self.network.magic(), msg);
+        let magic = self.network.default_network_magic();
+        let raw = RawNetworkMessage::new(magic, msg);
         let mut buffer = vec![];
         raw.consensus_encode(&mut buffer)
             .map_err(|_| Error::Serde)?;

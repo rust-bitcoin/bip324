@@ -8,20 +8,16 @@
 //! 4. **Version Authentication**: Version packets are exchanged to negotiate the protocol version for the channel.
 //! 5. **Session Establishment**: The secure communication channel is ready for message exchange.
 
-use bitcoin::{
-    key::Secp256k1,
-    secp256k1::{
-        ellswift::{ElligatorSwift, ElligatorSwiftParty},
-        PublicKey, SecretKey, Signing,
-    },
-    Network,
+use secp256k1::{
+    ellswift::{ElligatorSwift, ElligatorSwiftParty},
+    PublicKey, Secp256k1, SecretKey, Signing,
 };
-use rand::Rng;
 
 use crate::{
     CipherSession, Error, OutboundCipher, PacketType, Role, SessionKeyMaterial,
     NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, VERSION_CONTENT,
 };
+use rand::Rng;
 
 // Maximum number of garbage bytes before the terminator.
 const MAX_NUM_GARBAGE_BYTES: usize = 4095;
@@ -93,7 +89,7 @@ pub enum VersionResult<'a> {
 /// 5. Complete - After receiving and authenticating remote's garbage, garbage terminator, decoy packets, and version packet.
 pub struct Handshake<State> {
     /// Bitcoin network both peers are operating on.
-    network: Network,
+    magic: p2p::Magic,
     /// Local role in the handshake, initiator or responder.
     role: Role,
     /// State-specific data.
@@ -103,8 +99,8 @@ pub struct Handshake<State> {
 // Methods available in all states.
 impl<State> Handshake<State> {
     /// Get the network this handshake is operating on.
-    pub fn network(&self) -> Network {
-        self.network
+    pub fn magic(&self) -> p2p::Magic {
+        self.magic
     }
 
     /// Get the local role in the handshake.
@@ -116,22 +112,22 @@ impl<State> Handshake<State> {
 impl Handshake<Initialized> {
     /// Initialize a V2 transport handshake with a remote peer.
     #[cfg(feature = "std")]
-    pub fn new(network: Network, role: Role) -> Result<Self, Error> {
+    pub fn new(magic: p2p::Magic, role: Role) -> Result<Self, Error> {
         let mut rng = rand::thread_rng();
         let curve = Secp256k1::signing_only();
-        Self::new_with_rng(network, role, &mut rng, &curve)
+        Self::new_with_rng(magic, role, &mut rng, &curve)
     }
 
     /// Initialize a V2 transport handshake with remote peer using supplied RNG and secp context.
     pub fn new_with_rng<C: Signing>(
-        network: Network,
+        magic: p2p::Magic,
         role: Role,
         rng: &mut impl Rng,
         curve: &Secp256k1<C>,
     ) -> Result<Self, Error> {
         let mut secret_key_buffer = [0u8; 32];
         rng.fill(&mut secret_key_buffer[..]);
-        let sk = SecretKey::from_slice(&secret_key_buffer)?;
+        let sk = SecretKey::from_byte_array(&secret_key_buffer)?;
         let pk = PublicKey::from_secret_key(curve, &sk);
         let es = ElligatorSwift::from_pubkey(pk);
 
@@ -141,7 +137,7 @@ impl Handshake<Initialized> {
         };
 
         Ok(Handshake {
-            network,
+            magic,
             role,
             state: Initialized { point },
         })
@@ -198,7 +194,7 @@ impl Handshake<Initialized> {
         }
 
         Ok(Handshake {
-            network: self.network,
+            magic: self.magic,
             role: self.role,
             state: SentKey {
                 point: self.state.point,
@@ -235,8 +231,8 @@ impl<'a> Handshake<SentKey<'a>> {
         let their_ellswift = ElligatorSwift::from_array(their_key);
 
         // Check for V1 protocol magic bytes
-        if self.network.magic()
-            == bitcoin::p2p::Magic::from_bytes(
+        if self.magic
+            == p2p::Magic::from_bytes(
                 their_key[..4]
                     .try_into()
                     .expect("64 byte array to have 4 byte prefix"),
@@ -266,11 +262,11 @@ impl<'a> Handshake<SentKey<'a>> {
             responder_ellswift,
             secret,
             party,
-            self.network,
+            self.magic,
         )?;
 
         Ok(Handshake {
-            network: self.network,
+            magic: self.magic,
             role: self.role,
             state: ReceivedKey {
                 session_keys,
@@ -373,7 +369,7 @@ impl<'a> Handshake<ReceivedKey<'a>> {
         )?;
 
         Ok(Handshake {
-            network: self.network,
+            magic: self.magic,
             role: self.role,
             state: SentVersion {
                 cipher,
@@ -414,7 +410,7 @@ impl Handshake<SentVersion> {
     /// use bip324::{Handshake, GarbageResult, SentVersion};
     /// # use bip324::{Role, Network};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # let mut handshake = Handshake::new(p2p::Magic::BITCOIN, Role::Initiator)?;
     /// # // ... complete handshake to SentVersion state ...
     /// # let handshake: Handshake<SentVersion> = todo!();
     ///
@@ -445,7 +441,7 @@ impl Handshake<SentVersion> {
             Ok((garbage, _ciphertext)) => {
                 let consumed_bytes = garbage.len() + NUM_GARBAGE_TERMINTOR_BYTES;
                 let handshake = Handshake {
-                    network: self.network,
+                    magic: self.magic,
                     role: self.role,
                     state: ReceivedGarbage {
                         cipher: self.state.cipher,
@@ -534,7 +530,7 @@ impl<'a> Handshake<ReceivedGarbage<'a>> {
     /// use bip324::{Handshake, VersionResult, ReceivedGarbage, NUM_LENGTH_BYTES};
     /// # use bip324::{Role, Network};
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut handshake = Handshake::new(Network::Bitcoin, Role::Initiator)?;
+    /// # let mut handshake = Handshake::new(p2p::Magic::BITCOIN, Role::Initiator)?;
     /// # // ... complete handshake to ReceivedGarbage state ...
     /// # let mut handshake: Handshake<ReceivedGarbage> = todo!();
     /// # let encrypted_data: &[u8] = todo!();
@@ -602,7 +598,7 @@ mod tests {
         let responder_garbage = vec![4u8, 5u8];
 
         let init_handshake =
-            Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
 
         // Send initiator key + garbage.
         let mut init_buffer =
@@ -612,7 +608,7 @@ mod tests {
             .unwrap();
 
         let resp_handshake =
-            Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Responder).unwrap();
 
         // Send responder key + garbage.
         let mut resp_buffer =
@@ -740,21 +736,24 @@ mod tests {
     fn test_handshake_send_key() {
         // Test with valid garbage length
         let valid_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES];
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES + MAX_NUM_GARBAGE_BYTES];
         let result = handshake.send_key(Some(&valid_garbage), &mut buffer);
         assert!(result.is_ok());
 
         // Test with garbage length exceeding MAX_NUM_GARBAGE_BYTES
         let too_much_garbage = vec![0u8; MAX_NUM_GARBAGE_BYTES + 1];
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let result = handshake.send_key(Some(&too_much_garbage), &mut buffer);
         assert!(matches!(result, Err(Error::TooMuchGarbage)));
 
         // Test too small of buffer
         let buffer_size = NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len() - 1;
         let mut too_small_buffer = vec![0u8; buffer_size];
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let result = handshake.send_key(Some(&valid_garbage), &mut too_small_buffer);
         assert!(
             matches!(result, Err(Error::BufferTooSmall { required_bytes }) if required_bytes == NUM_ELLIGATOR_SWIFT_BYTES + valid_garbage.len()),
@@ -762,7 +761,8 @@ mod tests {
         );
 
         // Test with no garbage
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let result = handshake.send_key(None, &mut buffer);
         assert!(result.is_ok());
     }
@@ -773,9 +773,9 @@ mod tests {
     #[test]
     fn test_handshake_receive_garbage_buffer() {
         let init_handshake =
-            Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let resp_handshake =
-            Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Responder).unwrap();
 
         let mut init_buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let init_handshake = init_handshake.send_key(None, &mut init_buffer).unwrap();
@@ -855,7 +855,8 @@ mod tests {
     #[test]
     fn test_handshake_split_garbage() {
         // Create a handshake and bring it to the SentVersion state to test split_garbage.
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
@@ -890,23 +891,26 @@ mod tests {
     #[test]
     fn test_v1_protocol_detection() {
         // Test that receive_key properly detects V1 protocol magic bytes
-        let handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+        let handshake =
+            Handshake::<Initialized>::new(p2p::Magic::BITCOIN, Role::Initiator).unwrap();
         let mut buffer = vec![0u8; NUM_ELLIGATOR_SWIFT_BYTES];
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
         // Create a key that starts with Bitcoin mainnet magic bytes
         let mut v1_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        v1_key[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+        let magic = p2p::Magic::BITCOIN.to_bytes();
+        v1_key[..4].copy_from_slice(&magic);
 
         let result = handshake.receive_key(v1_key);
         assert!(matches!(result, Err(Error::V1Protocol)));
 
         // Test with different networks
-        let handshake = Handshake::<Initialized>::new(Network::Testnet, Role::Responder).unwrap();
+        let handshake = Handshake::<Initialized>::new(p2p::Magic::SIGNET, Role::Responder).unwrap();
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
         let mut v1_testnet_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        v1_testnet_key[..4].copy_from_slice(&Network::Testnet.magic().to_bytes());
+        let foo_magic = p2p::Magic::SIGNET.to_bytes();
+        v1_testnet_key[..4].copy_from_slice(&foo_magic);
 
         let result = handshake.receive_key(v1_testnet_key);
         assert!(matches!(result, Err(Error::V1Protocol)));

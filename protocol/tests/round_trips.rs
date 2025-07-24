@@ -164,11 +164,15 @@ fn regtest_handshake() {
     };
 
     use bip324::{
-        serde::{deserialize, serialize, NetworkMessage},
         GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, VersionResult,
         NUM_LENGTH_BYTES,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::VersionMessage,
+        Address, ServiceFlags,
+    };
     let bitcoind = regtest_process(TransportVersion::V2);
 
     let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
@@ -272,7 +276,7 @@ fn regtest_handshake() {
         start_height: 0,
         relay: false,
     };
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
     let mut packet = vec![0u8; packet_len];
     encrypter
@@ -291,7 +295,7 @@ fn regtest_handshake() {
     let _ = decrypter
         .decrypt(&response_message, &mut decrypted_message, None)
         .unwrap();
-    let message = deserialize(&decrypted_message[1..]).unwrap(); // Skip header byte
+    let message: V2NetworkMessage = deserialize(&decrypted_message[1..]).unwrap(); // Skip header byte
     assert_eq!(message.cmd(), "version");
 }
 
@@ -303,11 +307,13 @@ fn regtest_handshake_std() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        io::{Payload, Protocol},
-        serde::{deserialize, serialize, NetworkMessage},
+    use bip324::io::{Payload, Protocol};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::VersionMessage,
+        Address, ServiceFlags,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
 
     let bitcoind = regtest_process(TransportVersion::V2);
 
@@ -348,14 +354,14 @@ fn regtest_handshake_std() {
         relay: false,
     };
 
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     println!("Sending version message using Protocol::write()");
     protocol.write(&Payload::genuine(message)).unwrap();
 
     println!("Reading version response using Protocol::read()");
     let payload = protocol.read().unwrap();
 
-    let response_message = deserialize(payload.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     println!("Successfully exchanged version messages using Protocol API!");
@@ -369,12 +375,13 @@ async fn regtest_handshake_async() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        futures::Protocol,
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
+    use bip324::{futures::Protocol, io::Payload};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::VersionMessage,
+        Address, ServiceFlags,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
     use tokio::net::TcpStream;
 
     let bitcoind = regtest_process(TransportVersion::V2);
@@ -419,14 +426,14 @@ async fn regtest_handshake_async() {
         relay: false,
     };
 
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     println!("Sending version message using async Protocol::write()");
     protocol.write(&Payload::genuine(message)).await.unwrap();
 
     println!("Reading version response using async Protocol::read()");
     let payload = protocol.read().await.unwrap();
 
-    let response_message = deserialize(payload.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     println!("Successfully exchanged version messages using async Protocol API!");
@@ -471,7 +478,7 @@ fn regtest_process(transport: TransportVersion) -> bitcoind::Node {
     // Pull executable from auto-downloaded location, unless
     // environment variable override is present. Some operating
     // systems (e.g. NixOS) don't like the downloaded executable
-    // so the environment varible must be used.
+    // so the environment variable must be used.
     let exe_path = bitcoind::exe_path().unwrap();
     println!("Using bitcoind at {exe_path}");
     let mut conf = bitcoind::Conf::default();

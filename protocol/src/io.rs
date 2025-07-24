@@ -28,7 +28,7 @@
 //!
 //! // Establish BIP-324 encrypted connection
 //! let mut protocol = Protocol::new(
-//!     Network::Bitcoin,
+//!     p2p::Magic::BITCOIN,
 //!     Role::Initiator,
 //!     None,  // no garbage bytes
 //!     None,  // no decoy packets
@@ -48,8 +48,6 @@ use core::fmt;
 use std::io::{Chain, Cursor, Read, Write};
 use std::vec;
 use std::vec::Vec;
-
-use bitcoin::Network;
 
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
@@ -279,7 +277,7 @@ impl fmt::Display for ProtocolError {
 ///
 /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
 pub fn handshake<R, W>(
-    network: Network,
+    magic: p2p::Magic,
     role: Role,
     garbage: Option<Vec<u8>>,
     decoys: Option<Vec<Vec<u8>>>,
@@ -290,7 +288,7 @@ where
     R: Read,
     W: Write,
 {
-    let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
+    let handshake = Handshake::<handshake::Initialized>::new(magic, role)?;
     handshake_with_initialized(handshake, garbage, decoys, reader, writer)
 }
 
@@ -452,7 +450,7 @@ where
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
     pub fn new(
-        network: Network,
+        magic: p2p::Magic,
         role: Role,
         garbage: Option<Vec<u8>>,
         decoys: Option<Vec<Vec<u8>>>,
@@ -460,7 +458,7 @@ where
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
-            handshake(network, role, garbage, decoys, reader, &mut writer)?;
+            handshake(magic, role, garbage, decoys, reader, &mut writer)?;
 
         Ok(Protocol {
             reader: ProtocolReader {
@@ -582,7 +580,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{rngs::StdRng, SeedableRng};
+    use secp256k1::rand::{rngs::StdRng, SeedableRng};
     use std::io::Cursor;
 
     /// Generate deterministic handshake messages for testing.
@@ -594,12 +592,12 @@ mod tests {
         garbage: Option<&[u8]>,
         decoys: Option<&[&[u8]]>,
     ) -> Vec<u8> {
-        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secp = secp256k1::Secp256k1::new();
 
         // Create both parties.
         let mut local_rng = StdRng::seed_from_u64(local_seed);
         let local_handshake = Handshake::<handshake::Initialized>::new_with_rng(
-            Network::Bitcoin,
+            p2p::Magic::BITCOIN,
             local_role,
             &mut local_rng,
             &secp,
@@ -612,7 +610,7 @@ mod tests {
             Role::Responder => Role::Initiator,
         };
         let remote_handshake = Handshake::<handshake::Initialized>::new_with_rng(
-            Network::Bitcoin,
+            p2p::Magic::BITCOIN,
             remote_role,
             &mut remote_rng,
             &secp,
@@ -658,9 +656,9 @@ mod tests {
     #[test]
     fn test_handshake_session_reader() {
         let mut init_rng = StdRng::seed_from_u64(42);
-        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secp = secp256k1::Secp256k1::new();
         let init_handshake = Handshake::<handshake::Initialized>::new_with_rng(
-            Network::Bitcoin,
+            p2p::Magic::BITCOIN,
             Role::Initiator,
             &mut init_rng,
             &secp,
@@ -708,9 +706,9 @@ mod tests {
         // that would require excessive memory allocation.
 
         let mut init_rng = StdRng::seed_from_u64(42);
-        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secp = secp256k1::Secp256k1::new();
         let init_handshake = Handshake::<handshake::Initialized>::new_with_rng(
-            Network::Bitcoin,
+            p2p::Magic::BITCOIN,
             Role::Initiator,
             &mut init_rng,
             &secp,

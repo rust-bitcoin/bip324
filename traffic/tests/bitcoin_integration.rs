@@ -11,12 +11,14 @@ fn sync_protocol_with_traffic_shaping() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
-    };
+    use bip324::io::Payload;
     use bip324_traffic::{io::ShapedProtocol, DecoyStrategy, PaddingStrategy, TrafficConfig};
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::VersionMessage,
+        Address, ServiceFlags,
+    };
 
     let bitcoind = regtest_process();
 
@@ -62,43 +64,43 @@ fn sync_protocol_with_traffic_shaping() {
     };
 
     // Send version message
-    let version_message = NetworkMessage::Version(msg);
+    let version_message = V2NetworkMessage::new(NetworkMessage::Version(msg));
     println!("Sending version message with traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(version_message)))
+        .write(&Payload::genuine(serialize(&version_message)))
         .unwrap();
 
     // Read version response
     println!("Reading version response");
     let response = protocol.read().unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     // Send verack
-    let verack_message = NetworkMessage::Verack;
+    let verack_message = V2NetworkMessage::new(NetworkMessage::Verack);
     println!("Sending verack with traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(verack_message)))
+        .write(&Payload::genuine(serialize(&verack_message)))
         .unwrap();
 
     // Read verack response
     println!("Reading verack response");
     let response = protocol.read().unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "verack");
 
     // Exchange a few ping/pong messages to verify the connection remains stable
     for i in 0..3 {
-        let ping_message = NetworkMessage::Ping(i);
+        let ping_message = V2NetworkMessage::new(NetworkMessage::Ping(i));
         println!("Sending ping {i} with traffic shaping");
         protocol
-            .write(&Payload::genuine(serialize(ping_message)))
+            .write(&Payload::genuine(serialize(&ping_message)))
             .unwrap();
 
         // Read until we get a pong (might get other messages)
         loop {
             let response = protocol.read().unwrap();
-            let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+            let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
             if response_message.cmd() == "pong" {
                 println!("Received pong {i}");
                 break;
@@ -122,12 +124,14 @@ async fn async_protocol_with_traffic_shaping() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
-    };
+    use bip324::io::Payload;
     use bip324_traffic::{futures::ShapedProtocol, DecoyStrategy, PaddingStrategy, TrafficConfig};
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::VersionMessage,
+        Address, ServiceFlags,
+    };
     use tokio::net::TcpStream;
 
     let bitcoind = regtest_process();
@@ -177,46 +181,46 @@ async fn async_protocol_with_traffic_shaping() {
     };
 
     // Send version message
-    let version_message = NetworkMessage::Version(msg);
+    let version_message = V2NetworkMessage::new(NetworkMessage::Version(msg));
     println!("Sending version message with async traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(version_message)))
+        .write(&Payload::genuine(serialize(&version_message)))
         .await
         .unwrap();
 
     // Read version response
     println!("Reading version response");
     let response = protocol.read().await.unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     // Send verack
-    let verack_message = NetworkMessage::Verack;
+    let verack_message = V2NetworkMessage::new(NetworkMessage::Verack);
     println!("Sending verack with async traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(verack_message)))
+        .write(&Payload::genuine(serialize(&verack_message)))
         .await
         .unwrap();
 
     // Read verack response
     println!("Reading verack response");
     let response = protocol.read().await.unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "verack");
 
     // Exchange a few ping/pong messages to verify the connection remains stable
     for i in 0..3 {
-        let ping_message = NetworkMessage::Ping(i);
+        let ping_message = V2NetworkMessage::new(NetworkMessage::Ping(i));
         println!("Sending async ping {i} with traffic shaping");
         protocol
-            .write(&Payload::genuine(serialize(ping_message)))
+            .write(&Payload::genuine(serialize(&ping_message)))
             .await
             .unwrap();
 
         // Read until we get a pong (might get other messages)
         loop {
             let response = protocol.read().await.unwrap();
-            let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+            let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
             if response_message.cmd() == "pong" {
                 println!("Received async pong {i}");
                 break;

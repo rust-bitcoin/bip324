@@ -30,7 +30,7 @@
 //!
 //! // Establish BIP-324 encrypted connection
 //! let mut protocol = Protocol::new(
-//!     Network::Bitcoin,
+//!     p2p::Magic::BITCOIN,
 //!     Role::Initiator,
 //!     None,  // no garbage bytes
 //!     None,  // no decoy packets
@@ -51,7 +51,6 @@ use std::task::{Context, Poll};
 use std::vec;
 use std::vec::Vec;
 
-use bitcoin::Network;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
@@ -146,7 +145,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProtocolSessionReader<R> {
 ///
 /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
 pub async fn handshake<R, W>(
-    network: Network,
+    magic: p2p::Magic,
     role: Role,
     garbage: Option<Vec<u8>>,
     decoys: Option<Vec<Vec<u8>>>,
@@ -166,7 +165,7 @@ where
         .map(|vecs| vecs.iter().map(Vec::as_slice).collect());
     let decoys_ref = decoy_refs.as_deref();
 
-    let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
+    let handshake = Handshake::<handshake::Initialized>::new(magic, role)?;
 
     // Send local public key and optional garbage.
     let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage_ref);
@@ -284,7 +283,7 @@ where
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
     pub async fn new(
-        network: Network,
+        magic: p2p::Magic,
         role: Role,
         garbage: Option<Vec<u8>>,
         decoys: Option<Vec<Vec<u8>>>,
@@ -292,7 +291,7 @@ where
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
-            handshake(network, role, garbage, decoys, reader, &mut writer).await?;
+            handshake(magic, role, garbage, decoys, reader, &mut writer).await?;
 
         Ok(Protocol {
             reader: ProtocolReader {
@@ -480,7 +479,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::Network;
 
     #[tokio::test]
     async fn test_async_handshake_functions() {
@@ -493,7 +491,7 @@ mod tests {
 
         let local_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                p2p::Magic::BITCOIN,
                 Role::Initiator,
                 Some(b"local garbage".to_vec()),
                 Some(vec![b"local decoy".to_vec()]),
@@ -505,7 +503,7 @@ mod tests {
 
         let remote_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                p2p::Magic::BITCOIN,
                 Role::Responder,
                 Some(b"remote garbage".to_vec()),
                 Some(vec![b"remote decoy 1".to_vec(), b"remote decoy 2".to_vec()]),
@@ -532,7 +530,7 @@ mod tests {
 
         let local_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                p2p::Magic::BITCOIN,
                 Role::Initiator,
                 None,
                 None,
@@ -545,7 +543,7 @@ mod tests {
         let remote_handshake = tokio::spawn(async move {
             let large_decoy = vec![0u8; MAX_PACKET_SIZE_FOR_ALLOCATION + 1];
             handshake(
-                Network::Bitcoin,
+                p2p::Magic::BITCOIN,
                 Role::Responder,
                 None,
                 Some(vec![large_decoy]),
