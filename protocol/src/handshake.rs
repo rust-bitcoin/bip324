@@ -16,6 +16,7 @@ use bitcoin::{
     },
     Network,
 };
+use p2p::NetworkExt;
 use rand::Rng;
 
 use crate::{
@@ -131,7 +132,7 @@ impl Handshake<Initialized> {
     ) -> Result<Self, Error> {
         let mut secret_key_buffer = [0u8; 32];
         rng.fill(&mut secret_key_buffer[..]);
-        let sk = SecretKey::from_slice(&secret_key_buffer)?;
+        let sk = SecretKey::from_byte_array(&secret_key_buffer)?;
         let pk = PublicKey::from_secret_key(curve, &sk);
         let es = ElligatorSwift::from_pubkey(pk);
 
@@ -235,8 +236,8 @@ impl<'a> Handshake<SentKey<'a>> {
         let their_ellswift = ElligatorSwift::from_array(their_key);
 
         // Check for V1 protocol magic bytes
-        if self.network.magic()
-            == bitcoin::p2p::Magic::from_bytes(
+        if self.network.default_network_magic()
+            == p2p::Magic::from_bytes(
                 their_key[..4]
                     .try_into()
                     .expect("64 byte array to have 4 byte prefix"),
@@ -896,17 +897,21 @@ mod tests {
 
         // Create a key that starts with Bitcoin mainnet magic bytes
         let mut v1_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        v1_key[..4].copy_from_slice(&Network::Bitcoin.magic().to_bytes());
+        let magic = p2p::Magic::from_params(Network::Bitcoin)
+            .unwrap()
+            .to_bytes();
+        v1_key[..4].copy_from_slice(&magic);
 
         let result = handshake.receive_key(v1_key);
         assert!(matches!(result, Err(Error::V1Protocol)));
 
         // Test with different networks
-        let handshake = Handshake::<Initialized>::new(Network::Testnet, Role::Responder).unwrap();
+        let handshake = Handshake::<Initialized>::new(Network::Signet, Role::Responder).unwrap();
         let handshake = handshake.send_key(None, &mut buffer).unwrap();
 
         let mut v1_testnet_key = [0u8; NUM_ELLIGATOR_SWIFT_BYTES];
-        v1_testnet_key[..4].copy_from_slice(&Network::Testnet.magic().to_bytes());
+        let foo_magic = p2p::Magic::from_params(Network::Signet).unwrap().to_bytes();
+        v1_testnet_key[..4].copy_from_slice(&foo_magic);
 
         let result = handshake.receive_key(v1_testnet_key);
         assert!(matches!(result, Err(Error::V1Protocol)));

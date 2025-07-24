@@ -11,7 +11,8 @@ readme = "README.md"
 spec = "config_spec.toml"
 
 [dependencies]
-bitcoin = { version = "0.32.4" }
+bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", default-features = true, rev = "bd450d7be31bb50b6bc33f2417bfb5f0b00191b0" }
+p2p = { package = "bitcoin-p2p-messages",  git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "bd450d7be31bb50b6bc33f2417bfb5f0b00191b0" }
 tokio = { version = "1", features = ["full"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
 bip324 = { version = "0.10.0", path = "../protocol", features = ["tokio"] }

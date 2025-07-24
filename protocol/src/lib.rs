@@ -15,7 +15,8 @@
 //!
 //! ```no_run
 //! use bip324::io::{Protocol, Payload};
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use bitcoin::consensus::{serialize, deserialize};
+//! use p2p::message::{NetworkMessage, V2NetworkMessage};
 //! use std::net::TcpStream;
 //! use std::io::BufReader;
 //!
@@ -34,12 +35,12 @@
 //!     writer,
 //! )?;
 //!
-//! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
-//! let serialized = serialize(ping_msg);
+//! let ping_msg = V2NetworkMessage::new(NetworkMessage::Ping(0xdeadbeef));
+//! let serialized = serialize(&ping_msg);
 //! protocol.write(&Payload::genuine(serialized))?;
 //!
 //! let response = protocol.read()?;
-//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
+//! let response_msg: V2NetworkMessage = deserialize(&response.contents())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -52,7 +53,8 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use bip324::futures::Protocol;
 //! use bip324::io::Payload;
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use bitcoin::consensus::{deserialize, serialize};
+//! use p2p::message::{NetworkMessage, V2NetworkMessage};
 //! use tokio::net::TcpStream;
 //! use tokio::io::BufReader;
 //!
@@ -70,31 +72,12 @@
 //!     writer,
 //! ).await?;
 //!
-//! let ping_msg = NetworkMessage::Ping(12345); // nonce
-//! let serialized = serialize(ping_msg);
+//! let ping_msg = V2NetworkMessage::new(NetworkMessage::Ping(12345)); // nonce
+//! let serialized = serialize(&ping_msg);
 //! protocol.write(&Payload::genuine(serialized)).await?;
 //!
 //! let response = protocol.read().await?;
-//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # Message Serialization
-//!
-//! BIP-324 introduces specific changes to how bitcoin P2P messages are serialized for V2 transport.
-//! The [`serde`] module provides these serialization functions.
-//!
-//! ```no_run
-//! # #[cfg(feature = "std")]
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
-//!
-//! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
-//! let serialized = serialize(ping_msg);
-//!
-//! let received_bytes = vec![0x12, 0xef, 0xbe, 0xad, 0xde, 0, 0, 0, 0];
-//! let message: NetworkMessage = deserialize(&received_bytes)?;
+//! let response_msg: V2NetworkMessage = deserialize(&response.contents())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -148,8 +131,6 @@ pub mod futures;
 mod handshake;
 #[cfg(feature = "std")]
 pub mod io;
-#[cfg(feature = "std")]
-pub mod serde;
 
 use core::fmt;
 
@@ -168,6 +149,7 @@ pub use handshake::{
 };
 
 use fschacha20poly1305::{FSChaCha20, FSChaCha20Poly1305};
+use p2p::NetworkExt;
 
 /// Value for header byte with the decoy flag flipped to true.
 pub const DECOY_BYTE: u8 = 128;
@@ -234,10 +216,10 @@ impl fmt::Display for Error {
                 "Packet size exceeds maximum 4MiB size for automatic allocation."
             ),
             Error::NoGarbageTerminator => {
-                write!(f, "More than 4095 bytes of garbage recieved in the handshake before a terminator was sent.")
+                write!(f, "More than 4095 bytes of garbage received in the handshake before a terminator was sent.")
             }
             Error::SecretGeneration(e) => write!(f, "Cannot generate secrets: {e:?}."),
-            Error::Decryption(e) => write!(f, "Decrytion error: {e:?}."),
+            Error::Decryption(e) => write!(f, "Decryption error: {e:?}."),
             Error::V1Protocol => write!(f, "The remote peer is communicating on the V1 protocol."),
             Error::TooMuchGarbage => write!(
                 f,
@@ -353,7 +335,7 @@ impl SessionKeyMaterial {
         let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
 
         let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-        let magic = network.magic().to_bytes();
+        let magic = network.default_network_magic().to_bytes();
         let salt = [ikm_salt, &magic].concat();
         let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ecdh_sk.as_secret_bytes());
         let mut session_id = [0u8; 32];
@@ -376,7 +358,7 @@ impl SessionKeyMaterial {
         hk.expand(garbage_info, &mut garbage)?;
         let initiator_garbage_terminator: [u8; 16] = garbage[..16]
             .try_into()
-            .expect("first 16 btyes of expanded garbage");
+            .expect("first 16 bytes of expanded garbage");
         let responder_garbage_terminator: [u8; 16] = garbage[16..]
             .try_into()
             .expect("last 16 bytes of expanded garbage");
