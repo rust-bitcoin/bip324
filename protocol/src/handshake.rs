@@ -16,10 +16,9 @@ use bitcoin::{
     },
     Network,
 };
-use rand::Rng;
 
 use crate::{
-    CipherSession, Error, OutboundCipher, PacketType, Role, SessionKeyMaterial,
+    CipherSession, Error, FillBytes, OutboundCipher, PacketType, Role, SessionKeyMaterial,
     NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES, VERSION_CONTENT,
 };
 
@@ -117,7 +116,7 @@ impl Handshake<Initialized> {
     /// Initialize a V2 transport handshake with a remote peer.
     #[cfg(feature = "std")]
     pub fn new(network: Network, role: Role) -> Result<Self, Error> {
-        let mut rng = rand::thread_rng();
+        let mut rng = bitcoin::secp256k1::rand::thread_rng();
         let curve = Secp256k1::signing_only();
         Self::new_with_rng(network, role, &mut rng, &curve)
     }
@@ -126,11 +125,12 @@ impl Handshake<Initialized> {
     pub fn new_with_rng<C: Signing>(
         network: Network,
         role: Role,
-        rng: &mut impl Rng,
+        rng: &mut impl FillBytes,
         curve: &Secp256k1<C>,
     ) -> Result<Self, Error> {
         let mut secret_key_buffer = [0u8; 32];
-        rng.fill(&mut secret_key_buffer[..]);
+        rng.fill_bytes(&mut secret_key_buffer);
+        debug_assert_ne!([0u8; 32], secret_key_buffer);
         let sk = SecretKey::from_slice(&secret_key_buffer)?;
         let pk = PublicKey::from_secret_key(curve, &sk);
         let es = ElligatorSwift::from_pubkey(pk);

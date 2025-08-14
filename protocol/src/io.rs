@@ -582,7 +582,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{rngs::StdRng, SeedableRng};
+    use bitcoin::secp256k1::rand::{rngs::StdRng, SeedableRng};
     use std::io::Cursor;
 
     /// Generate deterministic handshake messages for testing.
