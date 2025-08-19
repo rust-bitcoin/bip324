@@ -30,3 +30,8 @@ chacha20-poly1305 = { version = "0.1.1", default-features = false }
 bitcoind = { package = "corepc-node", version = "0.7.1", default-features = false, features = ["26_0","download"] }
 hex = { package = "hex-conservative", version = "0.2.0" }
 tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "macros"] }
+
+# Examples that require tokio features
+[[example]]
+name = "bufreader"
+required-features = ["tokio"]
