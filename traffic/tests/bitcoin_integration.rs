@@ -6,17 +6,18 @@ const PORT: u16 = 18444;
 
 #[test]
 fn sync_protocol_with_traffic_shaping() {
+    use bip324::io::Payload;
+    use bip324_traffic::{io::ShapedProtocol, DecoyStrategy, PaddingStrategy, TrafficConfig};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::{UserAgent, VersionMessage},
+        Address, ProtocolVersion, ServiceFlags,
+    };
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
         time::{SystemTime, UNIX_EPOCH},
     };
-
-    use bip324::{
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
-    };
-    use bip324_traffic::{io::ShapedProtocol, DecoyStrategy, PaddingStrategy, TrafficConfig};
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
 
     let bitcoind = regtest_process();
 
@@ -50,13 +51,13 @@ fn sync_protocol_with_traffic_shaping() {
     let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
     let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
     let msg = VersionMessage {
-        version: 70015,
+        version: ProtocolVersion::INVALID_CB_NO_BAN_VERSION,
         services: ServiceFlags::NONE,
         timestamp: now as i64,
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP-324 Traffic Shaping Test".to_string(),
+        user_agent: UserAgent::from_nonstandard("BIP-324 Traffic Shaping Test"),
         start_height: 0,
         relay: false,
     };
@@ -65,26 +66,26 @@ fn sync_protocol_with_traffic_shaping() {
     let version_message = NetworkMessage::Version(msg);
     println!("Sending version message with traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(version_message)))
+        .write(&Payload::genuine(serialize(&version_message)))
         .unwrap();
 
     // Read version response
     println!("Reading version response");
     let response = protocol.read().unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     // Send verack
     let verack_message = NetworkMessage::Verack;
     println!("Sending verack with traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(verack_message)))
+        .write(&Payload::genuine(serialize(&verack_message)))
         .unwrap();
 
     // Read verack response
     println!("Reading verack response");
     let response = protocol.read().unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "verack");
 
     // Exchange a few ping/pong messages to verify the connection remains stable
@@ -92,13 +93,13 @@ fn sync_protocol_with_traffic_shaping() {
         let ping_message = NetworkMessage::Ping(i);
         println!("Sending ping {i} with traffic shaping");
         protocol
-            .write(&Payload::genuine(serialize(ping_message)))
+            .write(&Payload::genuine(serialize(&ping_message)))
             .unwrap();
 
         // Read until we get a pong (might get other messages)
         loop {
             let response = protocol.read().unwrap();
-            let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+            let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
             if response_message.cmd() == "pong" {
                 println!("Received pong {i}");
                 break;
@@ -122,12 +123,14 @@ async fn async_protocol_with_traffic_shaping() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
-    };
+    use bip324::io::Payload;
     use bip324_traffic::{futures::ShapedProtocol, DecoyStrategy, PaddingStrategy, TrafficConfig};
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::consensus::{deserialize, serialize};
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::{UserAgent, VersionMessage},
+        Address, ProtocolVersion, ServiceFlags,
+    };
     use tokio::net::TcpStream;
 
     let bitcoind = regtest_process();
@@ -165,13 +168,13 @@ async fn async_protocol_with_traffic_shaping() {
     let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
     let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
     let msg = VersionMessage {
-        version: 70015,
+        version: ProtocolVersion::INVALID_CB_NO_BAN_VERSION,
         services: ServiceFlags::NONE,
         timestamp: now as i64,
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP-324 Async Traffic Shaping Test".to_string(),
+        user_agent: UserAgent::from_nonstandard("BIP-324 Async Traffic Shaping Test"),
         start_height: 0,
         relay: false,
     };
@@ -180,28 +183,28 @@ async fn async_protocol_with_traffic_shaping() {
     let version_message = NetworkMessage::Version(msg);
     println!("Sending version message with async traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(version_message)))
+        .write(&Payload::genuine(serialize(&version_message)))
         .await
         .unwrap();
 
     // Read version response
     println!("Reading version response");
     let response = protocol.read().await.unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     // Send verack
     let verack_message = NetworkMessage::Verack;
     println!("Sending verack with async traffic shaping");
     protocol
-        .write(&Payload::genuine(serialize(verack_message)))
+        .write(&Payload::genuine(serialize(&verack_message)))
         .await
         .unwrap();
 
     // Read verack response
     println!("Reading verack response");
     let response = protocol.read().await.unwrap();
-    let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+    let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
     assert_eq!(response_message.cmd(), "verack");
 
     // Exchange a few ping/pong messages to verify the connection remains stable
@@ -209,14 +212,14 @@ async fn async_protocol_with_traffic_shaping() {
         let ping_message = NetworkMessage::Ping(i);
         println!("Sending async ping {i} with traffic shaping");
         protocol
-            .write(&Payload::genuine(serialize(ping_message)))
+            .write(&Payload::genuine(serialize(&ping_message)))
             .await
             .unwrap();
 
         // Read until we get a pong (might get other messages)
         loop {
             let response = protocol.read().await.unwrap();
-            let response_message: NetworkMessage = deserialize(response.contents()).unwrap();
+            let response_message: V2NetworkMessage = deserialize(response.contents()).unwrap();
             if response_message.cmd() == "pong" {
                 println!("Received async pong {i}");
                 break;
