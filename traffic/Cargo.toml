@@ -19,5 +19,6 @@ tokio = { version = "1", features = ["sync", "time", "rt", "macros"], optional =
 
 [dev-dependencies]
 bitcoind = { package = "corepc-node", version = "0.7.1", default-features = false, features = ["26_0","download"] }
-bitcoin = { version = "0.32.4" }
+bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
+p2p = { package = "bitcoin-p2p-messages",  git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net", "io-util"] }
