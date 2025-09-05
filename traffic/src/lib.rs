@@ -12,7 +12,7 @@
 //! use std::net::TcpStream;
 //! use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
 //! use bip324_traffic::io::ShapedProtocol;
-//! use bip324::{Network, Role};
+//! use bip324::Role;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = TrafficConfig::new()
@@ -24,7 +24,7 @@
 //! let writer = stream;
 //!
 //! let mut protocol = ShapedProtocol::new(
-//!     Network::Bitcoin,
+//!     [0xF9, 0xBE, 0xB4, 0xD9], // Bitcoin mainnet magic bytes
 //!     Role::Initiator,
 //!     config,
 //!     reader,
@@ -49,7 +49,7 @@
 //! use tokio::io::{AsyncReadExt, AsyncWriteExt};
 //! use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
 //! use bip324_traffic::futures::ShapedProtocol;
-//! use bip324::{Network, Role};
+//! use bip324::Role;
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,7 +60,7 @@
 //!     .with_decoy_strategy(DecoyStrategy::Random);
 //!
 //! let mut protocol = ShapedProtocol::new(
-//!     Network::Bitcoin,
+//!     [0xF9, 0xBE, 0xB4, 0xD9], // Bitcoin mainnet magic bytes
 //!     Role::Initiator,
 //!     config,
 //!     reader,

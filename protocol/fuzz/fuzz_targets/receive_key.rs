@@ -5,9 +5,11 @@
 //! This focused test fuzzes the elliptic curve point validation and ECDH logic.
 
 #![no_main]
-use bip324::{Handshake, Initialized, Network, Role};
+use bip324::{Handshake, Initialized, Role};
 use libfuzzer_sys::fuzz_target;
 use rand::SeedableRng;
+
+const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
 fuzz_target!(|data: &[u8]| {
     // We need exactly 64 bytes for an ElligatorSwift key.
@@ -24,8 +26,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Set up a handshake in the SentKey state.
     let handshake =
-        Handshake::<Initialized>::new_with_rng(Network::Bitcoin, Role::Initiator, &mut rng, &secp)
-            .unwrap();
+        Handshake::<Initialized>::new_with_rng(MAGIC, Role::Initiator, &mut rng, &secp).unwrap();
     let mut key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let handshake = handshake.send_key(None, &mut key_buffer).unwrap();
 

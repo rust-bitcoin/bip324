@@ -2,6 +2,7 @@
 
 #[cfg(feature = "std")]
 const PORT: u16 = 18444;
+const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
 #[test]
 #[cfg(feature = "std")]
@@ -10,17 +11,16 @@ fn hello_world_happy_path() {
         GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, Role, VersionResult,
         NUM_LENGTH_BYTES,
     };
-    use bitcoin::Network;
 
     // Create initiator handshake
-    let init_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+    let init_handshake = Handshake::<Initialized>::new(MAGIC, Role::Initiator).unwrap();
 
     // Send initiator key
     let mut init_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let init_handshake = init_handshake.send_key(None, &mut init_key_buffer).unwrap();
 
     // Create responder handshake
-    let resp_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+    let resp_handshake = Handshake::<Initialized>::new(MAGIC, Role::Responder).unwrap();
 
     // Send responder key
     let mut resp_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
@@ -164,18 +164,22 @@ fn regtest_handshake() {
     };
 
     use bip324::{
-        serde::{deserialize, serialize, NetworkMessage},
         GarbageResult, Handshake, Initialized, PacketType, ReceivedKey, VersionResult,
         NUM_LENGTH_BYTES,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
+    use bitcoin::consensus;
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::{UserAgent, VersionMessage},
+        Address, ProtocolVersion, ServiceFlags,
+    };
     let bitcoind = regtest_process(TransportVersion::V2);
 
     let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
 
     // Initialize handshake
     let handshake =
-        Handshake::<Initialized>::new(bip324::Network::Regtest, bip324::Role::Initiator).unwrap();
+        Handshake::<Initialized>::new(p2p::Magic::REGTEST, bip324::Role::Initiator).unwrap();
 
     // Send our public key
     let mut public_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
@@ -262,17 +266,17 @@ fn regtest_handshake() {
     let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
     let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
     let msg = VersionMessage {
-        version: 70015,
+        version: ProtocolVersion::INVALID_CB_NO_BAN_VERSION,
         services: ServiceFlags::NONE,
         timestamp: now as i64,
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP-324 Client".to_string(),
+        user_agent: UserAgent::from_nonstandard("BIP-324 Client"),
         start_height: 0,
         relay: false,
     };
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = consensus::serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     let packet_len = bip324::OutboundCipher::encryption_buffer_len(message.len());
     let mut packet = vec![0u8; packet_len];
     encrypter
@@ -291,7 +295,7 @@ fn regtest_handshake() {
     let _ = decrypter
         .decrypt(&response_message, &mut decrypted_message, None)
         .unwrap();
-    let message = deserialize(&decrypted_message[1..]).unwrap(); // Skip header byte
+    let message = consensus::deserialize::<V2NetworkMessage>(&decrypted_message[1..]).unwrap(); // Skip header byte
     assert_eq!(message.cmd(), "version");
 }
 
@@ -303,11 +307,13 @@ fn regtest_handshake_std() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        io::{Payload, Protocol},
-        serde::{deserialize, serialize, NetworkMessage},
+    use bip324::io::{Payload, Protocol};
+    use bitcoin::consensus;
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::{UserAgent, VersionMessage},
+        Address, ProtocolVersion, ServiceFlags,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
 
     let bitcoind = regtest_process(TransportVersion::V2);
 
@@ -318,7 +324,7 @@ fn regtest_handshake_std() {
     // Initialize high-level protocol with handshake
     println!("Starting BIP-324 handshake");
     let mut protocol = Protocol::new(
-        bip324::Network::Regtest,
+        p2p::Magic::REGTEST,
         bip324::Role::Initiator,
         None, // no garbage
         None, // no decoys
@@ -337,25 +343,25 @@ fn regtest_handshake_std() {
     let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
     let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
     let msg = VersionMessage {
-        version: 70015,
+        version: ProtocolVersion::INVALID_CB_NO_BAN_VERSION,
         services: ServiceFlags::NONE,
         timestamp: now as i64,
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP-324 Client".to_string(),
+        user_agent: UserAgent::from_nonstandard("BIP-324 Client"),
         start_height: 0,
         relay: false,
     };
 
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = consensus::serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     println!("Sending version message using Protocol::write()");
     protocol.write(&Payload::genuine(message)).unwrap();
 
     println!("Reading version response using Protocol::read()");
     let payload = protocol.read().unwrap();
 
-    let response_message = deserialize(payload.contents()).unwrap();
+    let response_message = consensus::deserialize::<V2NetworkMessage>(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     println!("Successfully exchanged version messages using Protocol API!");
@@ -369,12 +375,13 @@ async fn regtest_handshake_async() {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bip324::{
-        futures::Protocol,
-        io::Payload,
-        serde::{deserialize, serialize, NetworkMessage},
+    use bip324::{futures::Protocol, io::Payload};
+    use bitcoin::consensus;
+    use p2p::{
+        message::{NetworkMessage, V2NetworkMessage},
+        message_network::{UserAgent, VersionMessage},
+        Address, ProtocolVersion, ServiceFlags,
     };
-    use bitcoin::p2p::{message_network::VersionMessage, Address, ServiceFlags};
     use tokio::net::TcpStream;
 
     let bitcoind = regtest_process(TransportVersion::V2);
@@ -388,7 +395,7 @@ async fn regtest_handshake_async() {
     // Initialize high-level async protocol with handshake
     println!("Starting async BIP-324 handshake");
     let mut protocol = Protocol::new(
-        bip324::Network::Regtest,
+        p2p::Magic::REGTEST,
         bip324::Role::Initiator,
         None, // no garbage
         None, // no decoys
@@ -408,25 +415,25 @@ async fn regtest_handshake_async() {
     let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT);
     let from_and_recv = Address::new(&ip, ServiceFlags::NONE);
     let msg = VersionMessage {
-        version: 70015,
+        version: ProtocolVersion::INVALID_CB_NO_BAN_VERSION,
         services: ServiceFlags::NONE,
         timestamp: now as i64,
         receiver: from_and_recv.clone(),
         sender: from_and_recv,
         nonce: 1,
-        user_agent: "BIP-324 Async Client".to_string(),
+        user_agent: UserAgent::from_nonstandard("BIP-324 Client"),
         start_height: 0,
         relay: false,
     };
 
-    let message = serialize(NetworkMessage::Version(msg));
+    let message = consensus::serialize(&V2NetworkMessage::new(NetworkMessage::Version(msg)));
     println!("Sending version message using async Protocol::write()");
     protocol.write(&Payload::genuine(message)).await.unwrap();
 
     println!("Reading version response using async Protocol::read()");
     let payload = protocol.read().await.unwrap();
 
-    let response_message = deserialize(payload.contents()).unwrap();
+    let response_message = consensus::deserialize::<V2NetworkMessage>(payload.contents()).unwrap();
     assert_eq!(response_message.cmd(), "version");
 
     println!("Successfully exchanged version messages using async Protocol API!");
@@ -447,7 +454,7 @@ fn regtest_handshake_v1_only() {
     let mut stream = TcpStream::connect(bitcoind.params.p2p_socket.unwrap()).unwrap();
 
     let handshake =
-        Handshake::<Initialized>::new(bip324::Network::Regtest, bip324::Role::Initiator).unwrap();
+        Handshake::<Initialized>::new(p2p::Magic::REGTEST, bip324::Role::Initiator).unwrap();
     let mut public_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let _handshake = handshake.send_key(None, &mut public_key).unwrap();
     println!("Writing public key to the remote node");
@@ -471,7 +478,7 @@ fn regtest_process(transport: TransportVersion) -> bitcoind::Node {
     // Pull executable from auto-downloaded location, unless
     // environment variable override is present. Some operating
     // systems (e.g. NixOS) don't like the downloaded executable
-    // so the environment varible must be used.
+    // so the environment variable must be used.
     let exe_path = bitcoind::exe_path().unwrap();
     println!("Using bitcoind at {exe_path}");
     let mut conf = bitcoind::Conf::default();

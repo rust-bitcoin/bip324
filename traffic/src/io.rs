@@ -1,13 +1,14 @@
 //! Blocking I/O traffic shaping wrapper for BIP-324 protocol.
 
 use core::time::Duration;
+use std::borrow::Borrow;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use bip324::io::{Payload, Protocol, ProtocolError, ProtocolReader, ProtocolWriter};
-use bip324::{Network, Role};
+use bip324::Role;
 use rand::Rng;
 
 use crate::{
@@ -84,7 +85,7 @@ where
     /// use std::net::TcpStream;
     /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
     /// use bip324_traffic::io::ShapedProtocol;
-    /// use bip324::{Network, Role};
+    /// use bip324::Role;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let stream = TcpStream::connect("127.0.0.1:8333")?;
@@ -96,7 +97,7 @@ where
     ///     .with_decoy_strategy(DecoyStrategy::Random);
     ///
     /// let mut protocol = ShapedProtocol::new(
-    ///     Network::Bitcoin,
+    ///     p2p::Magic::BITCOIN,
     ///     Role::Initiator,
     ///     config,
     ///     reader,
@@ -107,7 +108,7 @@ where
     /// # }
     /// ```
     pub fn new(
-        network: Network,
+        magic: impl Borrow<[u8; 4]>,
         role: Role,
         config: TrafficConfig,
         reader: R,
@@ -117,7 +118,7 @@ where
         let mut shaper = TrafficShaper::new(config);
         let (garbage, decoys) = shaper.handshake(&stats);
 
-        let protocol = Protocol::new(network, role, garbage, decoys, reader, writer)?;
+        let protocol = Protocol::new(magic, role, garbage, decoys, reader, writer)?;
         let (protocol_reader, protocol_writer) = protocol.into_split();
 
         let writer_state = Arc::new(Mutex::new(WriterState {
@@ -236,13 +237,15 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
+
     #[test]
     fn test_protocol_drop() {
         let reader = Cursor::new(Vec::new());
         let writer = Cursor::new(Vec::new());
 
         let config = TrafficConfig::new().with_decoy_strategy(crate::DecoyStrategy::Random);
-        let result = ShapedProtocol::new(Network::Bitcoin, Role::Initiator, config, reader, writer);
+        let result = ShapedProtocol::new(MAGIC, Role::Initiator, config, reader, writer);
         drop(result);
     }
 }
