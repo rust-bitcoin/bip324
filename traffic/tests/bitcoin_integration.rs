@@ -33,7 +33,7 @@ fn sync_protocol_with_traffic_shaping() {
     // Initialize traffic-shaped protocol with handshake
     println!("Starting BIP-324 handshake with traffic shaping");
     let mut protocol = ShapedProtocol::new(
-        bip324::Network::Regtest,
+        p2p::Magic::REGTEST,
         bip324::Role::Initiator,
         config,
         reader,
@@ -152,7 +152,7 @@ async fn async_protocol_with_traffic_shaping() {
     // Initialize traffic-shaped async protocol with handshake
     println!("Starting async BIP-324 handshake with traffic shaping");
     let mut protocol = ShapedProtocol::new(
-        bip324::Network::Regtest,
+        p2p::Magic::REGTEST,
         bip324::Role::Initiator,
         config,
         reader,

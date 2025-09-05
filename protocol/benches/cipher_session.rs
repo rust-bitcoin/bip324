@@ -5,21 +5,22 @@
 extern crate test;
 
 use bip324::{
-    CipherSession, GarbageResult, Handshake, InboundCipher, Initialized, Network, OutboundCipher,
+    CipherSession, GarbageResult, Handshake, InboundCipher, Initialized, OutboundCipher,
     PacketType, ReceivedKey, Role, VersionResult, NUM_LENGTH_BYTES,
 };
+use p2p::Magic;
 use test::{black_box, Bencher};
 
 fn create_cipher_session_pair() -> (CipherSession, CipherSession) {
     // Send Alice's key.
-    let alice_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Initiator).unwrap();
+    let alice_handshake = Handshake::<Initialized>::new(Magic::BITCOIN, Role::Initiator).unwrap();
     let mut alice_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let alice_handshake = alice_handshake
         .send_key(None, &mut alice_key_buffer)
         .unwrap();
 
     // Send Bob's key
-    let bob_handshake = Handshake::<Initialized>::new(Network::Bitcoin, Role::Responder).unwrap();
+    let bob_handshake = Handshake::<Initialized>::new(Magic::BITCOIN, Role::Responder).unwrap();
     let mut bob_key_buffer = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let bob_handshake = bob_handshake.send_key(None, &mut bob_key_buffer).unwrap();
 

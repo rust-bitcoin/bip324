@@ -15,7 +15,8 @@
 //!
 //! ```no_run
 //! use bip324::io::{Protocol, Payload};
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use bitcoin::consensus::{serialize, deserialize};
+//! use p2p::message::{NetworkMessage, V2NetworkMessage};
 //! use std::net::TcpStream;
 //! use std::io::BufReader;
 //!
@@ -27,7 +28,7 @@
 //! let writer = stream;
 //!
 //! let mut protocol = Protocol::new(
-//!     bip324::Network::Bitcoin,
+//!     p2p::Magic::BITCOIN,
 //!     bip324::Role::Initiator,
 //!     None, None, // no garbage or decoys
 //!     reader,
@@ -35,11 +36,11 @@
 //! )?;
 //!
 //! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
-//! let serialized = serialize(ping_msg);
+//! let serialized = serialize(&V2NetworkMessage::new(ping_msg));
 //! protocol.write(&Payload::genuine(serialized))?;
 //!
 //! let response = protocol.read()?;
-//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
+//! let response_msg: V2NetworkMessage = deserialize(&response.contents())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -52,7 +53,8 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use bip324::futures::Protocol;
 //! use bip324::io::Payload;
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
+//! use bitcoin::consensus::{serialize, deserialize};
+//! use p2p::message::{NetworkMessage, V2NetworkMessage};
 //! use tokio::net::TcpStream;
 //! use tokio::io::BufReader;
 //!
@@ -63,7 +65,7 @@
 //! let buffered_reader = BufReader::new(reader);
 //!
 //! let mut protocol = Protocol::new(
-//!     bip324::Network::Bitcoin,
+//!     p2p::Magic::BITCOIN,
 //!     bip324::Role::Initiator,
 //!     None, None, // no garbage or decoys
 //!     buffered_reader,
@@ -71,30 +73,11 @@
 //! ).await?;
 //!
 //! let ping_msg = NetworkMessage::Ping(12345); // nonce
-//! let serialized = serialize(ping_msg);
+//! let serialized = serialize(&V2NetworkMessage::new(ping_msg));
 //! protocol.write(&Payload::genuine(serialized)).await?;
 //!
 //! let response = protocol.read().await?;
-//! let response_msg: NetworkMessage = deserialize(&response.contents())?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # Message Serialization
-//!
-//! BIP-324 introduces specific changes to how bitcoin P2P messages are serialized for V2 transport.
-//! The [`serde`] module provides these serialization functions.
-//!
-//! ```no_run
-//! # #[cfg(feature = "std")]
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! use bip324::serde::{serialize, deserialize, NetworkMessage};
-//!
-//! let ping_msg = NetworkMessage::Ping(0xdeadbeef);
-//! let serialized = serialize(ping_msg);
-//!
-//! let received_bytes = vec![0x12, 0xef, 0xbe, 0xad, 0xde, 0, 0, 0, 0];
-//! let message: NetworkMessage = deserialize(&received_bytes)?;
+//! let response_msg: V2NetworkMessage = deserialize(&response.contents())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -148,19 +131,15 @@ pub mod futures;
 mod handshake;
 #[cfg(feature = "std")]
 pub mod io;
-#[cfg(feature = "std")]
-pub mod serde;
 
-use core::fmt;
+use core::{borrow::Borrow, fmt};
 
-use bitcoin::secp256k1::{
+use bitcoin_hashes::{hkdf, sha256, Hkdf};
+use secp256k1::{
     self,
     ellswift::{ElligatorSwift, ElligatorSwiftParty},
     SecretKey,
 };
-use bitcoin_hashes::{hkdf, sha256, Hkdf};
-
-pub use bitcoin::Network;
 
 pub use handshake::{
     GarbageResult, Handshake, Initialized, ReceivedGarbage, ReceivedKey, SentKey, SentVersion,
@@ -347,14 +326,14 @@ impl SessionKeyMaterial {
         b: ElligatorSwift,
         secret: SecretKey,
         party: ElligatorSwiftParty,
-        network: Network,
+        magic: impl Borrow<[u8; 4]>,
     ) -> Result<Self, Error> {
         let data = "bip324_ellswift_xonly_ecdh".as_bytes();
         let ecdh_sk = ElligatorSwift::shared_secret(a, b, secret, party, Some(data));
 
         let ikm_salt = "bitcoin_v2_shared_secret".as_bytes();
-        let magic = network.magic().to_bytes();
-        let salt = [ikm_salt, &magic].concat();
+        let magic = magic.borrow();
+        let salt = [ikm_salt, magic].concat();
         let hk = Hkdf::<sha256::Hash>::new(salt.as_slice(), ecdh_sk.as_secret_bytes());
         let mut session_id = [0u8; 32];
         let session_info = "session_id".as_bytes();
@@ -795,7 +774,7 @@ macro_rules! impl_fill_bytes {
     ($rng:ident) => {
         impl FillBytes for $rng {
             fn fill_bytes(&mut self, dest: &mut [u8; 32]) {
-                use bitcoin::secp256k1::rand::RngCore;
+                use secp256k1::rand::RngCore;
                 RngCore::fill_bytes(self, dest);
             }
         }
@@ -803,7 +782,7 @@ macro_rules! impl_fill_bytes {
 }
 
 #[cfg(feature = "std")]
-use bitcoin::secp256k1::rand::rngs::{StdRng, ThreadRng};
+use secp256k1::rand::rngs::{StdRng, ThreadRng};
 #[cfg(feature = "std")]
 impl_fill_bytes!(StdRng);
 #[cfg(feature = "std")]
@@ -813,13 +792,15 @@ impl_fill_bytes!(ThreadRng);
 mod tests {
 
     use super::*;
-    use bitcoin::secp256k1::ellswift::{ElligatorSwift, ElligatorSwiftParty};
-    use bitcoin::secp256k1::rand::Rng;
-    use bitcoin::secp256k1::SecretKey;
     use core::str::FromStr;
     use hex::prelude::*;
+    use secp256k1::ellswift::{ElligatorSwift, ElligatorSwiftParty};
+    use secp256k1::rand::Rng;
+    use secp256k1::SecretKey;
     use std::vec;
     use std::vec::Vec;
+
+    const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
     fn gen_garbage(garbage_len: u32, rng: &mut impl Rng) -> Vec<u8> {
         let buffer: Vec<u8> = (0..garbage_len).map(|_| rng.gen()).collect();
@@ -838,7 +819,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -894,7 +875,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -951,7 +932,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys, Role::Initiator);
@@ -984,7 +965,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys, Role::Initiator);
@@ -1009,7 +990,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -1076,7 +1057,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -1125,7 +1106,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -1178,7 +1159,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let id = session_keys.session_id;
@@ -1224,7 +1205,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -1252,7 +1233,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let id = session_keys.session_id;
@@ -1294,7 +1275,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
@@ -1330,7 +1311,7 @@ mod tests {
             elliswift_alice,
             alice,
             ElligatorSwiftParty::B,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
@@ -1371,7 +1352,7 @@ mod tests {
             elliswift_bob,
             alice,
             ElligatorSwiftParty::A,
-            Network::Bitcoin,
+            MAGIC,
         )
         .unwrap();
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Initiator);
