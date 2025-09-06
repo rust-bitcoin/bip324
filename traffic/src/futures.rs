@@ -1,5 +1,6 @@
 //! Async traffic shaping wrapper for BIP-324 protocol.
 
+use std::borrow::Borrow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use bip324::futures::{Protocol, ProtocolReader, ProtocolWriter};
 use bip324::io::{Payload, ProtocolError, ProtocolFailureSuggestion};
-use bip324::{Network, Role};
+use bip324::Role;
 
 use crate::{
     AtomicTrafficStats, TrafficConfig, TrafficShaper, TrafficStats, DEFAULT_CHECK_INTERVAL_MS,
@@ -77,7 +78,7 @@ where
     /// use tokio::io::{AsyncReadExt, AsyncWriteExt};
     /// use bip324_traffic::{TrafficConfig, PaddingStrategy, DecoyStrategy};
     /// use bip324_traffic::futures::ShapedProtocol;
-    /// use bip324::{Network, Role};
+    /// use bip324::Role;
     ///
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,7 +90,7 @@ where
     ///     .with_decoy_strategy(DecoyStrategy::Random);
     ///
     /// let mut protocol = ShapedProtocol::new(
-    ///     Network::Bitcoin,
+    ///     [0xF9, 0xBE, 0xB4, 0xD9], // Bitcoin mainnet magic bytes
     ///     Role::Initiator,
     ///     config,
     ///     reader,
@@ -105,7 +106,7 @@ where
     ///
     /// This function is *not* cancellation-safe.
     pub async fn new<W>(
-        network: Network,
+        magic: impl Borrow<[u8; 4]>,
         role: Role,
         config: TrafficConfig,
         reader: R,
@@ -118,7 +119,7 @@ where
         let mut shaper = TrafficShaper::new(config);
         let (garbage, decoys) = shaper.handshake(&stats);
 
-        let protocol = Protocol::new(network, role, garbage, decoys, reader, writer).await?;
+        let protocol = Protocol::new(magic, role, garbage, decoys, reader, writer).await?;
         let (protocol_reader, protocol_writer) = protocol.into_split();
         let (write_tx, write_rx) = mpsc::unbounded_channel();
 
@@ -254,6 +255,8 @@ mod tests {
     use super::*;
     use bip324::futures::Protocol;
 
+    const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
+
     #[tokio::test]
     async fn test_async_protocol_drop() {
         let (local, remote) = tokio::io::duplex(400_000);
@@ -262,7 +265,7 @@ mod tests {
 
         let _responder_task = tokio::spawn(async move {
             let responder = Protocol::new(
-                Network::Bitcoin,
+                MAGIC,
                 Role::Responder,
                 None,
                 None,
@@ -276,15 +279,10 @@ mod tests {
         });
 
         let config = TrafficConfig::new().with_decoy_strategy(crate::DecoyStrategy::Random);
-        let shaped_protocol = ShapedProtocol::new(
-            Network::Bitcoin,
-            Role::Initiator,
-            config,
-            local_read,
-            local_write,
-        )
-        .await
-        .expect("initiator handshake should succeed");
+        let shaped_protocol =
+            ShapedProtocol::new(MAGIC, Role::Initiator, config, local_read, local_write)
+                .await
+                .expect("initiator handshake should succeed");
 
         drop(shaped_protocol);
     }

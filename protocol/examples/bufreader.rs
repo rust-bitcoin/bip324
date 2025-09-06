@@ -20,7 +20,7 @@
 
 use bip324::futures::Protocol;
 use bip324::io::Payload;
-use bip324::{Network, Role};
+use bip324::Role;
 use std::fmt;
 use std::time::{Duration, Instant};
 use tokio::io::BufReader;
@@ -127,7 +127,7 @@ async fn start_server(
             let (reader, writer) = stream.into_split();
 
             let mut protocol = Protocol::new(
-                Network::Bitcoin,
+                p2p::Magic::BITCOIN,
                 Role::Responder,
                 None,
                 None,
@@ -180,7 +180,7 @@ impl Client {
             Client::Buffered => {
                 let buffered_reader = BufReader::new(reader);
                 let mut protocol = Protocol::new(
-                    Network::Bitcoin,
+                    p2p::Magic::BITCOIN,
                     Role::Initiator,
                     None,
                     None,
@@ -196,7 +196,7 @@ impl Client {
             }
             Client::NonBuffered => {
                 let mut protocol = Protocol::new(
-                    Network::Bitcoin,
+                    p2p::Magic::BITCOIN,
                     Role::Initiator,
                     None,
                     None,

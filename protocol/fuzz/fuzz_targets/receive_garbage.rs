@@ -3,9 +3,11 @@
 //! Fuzz test for the receive_garbage function.
 
 #![no_main]
-use bip324::{Handshake, Initialized, Network, ReceivedKey, Role};
+use bip324::{Handshake, Initialized, ReceivedKey, Role};
 use libfuzzer_sys::fuzz_target;
 use rand::SeedableRng;
+
+const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
 fuzz_target!(|data: &[u8]| {
     // Cap input size to avoid wasting time on obviously invalid large inputs
@@ -22,15 +24,13 @@ fuzz_target!(|data: &[u8]| {
 
     // Set up a valid handshake in the SentVersion state
     let initiator =
-        Handshake::<Initialized>::new_with_rng(Network::Bitcoin, Role::Initiator, &mut rng, &secp)
-            .unwrap();
+        Handshake::<Initialized>::new_with_rng(MAGIC, Role::Initiator, &mut rng, &secp).unwrap();
     let mut initiator_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let initiator = initiator.send_key(None, &mut initiator_key).unwrap();
 
     let mut rng2 = rand::rngs::StdRng::from_seed([43u8; 32]);
     let responder =
-        Handshake::<Initialized>::new_with_rng(Network::Bitcoin, Role::Responder, &mut rng2, &secp)
-            .unwrap();
+        Handshake::<Initialized>::new_with_rng(MAGIC, Role::Responder, &mut rng2, &secp).unwrap();
     let mut responder_key = vec![0u8; Handshake::<Initialized>::send_key_len(None)];
     let responder = responder.send_key(None, &mut responder_key).unwrap();
 

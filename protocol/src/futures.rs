@@ -15,7 +15,7 @@
 //! ```no_run
 //! use bip324::futures::Protocol;
 //! use bip324::io::Payload;
-//! use bip324::{Network, Role};
+//! use bip324::Role;
 //! use tokio::net::TcpStream;
 //! use tokio::io::BufReader;
 //!
@@ -28,9 +28,12 @@
 //! let (reader, writer) = stream.into_split();
 //! let reader = BufReader::new(reader);
 //!
+//! // Bitcoin mainnet magic bytes
+//! let magic = [0xF9, 0xBE, 0xB4, 0xD9];
+//!
 //! // Establish BIP-324 encrypted connection
 //! let mut protocol = Protocol::new(
-//!     Network::Bitcoin,
+//!     magic,
 //!     Role::Initiator,
 //!     None,  // no garbage bytes
 //!     None,  // no decoy packets
@@ -46,12 +49,12 @@
 //! # }
 //! ```
 
+use core::borrow::Borrow;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::vec;
 use std::vec::Vec;
 
-use bitcoin::Network;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
@@ -146,7 +149,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProtocolSessionReader<R> {
 ///
 /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
 pub async fn handshake<R, W>(
-    network: Network,
+    magic: impl Borrow<[u8; 4]>,
     role: Role,
     garbage: Option<Vec<u8>>,
     decoys: Option<Vec<Vec<u8>>>,
@@ -166,7 +169,7 @@ where
         .map(|vecs| vecs.iter().map(Vec::as_slice).collect());
     let decoys_ref = decoy_refs.as_deref();
 
-    let handshake = Handshake::<handshake::Initialized>::new(network, role)?;
+    let handshake = Handshake::<handshake::Initialized>::new(magic, role)?;
 
     // Send local public key and optional garbage.
     let key_buffer_len = Handshake::<handshake::Initialized>::send_key_len(garbage_ref);
@@ -284,7 +287,7 @@ where
     ///
     /// * `Io` - Includes a flag for if the remote probably only understands the V1 protocol.
     pub async fn new(
-        network: Network,
+        magic: impl Borrow<[u8; 4]>,
         role: Role,
         garbage: Option<Vec<u8>>,
         decoys: Option<Vec<Vec<u8>>>,
@@ -292,7 +295,7 @@ where
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
         let (inbound_cipher, outbound_cipher, session_reader) =
-            handshake(network, role, garbage, decoys, reader, &mut writer).await?;
+            handshake(magic, role, garbage, decoys, reader, &mut writer).await?;
 
         Ok(Protocol {
             reader: ProtocolReader {
@@ -480,7 +483,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::Network;
+
+    const MAGIC: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9];
 
     #[tokio::test]
     async fn test_async_handshake_functions() {
@@ -493,7 +497,7 @@ mod tests {
 
         let local_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                MAGIC,
                 Role::Initiator,
                 Some(b"local garbage".to_vec()),
                 Some(vec![b"local decoy".to_vec()]),
@@ -505,7 +509,7 @@ mod tests {
 
         let remote_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                MAGIC,
                 Role::Responder,
                 Some(b"remote garbage".to_vec()),
                 Some(vec![b"remote decoy 1".to_vec(), b"remote decoy 2".to_vec()]),
@@ -532,7 +536,7 @@ mod tests {
 
         let local_handshake = tokio::spawn(async move {
             handshake(
-                Network::Bitcoin,
+                MAGIC,
                 Role::Initiator,
                 None,
                 None,
@@ -545,7 +549,7 @@ mod tests {
         let remote_handshake = tokio::spawn(async move {
             let large_decoy = vec![0u8; MAX_PACKET_SIZE_FOR_ALLOCATION + 1];
             handshake(
-                Network::Bitcoin,
+                MAGIC,
                 Role::Responder,
                 None,
                 Some(vec![large_decoy]),

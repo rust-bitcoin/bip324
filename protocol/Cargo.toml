@@ -13,13 +13,13 @@ rust-version = "1.63.0"
 default = ["std"]
 # High-level wrappers using tokio traits - may affect MSRV requirements.
 tokio = ["std", "dep:tokio"]
-std = ["bitcoin/rand-std", "bitcoin_hashes/std", "chacha20-poly1305/std"]
+std = ["secp256k1/rand-std", "bitcoin_hashes/std", "chacha20-poly1305/std"]
 
 [dependencies]
 # The tokio feature may increase the MSRV beyond 1.63.0
 # depending on which version of tokio is selected by the caller.
 tokio = { version = "1", default-features = false, optional = true, features = ["io-util"] }
-bitcoin = { version = "0.32.4", default-features = false }
+secp256k1 = { version = "0.29.0", default-features = false }
 # Depending on hashes directly for HKDF, can drop this and 
 # use the re-exported version in bitcoin > 0.32.*.
 bitcoin_hashes = { version =">=0.15.0, <0.17.0", default-features = false }
@@ -28,6 +28,8 @@ chacha20-poly1305 = { version = "0.1.1", default-features = false }
 [dev-dependencies]
 # bitcoind version 26.0 includes support for BIP-324's V2 protocol, but it is disabled by default.
 bitcoind = { package = "corepc-node", version = "0.7.1", default-features = false, features = ["26_0","download"] }
+bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
+p2p = { package = "bitcoin-p2p-messages",  git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
 hex = { package = "hex-conservative", version = "0.2.0" }
 tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "macros"] }
 
