@@ -154,6 +154,83 @@ fn hello_world_happy_path() {
     assert_eq!(message, decrypted_message[1..].to_vec()); // Skip header byte
 }
 
+#[tokio::test]
+#[cfg(feature = "tokio")]
+async fn pingpong_with_closed_connection_async() {
+    use bip324::{futures::Protocol, io::Payload};
+    use bitcoin::consensus;
+    use p2p::message::{NetworkMessage, V2NetworkMessage};
+    use tokio::net::TcpListener;
+    use tokio::net::TcpStream;
+
+    // Start a server that responds to exactly one Ping(x) message with a
+    // Pong(x) message and then stops. This allows testing to read from a closed stream.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, writer) = stream.into_split();
+        let mut protocol = Protocol::new(
+            p2p::Magic::REGTEST,
+            bip324::Role::Responder,
+            None, // no garbage
+            None, // no decoys
+            reader,
+            writer,
+        )
+        .await
+        .unwrap();
+
+        let payload = protocol.read().await.unwrap();
+        let received_message =
+            consensus::deserialize::<V2NetworkMessage>(payload.contents()).unwrap();
+        if let NetworkMessage::Ping(x) = received_message.payload() {
+            let pong = V2NetworkMessage::new(NetworkMessage::Pong(*x));
+            let message = consensus::serialize(&pong);
+            protocol.write(&Payload::genuine(message)).await.unwrap();
+            println!("Pong sent, stopping server.")
+        } else {
+            panic!("Expected Ping, but received: {received_message:?}");
+        }
+    });
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+
+    let (reader, writer) = stream.into_split();
+
+    // Initialize high-level async protocol with handshake
+    println!("Starting async BIP-324 handshake");
+    let mut protocol = Protocol::new(
+        p2p::Magic::REGTEST,
+        bip324::Role::Initiator,
+        None, // no garbage
+        None, // no decoys
+        reader,
+        writer,
+    )
+    .await
+    .unwrap();
+
+    println!("Sending Ping using async Protocol::write()");
+    let ping = V2NetworkMessage::new(NetworkMessage::Ping(45324));
+    let message = consensus::serialize(&ping);
+    protocol.write(&Payload::genuine(message)).await.unwrap();
+
+    println!("Reading response using async Protocol::read()");
+    let payload = protocol.read().await.unwrap();
+    let response_message = consensus::deserialize::<V2NetworkMessage>(payload.contents()).unwrap();
+
+    assert_eq!(NetworkMessage::Pong(45324), *response_message.payload());
+
+    println!("Successfully ping-pong message using async Protocol API!");
+    server.await.unwrap();
+
+    println!(
+        "Trying to read another message from the server, while the connection is already closed."
+    );
+    assert!(protocol.read().await.is_err());
+}
+
 #[test]
 #[cfg(feature = "std")]
 fn regtest_handshake() {

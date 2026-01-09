@@ -406,7 +406,15 @@ where
                     bytes_read,
                 } => {
                     while *bytes_read < NUM_LENGTH_BYTES {
-                        *bytes_read += self.reader.read(&mut length_bytes[*bytes_read..]).await?;
+                        let len = self.reader.read(&mut length_bytes[*bytes_read..]).await?;
+                        if len == 0 {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::ConnectionAborted,
+                                "read zero bytes",
+                            )
+                            .into());
+                        }
+                        *bytes_read += len;
                     }
 
                     let packet_bytes_len = self.inbound_cipher.decrypt_packet_len(*length_bytes);
@@ -417,7 +425,15 @@ where
                     bytes_read,
                 } => {
                     while *bytes_read < packet_bytes.len() {
-                        *bytes_read += self.reader.read(&mut packet_bytes[*bytes_read..]).await?;
+                        let len = self.reader.read(&mut packet_bytes[*bytes_read..]).await?;
+                        if len == 0 {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::ConnectionAborted,
+                                "read zero bytes",
+                            )
+                            .into());
+                        }
+                        *bytes_read += len;
                     }
 
                     let plaintext_len = InboundCipher::decryption_buffer_len(packet_bytes.len());
