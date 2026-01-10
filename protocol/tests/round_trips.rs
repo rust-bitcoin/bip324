@@ -234,6 +234,23 @@ fn pingpong_with_closed_connection_sync() {
         "Trying to read another message from the server, while the connection is already closed."
     );
     assert!(protocol.read().is_err());
+
+    println!("Writing to the closed socket for the first time should succeed.");
+    protocol
+        .write(&Payload::genuine(consensus::serialize(
+            &V2NetworkMessage::new(NetworkMessage::Ping(1)),
+        )))
+        .expect("first write to closed socket should succeed!");
+
+    println!("Writing to the closed socket for the second time should fail.");
+    assert!(
+        protocol
+            .write(&Payload::genuine(consensus::serialize(
+                &V2NetworkMessage::new(NetworkMessage::Ping(2))
+            )))
+            .is_err(),
+        "second write to closed socket should fail!"
+    );
 }
 
 #[tokio::test]
@@ -311,6 +328,25 @@ async fn pingpong_with_closed_connection_async() {
         "Trying to read another message from the server, while the connection is already closed."
     );
     assert!(protocol.read().await.is_err());
+
+    println!("Writing to the closed socket for the first time should succeed.");
+    protocol
+        .write(&Payload::genuine(consensus::serialize(
+            &V2NetworkMessage::new(NetworkMessage::Ping(1)),
+        )))
+        .await
+        .expect("first write to closed socket should succeed!");
+
+    println!("Writing to the closed socket for the second time should fail.");
+    assert!(
+        protocol
+            .write(&Payload::genuine(consensus::serialize(
+                &V2NetworkMessage::new(NetworkMessage::Ping(2))
+            )))
+            .await
+            .is_err(),
+        "second write to closed socket should fail!"
+    );
 }
 
 #[test]
