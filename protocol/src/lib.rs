@@ -1152,9 +1152,9 @@ mod tests {
     #[test]
     fn test_vector_2() {
         let alice =
-            SecretKey::from_str("1f9c581b35231838f0f17cf0c979835baccb7f3abbbb96ffcc318ab71e6e126f")
+            SecretKey::from_str("6f312890ec83bbb26798abaadd574684a53e74ccef7953b790fcc29409080246")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("a1855e10e94e00baa23041d916e259f7044e491da6171269694763f018c7e63693d29575dcb464ac816baa1be353ba12e3876cba7628bd0bd8e755e721eb0140").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("a8785af31c029efc82fa9fc677d7118031358d7c6a25b5779a9b900e5ccd94aac97eb36a3c5dbcdb2ca5843cc4c2fe0aaa46d10eb3d233a81c3dde476da00eef").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f0000000000000000000000000000000000000000000000000000000000000000").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_bob,
@@ -1167,7 +1167,7 @@ mod tests {
         let id = session_keys.session_id;
         assert_eq!(
             id.to_vec(),
-            Vec::from_hex("9267c54560607de73f18c563b76a2442718879c52dd39852885d4a3c9912c9ea")
+            Vec::from_hex("b0490e26111cb2d55bbff2ace00f7f644f64006539abb4e7513f05107bb10608")
                 .unwrap()
         );
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
@@ -1189,7 +1189,7 @@ mod tests {
         assert_eq!(
             enc,
             Vec::from_hex(
-                "1da1bcf589f9b61872f45b7fa5371dd3f8bdf5d515b0c5f9fe9f0044afb8dc0aa1cd39a8c4"
+                "d78adbcba0eebfb15cfbd8142c84dc729d233d0dc11b1d851e46a114122b8d5b96b7d59317"
             )
             .unwrap()
         );
@@ -1198,9 +1198,9 @@ mod tests {
     #[test]
     fn test_vector_3() {
         let alice =
-            SecretKey::from_str("0286c41cd30913db0fdff7a64ebda5c8e3e7cef10f2aebc00a7650443cf4c60d")
+            SecretKey::from_str("846a784f1a03dea59cc679754a60a7145542fa130e3efbd815c81e909ce32933")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("d1ee8a93a01130cbf299249a258f94feb5f469e7d0f2f28f69ee5e9aa8f9b54a60f2c3ff2d023634ec7f4127a96cc11662e402894cf1f694fb9a7eaa5f1d9244").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("480eacf1536b52257bf8ce78d8f4ce09395d744767c6c129e7838947ee625af3245592c111275e877d5baae22584cb5f1153e67c16bcd7da767726cd0d0c846a").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff22d5e441524d571a52b3def126189d3f416890a99d4da6ede2b0cde1760ce2c3f98457ae").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_alice,
@@ -1219,16 +1219,16 @@ mod tests {
             .outbound()
             .encrypt(&contents, &mut auth, PacketType::Genuine, Some(&aad))
             .unwrap();
-        let challenge = Vec::from_hex("8da7de6ea7bf2a81a396a42880ba1f5756734c4821309ac9aeffa2a26ce86873b9dc4935a772de6ec5162c6d075b14536800fb174841153511bfb597e992e2fe8a450c4bce102cc550bb37fd564c4d60bf884e").unwrap();
+        let challenge = Vec::from_hex("6aa28bc4b6719eca144ac33a3f17859317d5450e4978db9365ce61e7085a617dd386ec18eb436c9056aa1d2d4736c9bffd25803d967fcae916ce1647ccae3d5258b17dfa1cdc7eb99581c48ff2898ef92d3aa1").unwrap();
         assert_eq!(auth, challenge);
     }
 
     #[test]
     fn test_vector_4() {
         let alice =
-            SecretKey::from_str("6c77432d1fda31e9f942f8af44607e10f3ad38a65f8a4bddae823e5eff90dc38")
+            SecretKey::from_str("c0f15820459f64d98e5c48681d13340572c574533dd9f7161b85fcc8224fdf30")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("d2685070c1e6376e633e825296634fd461fa9e5bdf2109bcebd735e5a91f3e587c5cb782abb797fbf6bb5074fd1542a474f2a45b673763ec2db7fb99b737bbb9").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("682871104d694baca8b9c7990ae6288f49e1ff4feb21dd5cffad67db7752fdfb6c3608d6996c54be04b35feef037da09ee4d9dca2363b343bc2d4f6d0ea609da").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("56bd0c06f10352c3a1a9f4b4c92f6fa2b26df124b57878353c1fc691c51abea77c8817daeeb9fa546b77c8daf79d89b22b0e1b87574ece42371f00237aa9d83a").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_bob,
@@ -1241,7 +1241,7 @@ mod tests {
         let id = session_keys.session_id;
         assert_eq!(
             id.to_vec(),
-            Vec::from_hex("7ec02fea8c1484e3d0875f978c5f36d63545e2e4acf56311394422f4b66af612")
+            Vec::from_hex("279a96e6ce08e5074608fcad77d6a78f90c8b618a4520575435b1a37b1c56df9")
                 .unwrap()
         );
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
@@ -1261,16 +1261,16 @@ mod tests {
             .encrypt(&contents, &mut enc, PacketType::Decoy, None)
             .unwrap();
         assert!(
-            enc.to_lower_hex_string().ends_with("729847a3e9eba7a5bff454b5de3b393431ee360736b6c030d7a5bd01d1203d2e98f528543fd2bf886ccaa1ada5e215a730a36b3f4abfc4e252c89eb01d9512f94916dae8a76bf16e4da28986ffe159090fe5267ee3394300b7ccf4dfad389a26321b3a3423e4594a82ccfbad16d6561ecb8772b0cb040280ff999a29e3d9d4fd"),
+            enc.to_lower_hex_string().ends_with("5afbd61f6e989833df2f12ff70c98f1a20ebe84acba2a05429cc6a57238dba87cdc432474f378889b2d0e95ade9f892eb1a1f6b03b73f903682476537f653f738f7a9f1cc9856ed75f3d69122bdeb00af48e66a64872f639a67fc109ee5ca124d0ee183da3c2b8f2da828850b50976b491f1add78d7f01e07565570621266852"),
         );
     }
 
     #[test]
     fn test_vector_5() {
         let alice =
-            SecretKey::from_str("a6ec25127ca1aa4cf16b20084ba1e6516baae4d32422288e9b36d8bddd2de35a")
+            SecretKey::from_str("96cb391886681d1d3e23948e51987771a8ec3001b640c18fb994a855cea66b6e")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff053d7ecca53e33e185a8b9be4e7699a97c6ff4c795522e5918ab7cd6b6884f67e683f3dc").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffdde3a077a6fd73711a27250c439ba78ef63d89cd0918c0a0a75f301ed96aa2a43ecf3f61").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffa7730be30000000000000000000000000000000000000000000000000000000000000000").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_alice,
@@ -1297,16 +1297,16 @@ mod tests {
             .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert!(
-            enc.to_lower_hex_string().ends_with("77b4656934a82de1a593d8481f020194ddafd8cac441f9d72aeb8721e6a14f49698ca6d9b2b6d59d07a01aa552fd4d5b68d0d1617574c77dea10bfadbaa31b83885b7ceac2fd45e3e4a331c51a74e7b1698d81b64c87c73c5b9258b4d83297f9debc2e9aa07f8572ff434dc792b83ecf07b3197de8dc9cf7be56acb59c66cff5"),
+            enc.to_lower_hex_string().ends_with("33953941be2682da1c6d1b167cbf180d7cb8159c94c6ea1c52356716f1057af4df53321f18894c285f7b2fd85b2edc44a13c9295f310962fdfc8d944bd77c5500b10ca68ca5d0977d19d183a7def742c41cfeee763dc09ef985c96ab6e74e464f66992f752c9368e42082ad338705062ddfcad4ca1c9c54004b9345d8df25953"),
         );
     }
 
     #[test]
     fn test_vector_6() {
         let alice =
-            SecretKey::from_str("0af952659ed76f80f585966b95ab6e6fd68654672827878684c8b547b1b94f5a")
+            SecretKey::from_str("4a7065c3ddbf84e29b8e20da0da3aaae1f708eae8ad1af4c4c00f46a7cda7b6b")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffc81017fd92fd31637c26c906b42092e11cc0d3afae8d9019d2578af22735ce7bc469c72d").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff450012ec3aeecf516f4b374af2e7fbb040e92dc3c0f12eafd00c729a137f4e892e5293c3").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("9652d78baefc028cd37a6a92625b8b8f85fde1e4c944ad3f20e198bef8c02f19fffffffffffffffffffffffffffffffffffffffffffffffffffffffff2e91870").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_bob,
@@ -1338,16 +1338,16 @@ mod tests {
             .encrypt(&contents, &mut enc, PacketType::Genuine, None)
             .unwrap();
         assert!(
-            enc.to_lower_hex_string().ends_with("657a4a19711ce593c3844cb391b224f60124aba7e04266233bc50cafb971e26c7716b76e98376448f7d214dd11e629ef9a974d60e3770a695810a61c4ba66d78b936ee7892b98f0b48ddae9fcd8b599dca1c9b43e9b95e0226cf8d4459b8a7c2c4e6db80f1d58c7b20dd7208fa5c1057fb78734223ee801dbd851db601fee61e"),
+            enc.to_lower_hex_string().ends_with("58daef966f33c036740aeb3f6a4b31c0f0a070b25fd6a1abf82ef56fc2cb3ca8da8c434f23790c69349dd0cb4058f88a7bd0e333c8ceba3c80f21e951b9fdb1c84e2e7f49f43c21087566d58f1bcc42b041e0b462e37e927c0071caa9a2b650dccf448c9f88d73b62e80a3e5d5e4e46992e34b416ceb9590a7c8b7bfaccf37ab"),
         );
     }
 
     #[test]
     fn test_vector_7() {
         let alice =
-            SecretKey::from_str("f90e080c64b05824c5a24b2501d5aeaf08af3872ee860aa80bdcd430f7b63494")
+            SecretKey::from_str("0f69aeffeff6172647ee5aa80bfb418ee742f4e9f1a51b463ac7c120d620e37d")
                 .unwrap();
-        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff115173765dc202cf029ad3f15479735d57697af12b0131dd21430d5772e4ef11474d58b9").unwrap();
+        let elliswift_alice = ElligatorSwift::from_str("ffffffffffffffffffffffffffffffffffffffffffffffffffffffff04df0e67f9753e2cdb066b3b588a0069fde936a312e0d3f31acb335026b7072d8f2ad24c").unwrap();
         let elliswift_bob = ElligatorSwift::from_str("12a50f3fafea7c1eeada4cf8d33777704b77361453afc83bda91eef349ae044d20126c6200547ea5a6911776c05dee2a7f1a9ba7dfbabbbd273c3ef29ef46e46").unwrap();
         let session_keys = SessionKeyMaterial::from_ecdh(
             elliswift_alice,
@@ -1379,7 +1379,7 @@ mod tests {
             .encrypt(&contents, &mut enc, PacketType::Decoy, None)
             .unwrap();
         assert!(
-            enc.to_lower_hex_string().ends_with("7c4b9e1e6c1ce69da7b01513cdc4588fd93b04dafefaf87f31561763d906c672bac3dfceb751ebd126728ac017d4d580e931b8e5c7d5dfe0123be4dc9b2d2238b655c8a7fadaf8082c31e310909b5b731efc12f0a56e849eae6bfeedcc86dd27ef9b91d159256aa8e8d2b71a311f73350863d70f18d0d7302cf551e4303c7733"),
+            enc.to_lower_hex_string().ends_with("1a7f3fb83ad2b050b663b8df6b7c2cc2d8e169a869a58bf7ef5ab5db97a505c84a812e100d9445da4fc39a1176d6aed3995f6868631224b86f10603217c8d13270e0c6d054ad9e0d0b7dc0c8e59a37cd05a0a45faa14b4ffc8d12b641f62e6f1b71c1f72b737e9ce3fe74be779b25e70bf11d98766b3876d0fa28d3c669087fc"),
         );
     }
 }
