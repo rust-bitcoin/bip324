@@ -1,4 +1,4 @@
 [workspace]
-members = ["protocol", "fuzz", "traffic"]
-default-members = ["protocol", "traffic"]
+members = ["protocol", "traffic"]
+exclude = ["fuzz"]
 resolver = "2"
