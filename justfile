@@ -1,7 +1,7 @@
 # Every commit on the master branch is expected to have working `check` and `test-*` recipes.
 #
 # The recipes make heavy use of `rustup`'s toolchain syntax (e.g. `cargo +nightly`). `rustup` is
-# required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components. 
+# required on the system in order to intercept the `cargo` commands and to install and use the appropriate toolchain with components.
 #
 # The root directory of this workspace is "virtual", it has no source code itself, just a holder of crates. This means
 # the cargo commands generally run on all the child crates by default without the `--workspace` flag.
@@ -68,7 +68,7 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Clear any previously resolved versions and re-resolve to the minimums.
   rm -f Cargo.lock
   cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features -Z direct-minimal-versions
-  # Clear again and check the maximums by ignoring any rust-version caps. 
+  # Clear again and check the maximums by ignoring any rust-version caps.
   rm -f Cargo.lock
   cargo +{{NIGHTLY_TOOLCHAIN}} check --all-features --ignore-rust-version
   rm -f Cargo.lock
@@ -84,14 +84,9 @@ STABLE_TOOLCHAIN := "1.88.0"
 
 # Run fuzz target: receive_key or receive_garbage.
 @fuzz target seconds:
-  rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} llvm-tools-preview
   cargo install cargo-fuzz@0.12.0
   # Generate new test cases and add to corpus. Bumping length for garbage.
   cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
-  # Measure coverage of corpus against code.
-  cargo +{{NIGHTLY_TOOLCHAIN}} fuzz coverage {{target}}
-  # Generate HTML coverage report.
-  fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
 
 # Add a release tag and publish to the upstream remote. Requires write privileges.
 @tag crate version remote="upstream":
