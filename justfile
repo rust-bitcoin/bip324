@@ -87,11 +87,11 @@ STABLE_TOOLCHAIN := "1.88.0"
   rustup component add --toolchain {{NIGHTLY_TOOLCHAIN}} llvm-tools-preview
   cargo install cargo-fuzz@0.12.0
   # Generate new test cases and add to corpus. Bumping length for garbage.
-  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
+  cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
   # Measure coverage of corpus against code.
-  cd protocol && cargo +{{NIGHTLY_TOOLCHAIN}} fuzz coverage {{target}}
+  cargo +{{NIGHTLY_TOOLCHAIN}} fuzz coverage {{target}}
   # Generate HTML coverage report.
-  protocol/fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
+  fuzz/coverage.sh {{NIGHTLY_TOOLCHAIN}} {{target}}
 
 # Add a release tag and publish to the upstream remote. Requires write privileges.
 @tag crate version remote="upstream":
