@@ -36,12 +36,12 @@ STABLE_TOOLCHAIN := "1.88.0"
   # Adding --fix flag to apply suggestions with --allow-dirty.
   cargo +{{NIGHTLY_TOOLCHAIN}} clippy --all-features --all-targets --fix --allow-dirty -- -D warnings
 
-# Run a test suite: features, msrv, constraints, no-std, or all.
+# Run a test suite: features, msrv, constraints, no-std, fuzz, or all.
 @test suite="features":
   just _test-{{suite}}
 
 # Run all test suites.
-@_test-all: _test-features _test-msrv _test-constraints _test-no-std
+@_test-all: _test-features _test-msrv _test-constraints _test-no-std _test-fuzz
 
 # Test library with feature flag matrix compatability.
 @_test-features:
@@ -78,15 +78,14 @@ STABLE_TOOLCHAIN := "1.88.0"
   cargo install cross@0.2.5
   $HOME/.cargo/bin/cross build --package bip324 --target thumbv7m-none-eabi --no-default-features
 
+# Check that fuzz targets compile.
+@_test-fuzz:
+  cargo install cargo-fuzz@0.12.0
+  cargo +{{NIGHTLY_TOOLCHAIN}} fuzz build
+
 # Run benchmarks.
 @bench:
   cargo +{{NIGHTLY_TOOLCHAIN}} bench --package bip324 --bench cipher_session
-
-# Run fuzz target: receive_key or receive_garbage.
-@fuzz target seconds:
-  cargo install cargo-fuzz@0.12.0
-  # Generate new test cases and add to corpus. Bumping length for garbage.
-  cargo +{{NIGHTLY_TOOLCHAIN}} fuzz run {{target}} -- -max_len=5120 -max_total_time={{seconds}}
 
 # Add a release tag and publish to the upstream remote. Requires write privileges.
 @tag crate version remote="upstream":
