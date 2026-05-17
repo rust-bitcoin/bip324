@@ -52,7 +52,7 @@ use std::vec::Vec;
 
 use crate::{
     handshake::{self, GarbageResult, VersionResult},
-    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role,
+    Error, Handshake, InboundCipher, OutboundCipher, PacketType, Role, SessionId,
     MAX_PACKET_SIZE_FOR_ALLOCATION, NUM_ELLIGATOR_SWIFT_BYTES, NUM_GARBAGE_TERMINTOR_BYTES,
     NUM_LENGTH_BYTES,
 };
@@ -284,7 +284,15 @@ pub fn handshake<R, W>(
     decoys: Option<Vec<Vec<u8>>>,
     reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
+) -> Result<
+    (
+        InboundCipher,
+        OutboundCipher,
+        ProtocolSessionReader<R>,
+        SessionId,
+    ),
+    ProtocolError,
+>
 where
     R: Read,
     W: Write,
@@ -311,7 +319,7 @@ where
 /// # Returns
 ///
 /// A `Result` containing:
-///   * `Ok((InboundCipher, OutboundCipher, ProtocolSessionReader<R>))`: Ready-to-use session components.
+///   * `Ok((InboundCipher, OutboundCipher, ProtocolSessionReader<R>, SessionId))`: Ready-to-use session components.
 ///   * `Err(ProtocolError)`: An error that occurred during the handshake.
 ///
 /// # Errors
@@ -323,7 +331,15 @@ fn handshake_with_initialized<R, W>(
     decoys: Option<Vec<Vec<u8>>>,
     mut reader: R,
     writer: &mut W,
-) -> Result<(InboundCipher, OutboundCipher, ProtocolSessionReader<R>), ProtocolError>
+) -> Result<
+    (
+        InboundCipher,
+        OutboundCipher,
+        ProtocolSessionReader<R>,
+        SessionId,
+    ),
+    ProtocolError,
+>
 where
     R: Read,
     W: Write,
@@ -403,8 +419,9 @@ where
         session_reader.read_exact(&mut packet_bytes)?;
         match handshake.receive_version(&mut packet_bytes) {
             Ok(VersionResult::Complete { cipher }) => {
+                let session_id = *cipher.id();
                 let (inbound_cipher, outbound_cipher) = cipher.into_split();
-                return Ok((inbound_cipher, outbound_cipher, session_reader));
+                return Ok((inbound_cipher, outbound_cipher, session_reader, session_id));
             }
             Ok(VersionResult::Decoy(h)) => {
                 handshake = h;
@@ -418,6 +435,7 @@ where
 pub struct Protocol<R, W> {
     reader: ProtocolReader<R>,
     writer: ProtocolWriter<W>,
+    session_id: SessionId,
 }
 
 impl<R, W> Protocol<R, W>
@@ -458,7 +476,7 @@ where
         reader: R,
         mut writer: W,
     ) -> Result<Protocol<R, W>, ProtocolError> {
-        let (inbound_cipher, outbound_cipher, session_reader) =
+        let (inbound_cipher, outbound_cipher, session_reader, session_id) =
             handshake(magic, role, garbage, decoys, reader, &mut writer)?;
 
         Ok(Protocol {
@@ -470,6 +488,7 @@ where
                 outbound_cipher,
                 writer,
             },
+            session_id,
         })
     }
 
@@ -502,6 +521,13 @@ where
     ///   * `Err(ProtocolError)`: An error that occurred during the encryption or write.
     pub fn write(&mut self, payload: &Payload) -> Result<(), ProtocolError> {
         self.writer.write(payload)
+    }
+
+    /// Returns the 32-byte session identifier derived during the BIP-324 handshake.
+    ///
+    /// This value is unique to the established connection.
+    pub fn session_id(&self) -> &SessionId {
+        &self.session_id
     }
 }
 
@@ -689,7 +715,7 @@ mod tests {
         let result = handshake_with_initialized(init_handshake, None, None, reader, &mut writer);
 
         // Verify the session reader contains exactly the extra byte we added.
-        let (_, _, mut session_reader) = result.unwrap();
+        let (_, _, mut session_reader, _) = result.unwrap();
         let mut buffer = [0u8; 1];
         match session_reader.read(&mut buffer) {
             Ok(1) => {
