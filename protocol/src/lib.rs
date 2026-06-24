@@ -290,11 +290,33 @@ impl From<hkdf::MaxLengthError> for Error {
     }
 }
 
+/// A 32-byte session identifier, unique to a BIP-324 connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionId([u8; 32]);
+
+impl SessionId {
+    /// Returns the inner 32-byte array.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Returns a copy of the underlying bytes.
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl AsRef<[u8]> for SessionId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// All keys derived from the ECDH.
 #[derive(Clone)]
 pub struct SessionKeyMaterial {
     /// A unique ID to identify a connection.
-    pub session_id: [u8; 32],
+    pub session_id: SessionId,
     initiator_length_key: [u8; 32],
     initiator_packet_key: [u8; 32],
     responder_length_key: [u8; 32],
@@ -362,7 +384,7 @@ impl SessionKeyMaterial {
             .try_into()
             .expect("last 16 bytes of expanded garbage");
         Ok(SessionKeyMaterial {
-            session_id,
+            session_id: SessionId(session_id),
             initiator_length_key,
             initiator_packet_key,
             responder_length_key,
@@ -692,7 +714,7 @@ impl OutboundCipher {
 #[derive(Clone)]
 pub struct CipherSession {
     /// A unique identifier for the communication session.
-    id: [u8; 32],
+    id: SessionId,
     /// Decrypts inbound packets.
     inbound: InboundCipher,
     /// Encrypts outbound packets.
@@ -744,7 +766,7 @@ impl CipherSession {
     }
 
     /// Unique session ID.
-    pub fn id(&self) -> &[u8; 32] {
+    pub fn id(&self) -> &SessionId {
         &self.id
     }
 
@@ -1166,9 +1188,10 @@ mod tests {
         .unwrap();
         let id = session_keys.session_id;
         assert_eq!(
-            id.to_vec(),
+            id.as_ref(),
             Vec::from_hex("b0490e26111cb2d55bbff2ace00f7f644f64006539abb4e7513f05107bb10608")
                 .unwrap()
+                .as_slice()
         );
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
         let contents: Vec<u8> = Vec::from_hex("3eb1d4e98035cfd8eeb29bac969ed3824a").unwrap();
@@ -1240,9 +1263,10 @@ mod tests {
         .unwrap();
         let id = session_keys.session_id;
         assert_eq!(
-            id.to_vec(),
+            id.as_ref(),
             Vec::from_hex("279a96e6ce08e5074608fcad77d6a78f90c8b618a4520575435b1a37b1c56df9")
                 .unwrap()
+                .as_slice()
         );
         let mut alice_cipher = CipherSession::new(session_keys.clone(), Role::Responder);
         let contents: Vec<u8> = Vec::from_hex("7e0e78eb6990b059e6cf0ded66ea93ef82e72aa2f18ac24f2fc6ebab561ae557420729da103f64cecfa20527e15f9fb669a49bbbf274ef0389b3e43c8c44e5f60bf2ac38e2b55e7ec4273dba15ba41d21f8f5b3ee1688b3c29951218caf847a97fb50d75a86515d445699497d968164bf740012679b8962de573be941c62b7ef").unwrap();

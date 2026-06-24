@@ -181,6 +181,8 @@ fn pingpong_with_closed_connection_sync() {
         )
         .expect("Failed to create protocol");
 
+        let session_id = *protocol.session_id();
+
         // Read one message
         let payload = protocol.read().expect("Failed to read payload");
         let received_message = consensus::deserialize::<V2NetworkMessage>(payload.contents())
@@ -196,6 +198,7 @@ fn pingpong_with_closed_connection_sync() {
         } else {
             panic!("Expected Ping, but received: {received_message:?}");
         }
+        session_id
     });
 
     let stream = TcpStream::connect(addr).unwrap();
@@ -213,6 +216,8 @@ fn pingpong_with_closed_connection_sync() {
     )
     .expect("Failed to create protocol");
 
+    let session_id = *protocol.session_id();
+
     println!("Sending Ping using sync Protocol::write()");
     let ping = V2NetworkMessage::new(NetworkMessage::Ping(45324));
     let message = consensus::serialize(&ping);
@@ -228,7 +233,9 @@ fn pingpong_with_closed_connection_sync() {
     assert_eq!(NetworkMessage::Pong(45324), *response_message.payload());
 
     println!("Successfully ping-pong'ed using sync Protocol API!");
-    server.join().unwrap();
+    let server_session_id = server.join().unwrap();
+
+    assert_eq!(session_id, server_session_id);
 
     println!(
         "Trying to read another message from the server, while the connection is already closed."
@@ -263,6 +270,8 @@ async fn pingpong_with_closed_connection_async() {
         .await
         .unwrap();
 
+        let session_id = *protocol.session_id();
+
         let payload = protocol.read().await.unwrap();
         let received_message =
             consensus::deserialize::<V2NetworkMessage>(payload.contents()).unwrap();
@@ -274,6 +283,8 @@ async fn pingpong_with_closed_connection_async() {
         } else {
             panic!("Expected Ping, but received: {received_message:?}");
         }
+
+        session_id
     });
 
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -293,6 +304,8 @@ async fn pingpong_with_closed_connection_async() {
     .await
     .unwrap();
 
+    let session_id = *protocol.session_id();
+
     println!("Sending Ping using async Protocol::write()");
     let ping = V2NetworkMessage::new(NetworkMessage::Ping(45324));
     let message = consensus::serialize(&ping);
@@ -305,7 +318,9 @@ async fn pingpong_with_closed_connection_async() {
     assert_eq!(NetworkMessage::Pong(45324), *response_message.payload());
 
     println!("Successfully ping-pong message using async Protocol API!");
-    server.await.unwrap();
+    let server_session_id = server.await.unwrap();
+
+    assert_eq!(session_id, server_session_id);
 
     println!(
         "Trying to read another message from the server, while the connection is already closed."
