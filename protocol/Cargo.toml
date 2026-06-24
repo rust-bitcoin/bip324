@@ -27,7 +27,7 @@ chacha20-poly1305 = { version = "0.1.1", default-features = false }
 
 [dev-dependencies]
 # bitcoind version 26.0 includes support for BIP-324's V2 protocol, but it is disabled by default.
-bitcoind = { package = "corepc-node", version = "0.7.1", default-features = false, features = ["26_0","download"] }
+bitcoind = { package = "corepc-node", version = "0.12.0", default-features = false, features = ["30_2", "download"] }
 bitcoin = { git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
 p2p = { package = "bitcoin-p2p-messages",  git = "https://github.com/rust-bitcoin/rust-bitcoin", rev = "16cc257c3695dea0e7301a5fa9cab44b8ed60598" }
 hex = { package = "hex-conservative", version = "0.2.0" }
