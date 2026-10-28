@@ -1,3 +1,5 @@
+> **⚠️ This project has moved to [git.rust-bitcoin.org/rust-bitcoin/bip324](https://git.rust-bitcoin.org/rust-bitcoin/bip324). This repository is archived and no longer maintained here.**
+
 # BIP-324 Encrypted Transport Protocol
 
 [BIP-324](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki) describes the V2 encrypted communication protocol for the bitcoin P2P network. 
